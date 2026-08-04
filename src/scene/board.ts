@@ -121,24 +121,26 @@ const FRAME_SAG_FALLOFF = 0.16;
  * The river's cross-section, and the one real trade in this file.
  *
  * The band between rank 4 and rank 5 is exactly one square wide, and two things
- * want it: a sunken channel, and 楚河漢界. A board without a legible inscription
- * is not recognisably a xiangqi board — it is the single most identifiable mark
- * on the object — so the channel gets the smaller share. The water runs 0.144
- * wide in a cut 0.12 deep, which makes it *more* of a channel from a low camera
- * rather than less: the walls stand at 74° instead of the 56° a wide, shallow
- * trough would give, so they take the key on one side and go black on the other
- * from any angle the camera can reach, and the channel is deeper than it is
- * wide so you can never see its floor and its far wall at once.
+ * want it: a sunken channel, and 楚河漢界.
  *
- * What it costs is plan-view width: from the `top` pose the river now reads as a
- * cut rill rather than a broad reach. That is the accepted trade — the 0.372 of
- * silk it buys back on each bank is what carries the inscription.
+ * The split is set by two measurements rather than by taste. The water has to be
+ * wide enough that a camera at the `profile` framing — 1.75 up, 5.9 out — can
+ * see over the near bank's cap and onto the far water instead of onto stone;
+ * that puts the floor of the requirement at about 0.24 of water. The inscription
+ * has to survive the resting `default` framing, which is governed almost
+ * entirely by stroke width rather than by character height, and is bought much
+ * more cheaply by cutting the strokes twice as fat than by making the characters
+ * taller. So the river takes 0.4 of the band and the inscription takes the 0.3
+ * that is left on each bank.
+ *
+ * The walls stand at 66°, steep enough to take the key on one side and go black
+ * on the other from any angle the camera can reach.
  */
 export const RIVER_DEPTH = 0.12;
-export const RIVER_FLOOR_HALF = 0.048;
-export const RIVER_CUT_HALF = 0.086;
-export const BANK_CAP_HALF = 0.108;
-export const BANK_HALF = 0.128;
+export const RIVER_FLOOR_HALF = 0.088;
+export const RIVER_CUT_HALF = 0.148;
+export const BANK_CAP_HALF = 0.176;
+export const BANK_HALF = 0.2;
 export const BANK_RISE = 0.014;
 export const WATER_Y = -0.048;
 
@@ -215,15 +217,31 @@ const CANNON_FILES = [1, 7];
 const INSCRIPTION_Z0 = BANK_HALF + 0.006;
 const INSCRIPTION_Z1 = 0.472;
 /** Ink height of the tallest of the four characters, world units. */
-const INSCRIPTION_INK = 0.312;
+const INSCRIPTION_INK = 0.246;
 /** Centre-to-centre spacing within a pair, and the width of one glyph's panel. */
-const INSCRIPTION_PITCH = 0.4;
-/** Where each pair sits horizontally: 楚河 to Red's left, 漢界 to Red's right. */
-const INSCRIPTION_PAIR_X = 2.25;
+const INSCRIPTION_PITCH = 0.5;
+/**
+ * Where each pair sits horizontally.
+ *
+ * A flat board writes 楚河 to the left and 漢界 to the right of one shared band.
+ * With a channel down the middle of that band the pairs have to go on separate
+ * banks, and keeping the left/right split as well puts them diagonally opposite
+ * each other — which reads as an accident rather than as a decision from every
+ * camera angle. Centring both pairs makes the inscription mirror-symmetric
+ * across the channel, which is the only arrangement that looks deliberate no
+ * matter where the camera is standing.
+ */
+const INSCRIPTION_PAIR_X = 0;
 /** Depth of the cut. Deeper than a piece base's — it is read from further away. */
 const INSCRIPTION_DEPTH = 0.0105;
-/** Heavier than the authored seal weight: a board inscription is cut bold. */
-const INSCRIPTION_WEIGHT = 1.0;
+/**
+ * Heavier than the authored seal weight: a board inscription is cut bold.
+ *
+ * 2.0 is the most the forms will take. Past it the strokes of 楚 and 漢 begin to
+ * flood into each other and the counters open and close unpredictably; at 2.0
+ * they merge only where a bold cut genuinely would, and every counter survives.
+ */
+export const INSCRIPTION_WEIGHT = 2.0;
 
 /** One character of the inscription, with the deck panel it is cut into. */
 interface InscriptionChar {
@@ -271,7 +289,7 @@ function planInscription(seal: SealSource | undefined): InscriptionChar[] {
 
   const fetched: { ch: string; bank: number; slot: number; outline: SealOutline }[] = [];
   for (const [ch, bank, slot] of layout) {
-    const outline = seal(ch);
+    const outline = seal(ch, { weight: INSCRIPTION_WEIGHT });
     if (outline && outline.contours.length > 0) fetched.push({ ch, bank, slot, outline });
   }
   if (fetched.length === 0) return [];
@@ -471,7 +489,9 @@ function incisedLine(
     }
   }
   path.push(bx, silkSag(bx, bz), bz);
-  sweepAlongPath(b, path, section);
+  // Every incised line on this board is a straight run between two marked
+  // points, so the groove walls get one normal each along their whole length.
+  sweepAlongPath(b, path, section, 1, true);
 }
 
 /** V-groove cross-section at a given half-width and depth. */

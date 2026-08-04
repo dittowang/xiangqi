@@ -43,7 +43,7 @@ uniform float uGradeAmount;
 uniform float uVignette;
 /** Grain strength, 0..1. */
 uniform float uGrainAmount;
-/** Grain cell size in DEVICE pixels. */
+/** Grain cell size in DEVICE pixels — CSS px x dpr, converted on the CPU. */
 uniform float uGrainPeriodPx;
 /** Device-pixel resolution of the drawing buffer. */
 uniform vec2 uViewportPx;

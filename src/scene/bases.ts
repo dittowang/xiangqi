@@ -88,7 +88,26 @@ export interface SealOutline {
  * injection. The integration layer wires it in one line — see
  * `sealOutlineFromShapes`.
  */
-export type SealSource = (ch: string) => SealOutline | null | undefined;
+export type SealSource = (
+  ch: string,
+  opts?: SealRequest,
+) => SealOutline | null | undefined;
+
+/** What the scene asks the type engine for beyond the character itself. */
+export interface SealRequest {
+  /**
+   * Multiplier on the authored stroke weight.
+   *
+   * The board asks for a heavier cut than a piece base does. A character incised
+   * into the river band is read from the resting camera fifteen units away,
+   * where the authored 0.052 em weight lands at about one and a half device
+   * pixels and aliases into a tangle; the grid lines beside it are twice that
+   * and read cleanly. So the inscription is cut with a fatter stylus until its
+   * strokes match the line work around them. Maps to `widthScale` in
+   * `@ui/seal.ts`.
+   */
+  weight?: number;
+}
 
 /**
  * Last-resort adapter for a glyph source that is neither `glyphToShapes` nor

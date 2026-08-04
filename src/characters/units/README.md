@@ -327,21 +327,48 @@ your unit's values are fixed in `../proportions.ts`:
 
 | unit | height (world) | aspect | width class | crown tag |
 |---|---|---|---|---|
-| soldier | 1.19 | 0.44 | narrow | `plumed-doumou` |
-| advisor | 1.27 | 0.60 | narrow | `soft-cap` |
-| general | 2.36 | 0.62 | medium | `crowned-buyao` |
-| cannon | 1.52 | 1.70 | wide | `hooded` |
-| horse | 2.03 | 1.54 | wide | `horned` |
-| elephant | 2.76 | 1.00 | wide | `turbaned` |
-| chariot | 2.51 | 1.41 | wide | `fan-crest` |
+| soldier | 0.63 | 0.48 | narrow | `plumed-doumou` |
+| advisor | 0.69 | 0.60 | narrow | `soft-cap` |
+| cannon | 0.81 | 1.68 | wide | `hooded` |
+| chariot | 0.90 | 1.35 | wide | `fan-crest` |
+| horse | 0.97 | 1.38 | wide | `horned` |
+| elephant | 1.05 | 1.12 | wide | `turbaned` |
+| general | 1.26 | 0.61 | medium | `crowned-buyao` |
 
 - **Height** is the full bounding-box height *including* crest, mount and
   anything carried. Keep within 30% of the target or the factory warns.
 - **Aspect** is `max(width, depth) / height`.
-- **Width class** bands the absolute footprint: narrow < 0.9, medium 0.9–1.6,
-  wide > 1.6 world units.
+- **Width class** bands the absolute footprint: narrow < 0.6, medium 0.6–1.1,
+  wide > 1.1 world units.
 - **Crown** is the headgear tag. Yours is unique in your army and must stay
   that way. It is the axis that survives when the other two collide.
+
+### Your unit has to fit the board
+
+One square is **1.0** world unit. The numbers above are small because the first
+full-board render was unreadable: elephants and chariots measured three squares
+deep and Black's back rank was a wall of overlapping mass. What the whole cast
+now holds to, and what `verify.ts` asserts:
+
+- **`reachX` < 0.5** — no piece extends past its own square across the files.
+  Neighbours on a rank are 1.0 apart in X, so this is the axis that hides
+  pieces, and it is held absolutely.
+- **`reachZ` < 0.85** — the beast and vehicle units lean up to 0.85 forward,
+  which stops 0.15 short of the next rank's intersection. Leaning reads as
+  presence; covering an intersection destroys the position.
+- **lowest point ≥ 0** — `main.ts` stands each figure on a plinth top at
+  y = 0.046. Anything below zero in your unit's own space sinks through it.
+
+`reach` is measured from the unit's **origin**, not as a bounding-box size,
+because a silhouette centred off its origin crowds one side twice as hard.
+
+**Your aspect ratio sets your height.** Every builder sizes its mount as a
+multiple of `proportions.height`, so `scale` and `height` are both uniform
+multipliers and neither can change your aspect — that is fixed by your geometry.
+A unit with aspect 1.68 that must fit inside `reachZ` 0.85 is 0.81 tall, and no
+scale makes it both compact and towering. If your unit wants to be taller, it
+has to get *proportionally shorter front-to-back* — that is a change in your
+file, not in `proportions.ts`.
 
 Rule the readability critic enforces: *no two units in the same army may share
 both aspect class and crown tag.* `verify.ts` asserts it.

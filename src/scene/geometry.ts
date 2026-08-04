@@ -336,22 +336,40 @@ export function sweepAlongPath(
   path: readonly number[],
   section: readonly ProfilePoint[],
   uvScale = 1,
+  straight = false,
 ): void {
   const count = path.length / 3;
   if (count < 2 || section.length < 2) return;
 
   // Lateral (left) direction per path point, from the local tangent.
+  //
+  // `straight` takes the direction from the path's endpoints instead, so every
+  // quad on a given wall of the groove shares one normal. That matters more than
+  // it sounds: a hand-ruled line bows by a degree or so between intersections,
+  // and against a hard-banded ramp a degree is enough to flip the wall from one
+  // quantisation step to the next and back. The line then renders *dashed*, at
+  // exactly the segment pitch. Grid lines and brackets are straight runs, so the
+  // constant lateral is also the truthful one; the bow stays in the centreline,
+  // where it belongs, and only the shading stops wobbling.
   const lx = new Float64Array(count);
   const lz = new Float64Array(count);
-  for (let i = 0; i < count; i++) {
-    const i0 = Math.max(0, i - 1);
-    const i1 = Math.min(count - 1, i + 1);
-    const tx = path[i1 * 3] - path[i0 * 3];
-    const tz = path[i1 * 3 + 2] - path[i0 * 3 + 2];
+  if (straight) {
+    const tx = path[(count - 1) * 3] - path[0];
+    const tz = path[(count - 1) * 3 + 2] - path[2];
     const l = Math.hypot(tx, tz) || 1;
-    // Left of travel in XZ is (tz, -tx) with +Y up.
-    lx[i] = tz / l;
-    lz[i] = -tx / l;
+    lx.fill(tz / l);
+    lz.fill(-tx / l);
+  } else {
+    for (let i = 0; i < count; i++) {
+      const i0 = Math.max(0, i - 1);
+      const i1 = Math.min(count - 1, i + 1);
+      const tx = path[i1 * 3] - path[i0 * 3];
+      const tz = path[i1 * 3 + 2] - path[i0 * 3 + 2];
+      const l = Math.hypot(tx, tz) || 1;
+      // Left of travel in XZ is (tz, -tx) with +Y up.
+      lx[i] = tz / l;
+      lz[i] = -tx / l;
+    }
   }
 
   let run = 0;

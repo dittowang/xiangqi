@@ -66,8 +66,16 @@ Arrows are the only permitted import directions. `render` never imports
 - Square index `= rank * 9 + file`; rank 0 is Black's back rank at **−Z**,
   rank 9 is Red's back rank at **+Z**. The default camera sits over +Z.
 - Units are authored **feet at the origin, facing −Z**, and are scaled at the
-  root by `UnitMeta.scale`. A soldier at scale 0.6 is therefore about
-  0.6 × 1.75 ≈ 1.05 world units tall, a little over one square.
+  root by `UnitMeta.scale`. The scales in `proportions.ts` are calibrated so the
+  cast spans a height ladder of **0.66 (soldier) → 1.32 (general)** world units,
+  which is what lets the eye feel piece value without reading a character.
+- What governs whether a piece hides its neighbour is **not** its bounding box
+  but how far its silhouette reaches from its own intersection — a shape centred
+  off its origin crowds one side twice as hard as the box size implies.
+  `verify.ts` therefore asserts `reachX < 1.0` and `reachZ < 1.0`. Across the
+  files every unit is inside its own square (`reachX ≤ 0.49`); along the ranks
+  the beast and vehicle units lean up to 0.85 forward, stopping short of the
+  next intersection, which reads as presence rather than as crowding.
 - Time is seconds; angles are radians.
 
 ## Rendering pipeline order

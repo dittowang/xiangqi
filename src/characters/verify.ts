@@ -23,6 +23,7 @@
 
 import * as THREE from 'three';
 import { BONE_ORDER, type GongbiMaterials, type MaterialRequest } from '@core/contracts.ts';
+import { SQUARE } from '@core/coords.ts';
 import { PieceType, Side, UNIT_KEY, type UnitKey } from '@core/types.ts';
 import { createCharacters, unitsStillFallingBack } from './index.ts';
 import { silhouetteConflicts, unitSpec, UNIT_KEYS_IN_VALUE_ORDER } from './proportions.ts';
@@ -44,6 +45,14 @@ import * as weapons from './parts/weapons.ts';
 // ---------------------------------------------------------------------------
 // Harness
 // ---------------------------------------------------------------------------
+
+/**
+ * The board read is the game. One square is `SQUARE` = 1.0 world units, so a
+ * piece whose footprint exceeds that covers its neighbour's intersection and
+ * you can no longer tell what is standing on the rank. A little overhang reads
+ * as presence; a lot destroys the position.
+ */
+const BOARD_FOOTPRINT_LIMIT = 1.4;
 
 // `@types/node` is not a dependency of this project and the brief forbids adding
 // one, so the two Node globals this script touches are declared locally. They
@@ -994,6 +1003,25 @@ function verifySilhouetteTable(): void {
       }
     }
   }
+
+  // The tightest aspect pair, reported so a collapsing separation axis is
+  // visible rather than discovered by a critic. Crown tags are unique, so the
+  // contract still holds when this is small — but it is worth knowing.
+  let tightest = { a: '', b: '', rel: 1 };
+  for (let i = 0; i < UNIT_KEYS_IN_VALUE_ORDER.length; i++) {
+    for (let j = i + 1; j < UNIT_KEYS_IN_VALUE_ORDER.length; j++) {
+      const ai = unitSpec(Side.Red, typeOf(UNIT_KEYS_IN_VALUE_ORDER[i]), 0).silhouette.aspect;
+      const aj = unitSpec(Side.Red, typeOf(UNIT_KEYS_IN_VALUE_ORDER[j]), 0).silhouette.aspect;
+      const rel = Math.abs(ai - aj) / Math.max(ai, aj);
+      if (rel < tightest.rel) {
+        tightest = { a: UNIT_KEYS_IN_VALUE_ORDER[i], b: UNIT_KEYS_IN_VALUE_ORDER[j], rel };
+      }
+    }
+  }
+  console.log(
+    `  tightest aspect pair: ${tightest.a} / ${tightest.b} at ${(tightest.rel * 100).toFixed(1)}% apart` +
+      (tightest.rel < 0.1 ? ' — separated by crown and cross-file width, not aspect' : ''),
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -1029,15 +1057,21 @@ function verifyUnits(): void {
       pad('W', 7, true) +
       pad('H', 7, true) +
       pad('D', 7, true) +
+      pad('foot', 7, true) +
+      pad('reachX', 8, true) +
+      pad('reachZ', 8, true) +
+      pad('y0', 7, true) +
       pad('aspect', 8, true) +
       pad('decl', 7, true) +
-      pad('build ms', 10, true),
+      pad('ms', 5, true),
   );
   console.log(rule(110));
 
   let grand = 0;
   let grandMeshes = 0;
   let windingAudited = 0;
+  let footWorst = 0;
+  let reachWorst = 0;
   const units: ReturnType<typeof factory.create>[] = [];
 
   for (const key of UNIT_KEYS_IN_VALUE_ORDER) {
@@ -1051,6 +1085,33 @@ function verifyUnits(): void {
       const meshes = u.skinned.length + u.props.length;
       const [w, hh, dd] = u.meta.size;
       const aspect = Math.max(w, dd) / Math.max(1e-6, hh);
+      const foot = Math.max(w, dd);
+      // Where the piece's lowest point sits. main.ts stands each figure on a
+      // plinth top at y = BASE_TOP_Y, so anything below zero in the unit's own
+      // space sinks through the plinth and through the board with it.
+      u.root.updateMatrixWorld(true);
+      const bb = new THREE.Box3().setFromObject(u.root);
+      const y0 = bb.min.y;
+      // How far the piece reaches from its own intersection. This, not the
+      // bounding-box *size*, is what decides whether it crowds a neighbour: a
+      // silhouette centred off its origin crowds one side twice as hard. Under
+      // 0.5 it sits entirely inside its own square; under 1.0 it leans over the
+      // line but never covers the next intersection.
+      const reachX = Math.max(Math.abs(bb.min.x), Math.abs(bb.max.x));
+      const reachZ = Math.max(Math.abs(bb.min.z), Math.abs(bb.max.z));
+      const reach = Math.max(reachX, reachZ);
+      footWorst = Math.max(footWorst, foot);
+      reachWorst = Math.max(reachWorst, reach);
+      check(
+        reach < 1.0,
+        `${key} (${side === Side.Red ? 'Han' : 'Chu'}): reaches ${reach.toFixed(2)} from its intersection — it covers a neighbour's`,
+      );
+      check(y0 > -0.02, `${key} (${side === Side.Red ? 'Han' : 'Chu'}): lowest point is ${y0.toFixed(3)}, below its own ground plane`);
+      if (foot > BOARD_FOOTPRINT_LIMIT) {
+        warnings.push(
+          `${key}: footprint ${foot.toFixed(2)} exceeds the ${BOARD_FOOTPRINT_LIMIT} square-pitch limit — it covers a neighbour's intersection`,
+        );
+      }
       grand += u.meta.triangles;
       grandMeshes += meshes;
 
@@ -1109,9 +1170,13 @@ function verifyUnits(): void {
           pad(w.toFixed(2), 7, true) +
           pad(hh.toFixed(2), 7, true) +
           pad(dd.toFixed(2), 7, true) +
+          pad(foot.toFixed(2), 7, true) +
+          pad(reachX.toFixed(2), 8, true) +
+          pad(reachZ.toFixed(2), 8, true) +
+          pad(y0.toFixed(3), 7, true) +
           pad(aspect.toFixed(2), 8, true) +
           pad(spec.silhouette.aspect.toFixed(2), 7, true) +
-          pad(ms, 10, true),
+          pad(ms, 5, true),
       );
     }
   }
@@ -1124,6 +1189,11 @@ function verifyUnits(): void {
     `  all 14 built: ${grand} triangles, ${grandMeshes} meshes, ${materials.count()} materials`,
   );
   console.log(`  winding audited across ${windingAudited} built triangles`);
+  console.log(
+    `  widest footprint ${footWorst.toFixed(2)} and worst reach-from-intersection ` +
+      `${reachWorst.toFixed(2)} against a ${SQUARE} square pitch; a neighbour's ` +
+      `intersection is covered at reach 1.0. Plinth is ${(0.345 * 2).toFixed(2)} across at y=0.046.`,
+  );
 
   // The same cast built in atlas mode: one merged mesh per unit, one material
   // for everything. This is the configuration the renderer's ramp shader wants,

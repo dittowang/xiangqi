@@ -43,8 +43,17 @@ import { OFF_BOARD_Y } from './board.ts';
 // Staging
 // ---------------------------------------------------------------------------
 
-/** Where the terrace ends and the land drops to the water. */
-export const TERRACE_RADIUS = 13.5;
+/**
+ * Where the terrace ends and the land drops to the water.
+ *
+ * At the resting `default` framing — 50° of pitch, 38° of fov — the top of the
+ * frame meets the terrace plane at a radius of about 11.4 and the water plane at
+ * about 14.7. A terrace any wider than this fills the whole upper field with
+ * flat stone and the board reads as sitting in a quarry. At 9.8 it is a ledge
+ * about a unit clear of the table's corners, and what fills the top of the
+ * resting frame is water.
+ */
+export const TERRACE_RADIUS = 9.8;
 /** Water level below the terrace. */
 export const LAKE_Y = -2.6;
 /** How far the lake runs before the first range. */
@@ -330,7 +339,17 @@ export class Backdrop {
           const t0 = (a / az) * Math.PI * 2;
           const t1 = ((a + 1) / az) * Math.PI * 2;
           const p = (r: number, t: number) => [r * Math.sin(t), OFF_BOARD_Y, r * Math.cos(t)];
-          g.quad(p(r0, t0), p(r0, t1), p(r1, t1), p(r1, t0), stone, stone, stone, stone);
+          // r0,t0 -> r1,t0 -> r1,t1 -> r0,t1 winds the ring to a +Y face. The
+          // other order faces the terrace at the floor, and a stone surface lit
+          // from underneath renders as a black arc across the top of every
+          // resting shot — which is exactly what it did.
+          if (r0 <= 0) {
+            // The innermost ring closes on the axis: a fan, not a quad, or every
+            // one of its triangles is a zero-area sliver with no normal.
+            g.tri(p(0, 0), p(r1, t0), p(r1, t1), stone, stone, stone);
+          } else {
+            g.quad(p(r0, t0), p(r1, t0), p(r1, t1), p(r0, t1), stone, stone, stone, stone);
+          }
         }
       }
       // The parapet: the terrace's edge, dropping to the water.
@@ -342,11 +361,13 @@ export class Backdrop {
           y,
           TERRACE_RADIUS * Math.cos(t),
         ];
+        // Wound to face away from the axis: you look down past the terrace's
+        // edge at the outside of the retaining wall, never at its back.
         g.quad(
           p(t0, OFF_BOARD_Y),
-          p(t1, OFF_BOARD_Y),
-          p(t1, LAKE_Y),
           p(t0, LAKE_Y),
+          p(t1, LAKE_Y),
+          p(t1, OFF_BOARD_Y),
           stone,
           stone,
           stone,

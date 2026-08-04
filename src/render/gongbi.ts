@@ -151,6 +151,35 @@ const TOOTH_SCALE: Record<MaterialClass, number> = {
   iron: 2.4,
 };
 
+/**
+ * How far the tooth modulates VALUE directly, on top of moving the band edge.
+ *
+ * Perturbing the ramp lookup makes a band boundary break along the grain, which
+ * is the right effect and the important one — but it does nothing at all where
+ * there is no boundary. A large flat-lit plane resolves to one band across its
+ * whole area, so the board came out as a single flat field of saturated 藤黃
+ * with no material read whatsoever: the "plastic, not aged silk" in the review.
+ *
+ * So the tooth also lifts and drops the value slightly, everywhere. This is
+ * what actually makes a flat field read as a woven ground rather than as fill.
+ * Kept small — it is the tooth of the ground showing through the pigment, not a
+ * texture map.
+ */
+const TOOTH_VALUE = 0.13;
+
+/**
+ * How far an aged pigment's chroma falls toward its own luminance, modulated by
+ * the tooth so the ageing is uneven the way real ageing is.
+ *
+ * 千里江山圖's mineral blue-greens are saturated but not *bright*: ground rock
+ * bound in glue, a thousand years old. A pigment straight out of the palette at
+ * full chroma reads as plastic, which is the word the review used. This pulls
+ * it back without leaving the palette — it is a desaturation of an existing
+ * colour, the same operation `shiftHex` performs in core/palette.ts, not an
+ * invented one.
+ */
+const PIGMENT_AGE = 0.12;
+
 const GRANULATION: Record<MaterialClass, number> = {
   // Lacquer and gold are laid wet and burnished: almost no tooth shows.
   lacquer: 0.030,
@@ -389,6 +418,16 @@ vec3 xqGongbiShade(
   vec3 col = xqRampRow( rowV, ndl );
   float band = xqRampBandRow( rowV, ndl, steps );  // 0 = deepest, 1 = top band
   float shade = 1.0 - band;
+
+  // The ground showing through the pigment. Moving the band edge (above) does
+  // nothing on a surface that resolves to a single band, and most of the board
+  // is exactly that, so the tooth also carries value directly.
+  float toothSigned = tooth - 0.5;
+  col *= 1.0 + toothSigned * ${TOOTH_VALUE.toFixed(3)};
+
+  // 陳色: pigment ages into muted saturation, unevenly, following the grain.
+  col = mix( col, vec3( xqLuma( col ) ),
+             ${PIGMENT_AGE.toFixed(3)} * ( 0.55 + 0.9 * ( 0.5 - toothSigned ) ) );
 
   // --- light as tint, never as accumulated radiance ----------------------
   float keyGain = uKeyIntensity / ${KEY_REFERENCE.toFixed(2)};

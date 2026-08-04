@@ -301,6 +301,45 @@ section('winding and normals');
     const m = o as THREE.Mesh;
     if (m.isMesh && m.geometry) audit(('mark ' + m.name.split('/').pop()).padEnd(11), m.geometry);
   });
+
+  // The backdrop was NOT in this audit, and that is precisely how a terrace with
+  // its normals pointing at the floor reached a shipped frame as a black arc
+  // across the top of every resting shot. Any lit mesh this subsystem builds
+  // belongs here.
+  const bd = new Backdrop({ materials, detail: 'low' });
+  const ground = bd.group.getObjectByName('ground') as THREE.Mesh;
+  audit('terrace    ', ground.geometry);
+  {
+    const pos = ground.geometry.getAttribute('position');
+    const nAttr = ground.geometry.getAttribute('normal');
+    let flatUp = 0;
+    let flatDown = 0;
+    let wallOut = 0;
+    let wallIn = 0;
+    for (let i = 0; i < pos.count; i += 3) {
+      nrm.fromBufferAttribute(nAttr, i);
+      A.fromBufferAttribute(pos, i);
+      if (nrm.y > 0.9) flatUp++;
+      else if (nrm.y < -0.9) flatDown++;
+      else {
+        // Outward means pointing away from the axis at that point.
+        const dot = nrm.x * A.x + nrm.z * A.z;
+        if (dot > 0) wallOut++;
+        else wallIn++;
+      }
+    }
+    check(
+      'the terrace faces the sky, not the floor',
+      flatUp > 0 && flatDown === 0,
+      `${flatUp} up-facing, ${flatDown} down-facing`,
+    );
+    check(
+      'the parapet faces away from the board',
+      wallOut > 0 && wallIn === 0,
+      `${wallOut} outward, ${wallIn} inward`,
+    );
+  }
+  bd.dispose();
 }
 
 // ---------------------------------------------------------------------------

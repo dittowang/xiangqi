@@ -100,12 +100,35 @@ const LINE_STRENGTH = 0.85;
  */
 const DEPTH_SUPPRESS = 40.0;
 
-/** Paper grain. Cell size in DEVICE pixels, and strength. */
-const GRAIN_PERIOD_PX = 1.6;
-const GRAIN_AMOUNT = 0.055;
+/**
+ * Paper grain.
+ *
+ * TWO THINGS WERE WRONG HERE AND BOTH WERE MEASURED, NOT GUESSED.
+ *
+ * 1. The period was specified in DEVICE pixels and never converted from CSS
+ *    pixels — the exact mistake silk.ts is written to avoid, made in the one
+ *    place the analysis was not applied. At dpr 2 a 1.6-device-pixel period is
+ *    0.8 CSS px; at dpr 1 it is 1.6 CSS px, i.e. per-pixel noise. The review
+ *    machine runs at dpr 1, so the grain arrived as white noise rather than as
+ *    paper, and it changed physical size with the pixel ratio.
+ *
+ * 2. The amplitude was far too high. Measured on the real board, grain alone
+ *    accounted for 22.9 percentage points of "1–6/255 micro-step" pixels —
+ *    more than every other term in the renderer combined. Removing it took the
+ *    frame from 34.2% micro-stepped to 11.3%. That noise sat on top of every
+ *    hard band edge in the frame and is the single biggest reason the bands
+ *    could not be read.
+ *
+ * Now specified in CSS pixels, converted at `setSize`, and cut to a strength
+ * that reads as the tooth of a sheet rather than as sensor noise.
+ */
+const GRAIN_PERIOD_CSS_PX = 2.4;
+const GRAIN_AMOUNT = 0.020;
 
-/** Edge darkening. See the note in grade.glsl.ts — this is mounting silk. */
-const VIGNETTE = 0.10;
+/** Edge darkening. See the note in grade.glsl.ts — this is mounting silk.
+ *  Measured at 1.8 points of micro-step across the frame, which is more than a
+ *  mounting edge is worth; halved. */
+const VIGNETTE = 0.05;
 
 /** Impact-flash decay, per second, exponential. 4.2 is about a quarter second. */
 const FLASH_DECAY = 4.2;
@@ -265,7 +288,7 @@ export function createGradeMaterial(mood: LightMood): THREE.ShaderMaterial {
     uGradeAmount: { value: mood.gradeAmount },
     uVignette: { value: VIGNETTE },
     uGrainAmount: { value: GRAIN_AMOUNT },
-    uGrainPeriodPx: { value: GRAIN_PERIOD_PX },
+    uGrainPeriodPx: { value: GRAIN_PERIOD_CSS_PX },
     uViewportPx: { value: new THREE.Vector2(1920, 1080) },
     uDebugMode: { value: DEBUG_NONE },
   });
@@ -319,6 +342,21 @@ export class GongbiPipeline implements RenderPipeline {
   private silhouette = false;
   private outlinesEnabled = true;
   private prepassScale = 1;
+  /**
+   * Runtime-tunable grade terms.
+   *
+   * These were constants read straight into the uniforms by `pushGrade()` every
+   * frame, which meant that setting the uniform from a console or a harness
+   * appeared to do nothing — the next frame overwrote it. That is exactly the
+   * situation this renderer was designed to avoid: every threshold is meant to
+   * be adjustable by a later pass driven by real captured frames, and a value
+   * you cannot change without a rebuild is not adjustable. Holding them as
+   * state and letting `pushGrade()` read the state fixes it.
+   */
+  private warnedNoSobel = false;
+  private grainAmount = GRAIN_AMOUNT;
+  private vignetteAmount = VIGNETTE;
+  private lineStrength = LINE_STRENGTH;
   private adaptiveCascades = true;
   private maxCascades = 3;
   private debugMode = DEBUG_NONE;
@@ -488,6 +526,9 @@ export class GongbiPipeline implements RenderPipeline {
       this.width,
       this.height,
     );
+    // The sheet is a physical object: its grain must stay the same size on the
+    // display whatever the pixel ratio is doing.
+    this.gradePass.material.uniforms.uGrainPeriodPx.value = GRAIN_PERIOD_CSS_PX * this.dpr;
   }
 
   // -- quality --------------------------------------------------------------
@@ -513,6 +554,29 @@ export class GongbiPipeline implements RenderPipeline {
     this.outlinesEnabled = q.outlines;
     this.linesPass.material.uniforms.uSobelEnabled.value =
       q.sobel && this.floatTargets && this.debugMode !== DEBUG_OUTLINE_ONLY ? 1 : 0;
+
+    // Say so, once, and loudly.
+    //
+    // `QualitySettings.sobel === false` switches off the interior line system —
+    // half the line work in the art direction. perf/governor.ts sets it false
+    // on the `low` tier, directly under a comment reading "The floor still
+    // keeps outlines and the silk wash: they ARE the art direction ... line work
+    // goes last". Those two disagree, and render is not the owner of that file.
+    //
+    // What makes it urgent rather than academic: `QualityGovernor.probe()` maps
+    // SwiftShader to `low`, and SwiftShader is what the capture harness runs
+    // on. So every frame a critic reviews is captured with the interior lines
+    // turned off unless the harness forces a tier first. That is exactly what
+    // happened to the first full-cast review. A capture must call
+    // `__XQ.setQuality('ultra')` before it judges the look.
+    if (!q.sobel && !this.warnedNoSobel) {
+      this.warnedNoSobel = true;
+      console.warn(
+        `[render] quality tier "${q.tier}" disables the interior-line (Sobel) pass. ` +
+          'The frame will have hull contours but no interior line work. ' +
+          "Call __XQ.setQuality('ultra') before capturing anything for review.",
+      );
+    }
     // MSAA lives in the framebuffer, not in a uniform: three reads `samples`
     // when it builds the target, so the sample count only takes effect after
     // the GL objects are torn down. `dispose()` does that and the next render
@@ -782,6 +846,65 @@ export class GongbiPipeline implements RenderPipeline {
     return Math.min(n, this.maxCascades);
   }
 
+  /**
+   * The tuning surface a frame-driven pass adjusts.
+   *
+   * Every one of these was a compile-time constant. They are the terms whose
+   * right value cannot be known without looking at a real frame, which is
+   * precisely why they must be reachable from the harness at runtime.
+   */
+  tune(t: {
+    grain?: number;
+    vignette?: number;
+    lineStrength?: number;
+    silkGain?: number;
+    normalEdge?: [number, number];
+    depthSuppress?: number;
+    hullSuppressPx?: number;
+    lineTint?: number;
+  }): void {
+    if (t.grain !== undefined) this.grainAmount = t.grain;
+    if (t.vignette !== undefined) this.vignetteAmount = t.vignette;
+    if (t.lineStrength !== undefined) {
+      this.lineStrength = t.lineStrength;
+      this.linesPass.material.uniforms.uLineStrength.value = t.lineStrength;
+    }
+    if (t.silkGain !== undefined) this.materials.silk.setGain(t.silkGain);
+    if (t.normalEdge) {
+      (this.linesPass.material.uniforms.uNormalEdge.value as THREE.Vector2).set(
+        t.normalEdge[0],
+        t.normalEdge[1],
+      );
+    }
+    if (t.depthSuppress !== undefined) {
+      this.linesPass.material.uniforms.uDepthSuppress.value = t.depthSuppress;
+    }
+    if (t.hullSuppressPx !== undefined) {
+      this.linesPass.material.uniforms.uHullSuppressPx.value = t.hullSuppressPx;
+    }
+    if (t.lineTint !== undefined) this.linesPass.material.uniforms.uLineTint.value = t.lineTint;
+  }
+
+  /** Current tuning, so a capture can record what it was measuring. */
+  tuning(): Record<string, number> {
+    const u = this.linesPass.material.uniforms;
+    return {
+      grain: this.grainAmount,
+      vignette: this.vignetteAmount,
+      lineStrength: this.lineStrength,
+      silkGain: this.materials.silk.uniforms.uSilkGain.value as number,
+      normalEdgeLo: (u.uNormalEdge.value as THREE.Vector2).x,
+      normalEdgeHi: (u.uNormalEdge.value as THREE.Vector2).y,
+      depthSuppress: u.uDepthSuppress.value as number,
+      hullSuppressPx: u.uHullSuppressPx.value as number,
+      lineTint: u.uLineTint.value as number,
+      prepassScale: this.prepassScale,
+      // 0 here means the frame has no interior line work at all. Any review
+      // that does not check this is reviewing a different renderer.
+      sobelEnabled: u.uSobelEnabled.value as number,
+    };
+  }
+
   /** Pin the cascade count to the quality tier's, defeating the adaptive rule. */
   setAdaptiveCascades(on: boolean): void {
     this.adaptiveCascades = on;
@@ -800,8 +923,8 @@ export class GongbiPipeline implements RenderPipeline {
       this.gradeAmount = mood.gradeAmount;
     }
     this.gradePass.material.uniforms.uGradeAmount.value = this.silhouette ? 0 : this.gradeAmount;
-    this.gradePass.material.uniforms.uVignette.value = this.silhouette ? 0 : VIGNETTE;
-    this.gradePass.material.uniforms.uGrainAmount.value = this.silhouette ? 0 : GRAIN_AMOUNT;
+    this.gradePass.material.uniforms.uVignette.value = this.silhouette ? 0 : this.vignetteAmount;
+    this.gradePass.material.uniforms.uGrainAmount.value = this.silhouette ? 0 : this.grainAmount;
   }
 
   /**
