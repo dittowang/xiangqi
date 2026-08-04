@@ -25,7 +25,7 @@ import { clock } from '@game/clock.ts';
 import { Match, type PieceView } from '@game/match.ts';
 import { SaveScheduler, load as loadSave, clear as clearSave } from '@game/persistence.ts';
 import { bus } from '@core/bus.ts';
-import type { CameraPose, QualitySettings, QualityTier } from '@core/contracts.ts';
+import type { AnimState, CameraPose, QualitySettings, QualityTier } from '@core/contracts.ts';
 import type { DebugFlag, NamedPose, XqFrameStats, XqTestApi } from '@core/testapi.ts';
 import { START_FEN } from '@core/testapi.ts';
 import { BOARD_HALF_X, BOARD_HALF_Z, facingY, worldToSquare } from '@core/coords.ts';
@@ -459,6 +459,9 @@ function frame(nowMs: number): void {
   // Animators before the choreographer: it reads their settled state to decide
   // when a beat has landed.
   for (const a of animators.values()) a.update(dt);
+  // The showcase figure is deliberately outside the match's animator map, so it
+  // has to be ticked here or its mount bones never move.
+  showcaseAnimator?.update(dt);
   choreographer.update(dt);
   audio.update(dt);
   saver.update(dt);
@@ -505,8 +508,13 @@ showcaseGroup.name = 'showcase';
 scene.add(showcaseGroup);
 let showcaseUnit: ReturnType<typeof characters.create> | null = null;
 let showcaseCollapse: ReturnType<typeof collapseToAtlas> | null = null;
+let showcaseAnimator: Animator | null = null;
 
 async function exitShowcase(): Promise<void> {
+  if (showcaseAnimator) {
+    showcaseAnimator.dispose();
+    showcaseAnimator = null;
+  }
   if (showcaseCollapse) {
     disposeCollapse(showcaseCollapse);
     showcaseCollapse = null;
@@ -633,8 +641,20 @@ const api: XqTestApi = {
     showcaseUnit = built;
     showcaseCollapse = collapseToAtlas(built.root, pipeline.materials, { variation: 0 });
 
+    // A unit needs an animator even when it is standing still. Parts bound to
+    // mount bones — the cannon crew, the elephant's trunk, the chariot's wheels
+    // — are only placed once something poses those bones, and an unposed mount
+    // bone sits at the rig origin. Without this the crew's limbs scatter around
+    // the machine, which is exactly how the first retina showcase capture came
+    // out, and it reads as broken geometry rather than as a missing update.
+    showcaseAnimator = createAnimator(built, { ground: rig.heightAt, audio, variant: 0 });
+    showcaseAnimator.play((opts?.state ?? 'idle') as AnimState, 0);
+
     api.setNamedPose('portrait', true);
+    // Two steps: the first poses the skeleton, the second lets the pose settle
+    // through the IK pass so contact points are resolved before capture.
     await stepOnce(0);
+    await stepOnce(1 / 60);
   },
   exitShowcase: () => exitShowcase(),
   setDebug: (flag: DebugFlag, on: boolean) => pipeline.setDebug(flag, on),
