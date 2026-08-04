@@ -18,3 +18,5 @@ playwright-report/
 .tmpdump/
 tools/ui/out/
 .tmpm/
+# Agent diagnostic renders — regenerated on demand.
+.diag/
