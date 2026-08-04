@@ -25,13 +25,18 @@ import { FILES, RANKS, sq, worldX, worldZ } from '@core/coords.ts';
 import { MOODS } from '@core/palette.ts';
 import { PieceType, Side } from '@core/types.ts';
 import {
+  BANK_CAP_HALF,
   BANK_HALF,
   BANK_RISE,
   Board,
+  GRID_BOW_MAX,
+  GRID_HALF_MAX,
   FRAME_TOP_Y,
   FRAME_WIDTH,
   OFF_BOARD_Y,
+  RIVER_CUT_HALF,
   RIVER_DEPTH,
+  RIVER_FLOOR_HALF,
   SILK_HALF_X,
   SILK_HALF_Z,
   TABLE_BOTTOM_Y,
@@ -57,11 +62,12 @@ import { signedArea } from './geometry.ts';
 // type engine rather than against a fixture that agrees with it by construction.
 import { getSealGlyph, glyphToContours, glyphToShapes, sealRoster } from '@ui/seal.ts';
 import { Backdrop, LAKE_Y, TERRACE_RADIUS } from './backdrop.ts';
-import { Director, PUSH_LAND_FRACTION, RETURN_SLOWDOWN, SPRING } from './camera.ts';
+import { Director, NAMED_POSES, PUSH_LAND_FRACTION, RETURN_SLOWDOWN, SPRING } from './camera.ts';
 import { LightingRig } from './lighting.ts';
 import { createFallbackMaterials } from './fallbackMaterials.ts';
 import { createSceneRig } from './index.ts';
-import type { SealOutline } from './bases.ts';
+import { MeshBuilder } from './geometry.ts';
+import { inciseOutline, type SealOutline } from './bases.ts';
 
 /**
  * This script runs under `tsx`, not in the browser, and the project ships no
@@ -325,7 +331,7 @@ function bbox(o: THREE.Object3D): THREE.Box3 {
 
   const bed = bbox(board.parts.riverBed);
   near('river bed depth', bed.min.y, -RIVER_DEPTH, 0.003);
-  between('river bed half-width', bed.max.z, 0.19, 0.23);
+  between('river bed half-width', bed.max.z, 0.03, WATER_HALF);
 
   const water = bbox(board.parts.water);
   near('water plane height', water.max.y, WATER_Y, 1e-5);
@@ -396,14 +402,29 @@ section('heightAt');
     board.surfaceAt(0, WATER_HALF - 0.01) === WATER_Y,
     `at z=${fmt(WATER_HALF - 0.01)} -> ${fmt(board.surfaceAt(0, WATER_HALF - 0.01))}`,
   );
+  const wallProbe = (WATER_HALF + RIVER_CUT_HALF) * 0.5;
   check(
     'above the water line the cut wall emerges',
-    board.surfaceAt(0, 0.28) > WATER_Y && board.surfaceAt(0, 0.28) < BANK_RISE,
-    `at z=0.28 -> ${fmt(board.surfaceAt(0, 0.28))} (between water ${fmt(WATER_Y)} and cap ${fmt(BANK_RISE)})`,
+    board.surfaceAt(0, wallProbe) > WATER_Y && board.surfaceAt(0, wallProbe) < BANK_RISE,
+    `at z=${fmt(wallProbe)} -> ${fmt(board.surfaceAt(0, wallProbe))} (between water ${fmt(WATER_Y)} and cap ${fmt(BANK_RISE)})`,
   );
-  between('water line sits on the cut wall', WATER_HALF, 0.21, 0.3);
-  near('banking cap', board.surfaceAt(0, 0.36), BANK_RISE + silkSag(0, 0.36), 1e-9);
-  near('silk just past the bank', board.surfaceAt(0, 0.55), silkSag(0, 0.55), 1e-9);
+  check(
+    'the water line sits on the cut wall, not on the bed or the cap',
+    WATER_HALF > RIVER_FLOOR_HALF && WATER_HALF < RIVER_CUT_HALF + 0.01,
+    `water half ${fmt(WATER_HALF)} between floor ${fmt(RIVER_FLOOR_HALF)} and cut edge ${fmt(RIVER_CUT_HALF)}`,
+  );
+  // The channel is narrow now; the thing that has to stay true is that it is a
+  // real cut with walls a low camera can read.
+  const wallAngle = (Math.atan2(BANK_RISE + RIVER_DEPTH, RIVER_CUT_HALF - RIVER_FLOOR_HALF) * 180) / Math.PI;
+  between('river wall angle from horizontal', wallAngle, 60, 82);
+  check(
+    'the channel is deeper than it is half-wide',
+    RIVER_DEPTH > WATER_HALF,
+    `depth ${fmt(RIVER_DEPTH)}, water ${fmt(WATER_HALF * 2)} wide -> you never see the floor and the far wall at once`,
+  );
+  const capZ = (RIVER_CUT_HALF + BANK_CAP_HALF) * 0.5;
+  near('banking cap', board.surfaceAt(0, capZ), BANK_RISE + silkSag(0, capZ), 1e-9);
+  near('silk just past the bank', board.surfaceAt(0, 0.3), silkSag(0, 0.3), 1e-9);
   check(
     'channel floor is 0.12 below the silk',
     Math.abs(-RIVER_DEPTH - -0.12) < 1e-9,
@@ -459,8 +480,12 @@ section('heightAt');
     return { slope: worst, at };
   };
 
-  // 1. The standable region: silk plus the frame's flat top face.
-  const standZ = slopeOver('z', -(SILK_HALF_Z + 0.86), SILK_HALF_Z + 0.86, 0.37);
+  // 1. The standable region: silk plus the frame's flat top face. The river
+  //    channel is excluded — no intersection lies inside it, nothing stands
+  //    there, and its walls are steep on purpose.
+  const standZa = slopeOver('z', BANK_HALF + 0.002, SILK_HALF_Z + 0.86, 0.37);
+  const standZb = slopeOver('z', -(SILK_HALF_Z + 0.86), -BANK_HALF - 0.002, 0.37);
+  const standZ = standZa.slope >= standZb.slope ? standZa : standZb;
   const standX = slopeOver('x', -(SILK_HALF_X + 0.86), SILK_HALF_X + 0.86, 2.5);
   check(
     'gentle gradients everywhere a figure can stand (Z)',
@@ -671,11 +696,14 @@ section('grid incisions land on coords.ts');
   const zBank = worldZ(4);
   let interiorCross = 0;
   let outerCross = 0;
+  const inPanel = (x: number, z: number) =>
+    board.inscription.some((c) => x > c.panel.x0 && x < c.panel.x1 && z > c.panel.z0 && z < c.panel.z1);
   for (let i = 0; i < pos.count; i++) {
     const z = pos.getZ(i);
     if (Math.abs(z) > Math.abs(zBank) - 0.02) continue;
     if (Math.abs(z) < 0.02) continue; // rank lines do not exist here anyway
     const x = pos.getX(i);
+    if (inPanel(x, z)) continue; // 楚河漢界 shares this geometry
     const f = Math.round(x + (FILES - 1) / 2);
     if (Math.abs(worldX(f) - x) > 0.05) continue;
     if (f === 0 || f === FILES - 1) outerCross++;
@@ -698,7 +726,7 @@ section('grid incisions land on coords.ts');
 section('bases and the incised glyph');
 
 {
-  const blank = new Board({ materials, detail: 'low' });
+  const blank = new Board({ materials, detail: 'low' });  // no seal source
   blank.bases.add(0, Side.Red, PieceType.General);
   const blankTris = blank.bases.triangles;
   const glyphTris = board.bases.triangles;
@@ -720,6 +748,377 @@ section('bases and the incised glyph');
   near('a scaled-out base stops contributing', board.heightAt(1.5, -2.5), silkSag(1.5, -2.5), 1e-9);
   board.bases.setScale(0, 1);
   board.bases.setSquare(0, sq(4, 9));
+}
+
+// ---------------------------------------------------------------------------
+
+section('楚河漢界');
+
+{
+  check('all four characters were placed', board.inscription.length === 4, board.inscription.map((c) => c.ch).join(''));
+  check(
+    'the inscription cut real geometry',
+    board.inscriptionTriangles > 400,
+    `${board.inscriptionTriangles} tris merged into the incision geometry`,
+  );
+
+  const byChar = new Map(board.inscription.map((c) => [c.ch, c]));
+  const em = board.inscription[0]?.em ?? 0;
+  check('one em size for the whole line', board.inscription.every((c) => c.em === em), `em = ${fmt(em)}`);
+
+  // Sides and reading direction.
+  check(
+    '楚河 is carved into Chu’s bank (−Z)',
+    (byChar.get('楚')?.cz ?? 0) < 0 && (byChar.get('河')?.cz ?? 0) < 0,
+    `楚 z=${fmt(byChar.get('楚')!.cz)}, 河 z=${fmt(byChar.get('河')!.cz)}`,
+  );
+  check(
+    '漢界 is carved into Han’s bank (+Z)',
+    (byChar.get('漢')?.cz ?? 0) > 0 && (byChar.get('界')?.cz ?? 0) > 0,
+    `漢 z=${fmt(byChar.get('漢')!.cz)}, 界 z=${fmt(byChar.get('界')!.cz)}`,
+  );
+  // Each pair reads left-to-right from its own seat: Red's screen-left is −X,
+  // Black's is +X, so both pairs start nearer the centre line.
+  check(
+    '漢界 reads left-to-right from Red’s seat',
+    byChar.get('漢')!.cx < byChar.get('界')!.cx,
+    `漢 x=${fmt(byChar.get('漢')!.cx)} before 界 x=${fmt(byChar.get('界')!.cx)}`,
+  );
+  check(
+    '楚河 reads left-to-right from Black’s seat',
+    byChar.get('楚')!.cx > byChar.get('河')!.cx,
+    `楚 x=${fmt(byChar.get('楚')!.cx)} before 河 x=${fmt(byChar.get('河')!.cx)}`,
+  );
+  check(
+    '楚河 sits to Red’s left, 漢界 to Red’s right',
+    byChar.get('楚')!.cx < 0 && byChar.get('漢')!.cx > 0,
+    `${fmt(byChar.get('楚')!.cx)} vs ${fmt(byChar.get('漢')!.cx)}`,
+  );
+
+  // Nothing may stray onto the channel or across a rank line.
+  let worstNear = Infinity;
+  let worstFar = -Infinity;
+  let widest = 0;
+  let tallest = 0;
+  for (const c of board.inscription) {
+    const o = seal(c.ch)!;
+    const box = glyphInkBox(o);
+    const s = c.em / (o.em ?? 1);
+    const h = (box.y1 - box.y0) * s;
+    const w = (box.x1 - box.x0) * s;
+    tallest = Math.max(tallest, h);
+    widest = Math.max(widest, w);
+    const near = Math.abs(c.cz) - h / 2;
+    const far = Math.abs(c.cz) + h / 2;
+    worstNear = Math.min(worstNear, near);
+    worstFar = Math.max(worstFar, far);
+  }
+  check(
+    'the ink clears the stone banking',
+    worstNear > BANK_HALF,
+    `nearest ink edge at |z|=${fmt(worstNear)}, banking ends at ${fmt(BANK_HALF)}`,
+  );
+  check(
+    'the ink clears the rank lines',
+    worstFar < 0.5 - 0.018,
+    `furthest ink edge at |z|=${fmt(worstFar)}, rank line at 0.5`,
+  );
+  process.stdout.write(
+    `      em ${fmt(em)}; tallest ink ${fmt(tallest)}, widest ${fmt(widest)}; band ${fmt(BANK_HALF)}..0.5\n`,
+  );
+
+  // No line work may cross a panel: the grid grooves sit on the deck, and a
+  // groove running over a hole in the deck would float above the void.
+  {
+    // Rank lines 4 and 5, at their widest and at the full extent of their bow.
+    const rankInner = 0.5 - GRID_BOW_MAX - GRID_HALF_MAX;
+    let worstZ = -Infinity;
+    let worstX = Infinity;
+    for (const c of board.inscription) {
+      worstZ = Math.max(worstZ, Math.max(Math.abs(c.panel.z0), Math.abs(c.panel.z1)));
+      // The only file lines that survive the river band are the two outer ones.
+      worstX = Math.min(worstX, Math.min(Math.abs(c.panel.x0), Math.abs(c.panel.x1)));
+    }
+    check(
+      'no rank line can reach a panel',
+      worstZ < rankInner,
+      `panel reaches |z|=${fmt(worstZ)}, the rank groove's inner edge is at ${fmt(rankInner)}`,
+    );
+    const outerFileEdge = Math.abs(worldX(FILES - 1)) - GRID_HALF_MAX - GRID_BOW_MAX;
+    check(
+      'no outer file line can reach a panel',
+      Math.max(...board.inscription.map((c) => Math.abs(c.panel.x1))) < outerFileEdge,
+      `panels stop at |x|=${fmt(Math.max(...board.inscription.map((c) => Math.abs(c.panel.x1))))}, the outer file groove starts at ${fmt(outerFileEdge)}`,
+    );
+    check(
+      'the interior files are already broken here',
+      worstX > 0,
+      `panels sit at |x| ≥ ${fmt(worstX)}, in the band where files 1–7 do not run`,
+    );
+  }
+
+  // --- the deck seam ------------------------------------------------------
+  // Area conservation is the decisive test that the panels tile their holes
+  // exactly: the silk left on the board must equal the silk that was there
+  // minus the river band minus the ink that was cut out of it, computed
+  // independently from the outlines.
+  const deckGeo = (board.parts.deck as THREE.Mesh).geometry;
+  const dp = deckGeo.getAttribute('position');
+  let deckArea = 0;
+  for (let i = 0; i < dp.count; i += 3) {
+    const ax = dp.getX(i);
+    const az = dp.getZ(i);
+    const bx = dp.getX(i + 1);
+    const bz = dp.getZ(i + 1);
+    const cx = dp.getX(i + 2);
+    const cz = dp.getZ(i + 2);
+    deckArea += Math.abs((bx - ax) * (cz - az) - (cx - ax) * (bz - az)) * 0.5;
+  }
+  let inkArea = 0;
+  for (const c of board.inscription) {
+    const o = seal(c.ch)!;
+    const s = c.em / (o.em ?? 1);
+    for (let i = 0; i < o.contours.length; i++) {
+      const a = Math.abs(signedArea(o.contours[i])) * s * s;
+      inkArea += o.holes?.[i] ? -a : a;
+    }
+  }
+  const expected = SILK_HALF_X * 2 * (SILK_HALF_Z * 2 - BANK_HALF * 2) - inkArea;
+  near('deck area = silk − river band − ink', deckArea, expected, 2e-4);
+  process.stdout.write(
+    `      deck ${fmt(deckArea)} u², ink removed ${fmt(inkArea)} u² across four characters\n`,
+  );
+
+  // --- legibility at the default pose -------------------------------------
+  // The stated acceptance test: readable at the resting play framing, not just
+  // from directly overhead. Measured through the real projection matrix.
+  {
+    const p = NAMED_POSES.default;
+    const cam = new THREE.PerspectiveCamera(p.fov, 1280 / 800, 0.1, 400);
+    const cp = Math.cos(p.pitch);
+    cam.position.set(
+      p.target[0] + Math.sin(p.yaw) * cp * p.distance,
+      p.target[1] + Math.sin(p.pitch) * p.distance,
+      p.target[2] + Math.cos(p.yaw) * cp * p.distance,
+    );
+    cam.up.set(0, 1, 0);
+    cam.lookAt(p.target[0], p.target[1], p.target[2]);
+    cam.updateMatrixWorld(true);
+    cam.updateProjectionMatrix();
+
+    const v = new THREE.Vector3();
+    const pxY = (x: number, y: number, z: number, viewportH: number) => {
+      v.set(x, y, z).project(cam);
+      return (1 - v.y) * 0.5 * viewportH;
+    };
+
+    let smallestCss = Infinity;
+    let smallestCh = '';
+    const rows: string[] = [];
+    for (const c of board.inscription) {
+      const o = seal(c.ch)!;
+      const box = glyphInkBox(o);
+      const s = c.em / (o.em ?? 1);
+      const h = (box.y1 - box.y0) * s;
+      const y = silkSag(c.cx, c.cz);
+      // The glyph lies in the board plane; its em axis maps to world Z.
+      const top = pxY(c.cx, y, c.cz - h / 2, 800);
+      const bot = pxY(c.cx, y, c.cz + h / 2, 800);
+      const css = Math.abs(bot - top);
+      const stroke = getSealGlyph(c.ch).strokes[0].width * c.em;
+      const strokeTop = pxY(c.cx, y, c.cz - stroke / 2, 800);
+      const strokeBot = pxY(c.cx, y, c.cz + stroke / 2, 800);
+      const strokeCss = Math.abs(strokeBot - strokeTop);
+      rows.push(
+        `      ${c.ch}  ${css.toFixed(1)} CSS px tall (${(css * 2).toFixed(0)} device px @2x), stroke ${strokeCss.toFixed(2)} CSS px (${(strokeCss * 2).toFixed(2)} device px)`,
+      );
+      if (css < smallestCss) {
+        smallestCss = css;
+        smallestCh = c.ch;
+      }
+    }
+    process.stdout.write(
+      `      at the 'default' pose, 1280x800 @2x — the harness's capture viewport:\n`,
+    );
+    for (const r of rows) process.stdout.write(r + '\n');
+    // The em size is the type size — the number that describes the line as a
+    // whole. Per-character ink varies because 河 really is shorter than 楚, and
+    // flattening that would stop it reading as type.
+    const emY0 = pxY(0, silkSag(0, 0.303), 0.303 - em / 2, 800);
+    const emY1 = pxY(0, silkSag(0, 0.303), 0.303 + em / 2, 800);
+    const emCss = Math.abs(emY1 - emY0);
+    check(
+      'the inscription is set at 30+ device px at the default pose',
+      emCss * 2 >= 30,
+      `em = ${(emCss * 2).toFixed(1)} device px (${emCss.toFixed(1)} CSS px)`,
+    );
+    check(
+      'even the shortest character clears 28 device px',
+      smallestCss * 2 >= 28,
+      `smallest is ${smallestCh} at ${(smallestCss * 2).toFixed(1)} device px`,
+    );
+    // For scale: how big the same character is on a piece base.
+    const baseChar = pxY(0, BASE_TOP_Y, worldZ(9) - BASE_GLYPH_EM * 0.45, 800);
+    const baseChar2 = pxY(0, BASE_TOP_Y, worldZ(9) + BASE_GLYPH_EM * 0.45, 800);
+    process.stdout.write(
+      `      for comparison, a piece-base glyph is ${(Math.abs(baseChar2 - baseChar) * 2).toFixed(0)} device px\n`,
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+
+section('every glyph through the incision');
+
+{
+  // The stress test the fixture could never be: real contours, real counters,
+  // real winding. 車 is one region with four counters, 砲 is three regions with
+  // six between them, 傌 and 馬 are five separate regions.
+  let worstRatio = Infinity;
+  let worstCh = '';
+  const failures: string[] = [];
+  for (const ch of CHARS_USED) {
+    const outline = seal(ch);
+    if (!outline) {
+      failures.push(`${ch}: no outline`);
+      continue;
+    }
+    const solids = outline.contours.filter((_, i) => !outline.holes?.[i]).length;
+    const counters = outline.contours.filter((_, i) => outline.holes?.[i]).length;
+
+    const b = new MeshBuilder();
+    const panel = [-0.6, -0.6, 0.6, -0.6, 0.6, 0.6, -0.6, 0.6];
+    inciseOutline(b, outline, panel, {
+      cx: 0,
+      cz: 0,
+      y: 0,
+      depth: 0.01,
+      fit: 1,
+      yaw: 0,
+      fitMode: 'em',
+    });
+    const geo = b.build();
+    const pos = geo.getAttribute('position');
+    const nrm = geo.getAttribute('normal');
+
+    // 1. Winding agrees with normals everywhere.
+    const A = new THREE.Vector3();
+    const B = new THREE.Vector3();
+    const C = new THREE.Vector3();
+    const ab = new THREE.Vector3();
+    const ac = new THREE.Vector3();
+    const f = new THREE.Vector3();
+    const n = new THREE.Vector3();
+    let inverted = 0;
+    let wallTris = 0;
+    for (let i = 0; i < pos.count; i += 3) {
+      A.fromBufferAttribute(pos, i);
+      B.fromBufferAttribute(pos, i + 1);
+      C.fromBufferAttribute(pos, i + 2);
+      ab.subVectors(B, A);
+      ac.subVectors(C, A);
+      f.crossVectors(ab, ac);
+      if (f.lengthSq() < 1e-18) continue;
+      f.normalize();
+      n.fromBufferAttribute(nrm, i);
+      if (f.dot(n) < 0.02) inverted++;
+      if (Math.abs(n.y) < 0.5) wallTris++;
+    }
+    if (inverted > 0) failures.push(`${ch}: ${inverted} inverted triangles`);
+    if (wallTris === 0) failures.push(`${ch}: no walls — the cut has no depth`);
+
+    // 2. Area conservation: face + islands + floor must equal the panel plus the
+    //    ink (counted twice, once at the top and once at the floor).
+    let faceArea = 0;
+    let floorArea = 0;
+    for (let i = 0; i < pos.count; i += 3) {
+      const y = pos.getY(i);
+      const ax = pos.getX(i);
+      const az = pos.getZ(i);
+      const bx = pos.getX(i + 1);
+      const bz = pos.getZ(i + 1);
+      const cx = pos.getX(i + 2);
+      const cz = pos.getZ(i + 2);
+      const a = Math.abs((bx - ax) * (cz - az) - (cx - ax) * (bz - az)) * 0.5;
+      if (y > -0.005) faceArea += a;
+      else floorArea += a;
+    }
+    let ink = 0;
+    for (let i = 0; i < outline.contours.length; i++) {
+      const a = Math.abs(signedArea(outline.contours[i]));
+      ink += outline.holes?.[i] ? -a : a;
+    }
+    const panelArea = 1.2 * 1.2;
+    if (Math.abs(faceArea - (panelArea - ink)) > 2e-4) {
+      failures.push(`${ch}: face area ${faceArea.toFixed(5)} vs expected ${(panelArea - ink).toFixed(5)}`);
+    }
+    if (Math.abs(floorArea - ink) > 2e-4) {
+      failures.push(`${ch}: floor area ${floorArea.toFixed(5)} vs ink ${ink.toFixed(5)}`);
+    }
+    const ratio = ink > 0 ? floorArea / ink : 0;
+    if (ratio < worstRatio) {
+      worstRatio = ratio;
+      worstCh = ch;
+    }
+    process.stdout.write(
+      `      ${ch}  ${String(solids).padStart(2)} region(s) ${String(counters).padStart(2)} counter(s)  ${String(pos.count / 3).padStart(4)} tris  face ${faceArea.toFixed(4)} floor ${floorArea.toFixed(4)} ink ${ink.toFixed(4)}\n`,
+    );
+    geo.dispose();
+  }
+  check(
+    'all 18 characters survive the incision path',
+    failures.length === 0,
+    failures.length ? failures.join('; ') : `worst floor/ink ratio ${fmt(worstRatio)} on ${worstCh}`,
+  );
+
+  // The counter-bearing stress cases specifically.
+  const che = seal('車')!;
+  check(
+    '車 arrives as one region with four counters',
+    che.contours.filter((_, i) => !che.holes?.[i]).length === 1 &&
+      che.contours.filter((_, i) => che.holes?.[i]).length === 4,
+    `${che.contours.length} contours`,
+  );
+  const pao = seal('砲')!;
+  check(
+    '砲 arrives as three regions with six counters',
+    pao.contours.filter((_, i) => pao.holes?.[i]).length === 6,
+    `${pao.contours.filter((_, i) => pao.holes?.[i]).length} counters over ${pao.contours.filter((_, i) => !pao.holes?.[i]).length} regions`,
+  );
+
+  // Hole inference must reach the same answer the type engine states, which is
+  // what would have been used had the source not carried explicit flags.
+  let inferMismatch = 0;
+  for (const ch of CHARS_USED) {
+    const withFlags = seal(ch)!;
+    const inferred: SealOutline = { contours: withFlags.contours, em: withFlags.em };
+    const b1 = new MeshBuilder();
+    const b2 = new MeshBuilder();
+    const panel = [-0.6, -0.6, 0.6, -0.6, 0.6, 0.6, -0.6, 0.6];
+    const place = { cx: 0, cz: 0, y: 0, depth: 0.01, fit: 1, yaw: 0, fitMode: 'em' as const };
+    inciseOutline(b1, withFlags, panel, place);
+    inciseOutline(b2, inferred, panel, place);
+    if (b1.triangles !== b2.triangles) inferMismatch++;
+  }
+  check(
+    'containment-based hole inference matches the explicit flags',
+    inferMismatch === 0,
+    `${CHARS_USED.length - inferMismatch}/${CHARS_USED.length} characters agree`,
+  );
+
+  // The contour adapter must agree with the shape adapter.
+  const viaShapes = seal('漢')!;
+  const viaContours = sealOutlineFromContours(
+    glyphToContours('漢', { size: 1, origin: 'center' }),
+    1,
+  )!;
+  check(
+    'both @ui/seal adapters produce the same outline',
+    viaShapes.contours.length === viaContours.contours.length &&
+      JSON.stringify(viaShapes.holes) === JSON.stringify(viaContours.holes),
+    `${viaShapes.contours.length} contours either way`,
+  );
+  check('the seal roster covers every character we ask for', sealRoster().length > 0, `${sealRoster().length} authored`);
 }
 
 // ---------------------------------------------------------------------------
@@ -1122,8 +1521,7 @@ async function rigTests(): Promise<void> {
 
   const rig = createSceneRig({
     materials,
-    seal: () => testOutline(),
-    riverText: () => testOutline(),
+    seal,
     detail: 'medium',
     aspect: 16 / 9,
   });
@@ -1131,9 +1529,9 @@ async function rigTests(): Promise<void> {
   check('rig root holds board, backdrop and lights', rig.root.children.length === 3, `${rig.root.children.length} children`);
   check('rig exposes the camera', rig.camera.isPerspectiveCamera === true, `fov ${fmt(rig.camera.fov)}`);
   check(
-    'a riverText provider carves the banking',
-    !!rig.board.parts.riverText && tris(rig.board.parts.riverText) > 20,
-    `${rig.board.parts.riverText ? tris(rig.board.parts.riverText) : 0} tris of inscription`,
+    'the rig carries the inscription through',
+    rig.board.inscription.length === 4 && rig.board.inscriptionTriangles > 400,
+    `${rig.board.inscriptionTriangles} tris of 楚河漢界 at medium detail`,
   );
 
   const st = rig.stats();

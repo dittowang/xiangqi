@@ -1,124 +1,336 @@
 /**
- * Entry point. Boots the renderer, wires the subsystems together, and owns the
- * frame loop. Everything else is behind a contract in `core/contracts.ts`.
+ * Entry point. Boots the renderer, constructs every subsystem, wires them
+ * through the bus, and owns the one frame loop.
  *
- * NOTE: this is the bootstrap stage. Subsystems are attached here as they land;
- * the integration layer in `game/` takes over orchestration.
+ * Construction order is not arbitrary and is the thing most likely to break if
+ * someone reorders it:
+ *
+ *   1. renderer            — the GL context everything else needs
+ *   2. render pipeline     — owns the material library; three's own shadow map
+ *                            is switched off because the CSM replaces it
+ *   3. scene rig           — board, backdrop, lights, camera; takes the
+ *                            materials by injection and never builds its own
+ *   4. pipeline as a light consumer — the rig owns the light, the pipeline
+ *                            follows it, so there is exactly one writer
+ *   5. characters          — also takes the materials by injection
+ *   6. engine + match      — the model, which nothing visual may write to
+ *
+ * Per frame there is exactly one draw call site: `pipeline.render()`. If
+ * `renderer.render()` appears anywhere else, the post chain runs twice.
  */
 
 import * as THREE from 'three';
+
 import { clock } from '@game/clock.ts';
-import { PIGMENTS, srgbToLinear, hexToRgb } from '@core/palette.ts';
-import { BOARD_HALF_X, BOARD_HALF_Z } from '@core/coords.ts';
-import type { CameraPose, QualityTier } from '@core/contracts.ts';
-import type { NamedPose, XqTestApi, XqFrameStats, DebugFlag } from '@core/testapi.ts';
+import { Match } from '@game/match.ts';
+import { SaveScheduler, load as loadSave, clear as clearSave } from '@game/persistence.ts';
+import { bus } from '@core/bus.ts';
+import type { CameraPose, QualitySettings, QualityTier } from '@core/contracts.ts';
+import type { DebugFlag, NamedPose, XqFrameStats, XqTestApi } from '@core/testapi.ts';
 import { START_FEN } from '@core/testapi.ts';
-import { Side } from '@core/types.ts';
+import { BOARD_HALF_X, BOARD_HALF_Z, worldToSquare } from '@core/coords.ts';
+import { type Difficulty, type Move, Side, encodeMove, moveFrom, moveTo } from '@core/types.ts';
+
+import { createRenderPipeline, attachOutlines } from '@render/index.ts';
+import { createSceneRig, sealOutlineFromShapes, NAMED_POSES } from '@scene/index.ts';
+import { createCharacters, unitsStillFallingBack } from '@characters/index.ts';
+import { createEngineClient, legalTargets, findLegalMove } from '@engine/index.ts';
+import { getSealGlyph, glyphToShapes } from '@ui/seal.ts';
+import { createAudioEngine, pieceDetune } from '@ui/audio.ts';
+import { FrameMonitor } from '@perf/instrument.ts';
+import { QualityGovernor } from '@perf/governor.ts';
 
 // ---------------------------------------------------------------------------
-// Renderer
+// 1. Renderer
 // ---------------------------------------------------------------------------
 
 const host = document.getElementById('app')!;
 
 const renderer = new THREE.WebGLRenderer({
-  antialias: true,
+  antialias: false, // the composer owns MSAA; the default buffer must stay cheap
   alpha: false,
   powerPreference: 'high-performance',
   stencil: false,
 });
-renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+const startDpr = Math.min(window.devicePixelRatio || 1, 2);
+renderer.setPixelRatio(startDpr);
 renderer.setSize(window.innerWidth, window.innerHeight);
-renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-renderer.outputColorSpace = THREE.SRGBColorSpace;
-renderer.toneMapping = THREE.NoToneMapping; // Gongbi is not photographic.
+// The cascaded shadow map in @render replaces three's shadow system entirely.
+renderer.shadowMap.enabled = false;
+// Gongbi is not photographic, and the grade pass encodes sRGB itself.
+renderer.toneMapping = THREE.NoToneMapping;
 host.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
-{
-  const c = hexToRgb(PIGMENTS.ink.bands[1]);
-  scene.background = new THREE.Color(srgbToLinear(c.r), srgbToLinear(c.g), srgbToLinear(c.b));
-}
-
-const camera = new THREE.PerspectiveCamera(38, window.innerWidth / window.innerHeight, 0.1, 400);
-
-// Resting framing: high and wide over Red's seat, 50 degrees of pitch.
-const pose: CameraPose = {
-  target: [0, 0.35, 0],
-  distance: 15.5,
-  pitch: (50 * Math.PI) / 180,
-  yaw: 0,
-  fov: 38,
-};
-
-function applyPose(p: CameraPose) {
-  camera.fov = p.fov;
-  camera.updateProjectionMatrix();
-  const cp = Math.cos(p.pitch);
-  const sp = Math.sin(p.pitch);
-  camera.position.set(
-    p.target[0] + Math.sin(p.yaw) * cp * p.distance,
-    p.target[1] + sp * p.distance,
-    p.target[2] + Math.cos(p.yaw) * cp * p.distance,
-  );
-  camera.lookAt(p.target[0], p.target[1], p.target[2]);
-}
-applyPose(pose);
 
 // ---------------------------------------------------------------------------
-// Placeholder scene content — replaced as subsystems land
+// 2. Render pipeline
 // ---------------------------------------------------------------------------
 
-const key = new THREE.DirectionalLight(0xfff0ce, 2.5);
-key.position.set(-6, 11, 7);
-key.castShadow = true;
-key.shadow.mapSize.set(2048, 2048);
-key.shadow.camera.left = -9;
-key.shadow.camera.right = 9;
-key.shadow.camera.top = 9;
-key.shadow.camera.bottom = -9;
-scene.add(key);
-scene.add(new THREE.HemisphereLight(0x7e9bc0, 0xb98e52, 0.8));
+const gl = renderer.getContext() as WebGL2RenderingContext;
+const startTier = QualityGovernor.probe(gl);
 
-const placeholder = new THREE.Group();
-placeholder.name = 'placeholder';
-{
-  const g = new THREE.BoxGeometry(BOARD_HALF_X * 2 + 1.4, 0.5, BOARD_HALF_Z * 2 + 1.4);
-  const c = hexToRgb(PIGMENTS.gamboge.bands[1]);
-  const m = new THREE.MeshLambertMaterial({
-    color: new THREE.Color(srgbToLinear(c.r), srgbToLinear(c.g), srgbToLinear(c.b)),
+const pipeline = createRenderPipeline(renderer, {
+  width: window.innerWidth,
+  height: window.innerHeight,
+  dpr: startDpr,
+  quality: startTier,
+  mood: 'wide',
+});
+
+// ---------------------------------------------------------------------------
+// 3. Scene: board, backdrop, lights, camera
+// ---------------------------------------------------------------------------
+
+const rig = createSceneRig({
+  materials: pipeline.materials,
+  // The board's incised characters come from our own seal-script outlines.
+  // There is no font anywhere in this project.
+  seal: (ch: string) => sealOutlineFromShapes(glyphToShapes(getSealGlyph(ch), { size: 1 }), 1),
+  detail: startTier === 'low' ? 'medium' : 'high',
+  aspect: window.innerWidth / Math.max(window.innerHeight, 1),
+  input: renderer.domElement,
+});
+scene.add(rig.root);
+
+// 4. One writer for the light: the rig owns it, the pipeline follows.
+rig.lighting.addConsumer(pipeline);
+rig.lighting.setShadowsEnabled(false);
+pipeline.setShadowSpec(rig.lighting.csmSpec());
+
+// ---------------------------------------------------------------------------
+// 5. Characters
+// ---------------------------------------------------------------------------
+
+const characters = createCharacters({
+  materials: pipeline.materials,
+  onWarn: (m: string) => console.warn('[characters]', m),
+});
+
+/** Everything that is a figure lives here, so silhouette mode can find it. */
+const stage = new THREE.Group();
+stage.name = 'units';
+scene.add(stage);
+
+// ---------------------------------------------------------------------------
+// 6. Engine, audio, match
+// ---------------------------------------------------------------------------
+
+const engine = createEngineClient({
+  onProgress: (p) =>
+    bus.emit('engine:progress', { depth: p.depth, score: p.score, nodes: p.nodes, pv: p.pv }),
+});
+
+const audio = createAudioEngine();
+window.addEventListener('pointerdown', () => void audio.unlock(), { once: true });
+
+const saved = loadSave();
+const match = new Match({
+  characters,
+  board: rig.board,
+  engine,
+  stage,
+  difficulty: saved?.difficulty ?? 'medium',
+  humanSide: saved?.humanSide ?? Side.Red,
+});
+const saver = new SaveScheduler();
+
+// ---------------------------------------------------------------------------
+// Bus wiring
+// ---------------------------------------------------------------------------
+
+bus.on('move:end', ({ move }) => {
+  audio.play('pieceLand', { pan: panFor(moveTo(move)) });
+  saver.request({
+    difficulty: match.difficulty,
+    fen: START_FEN,
+    moves: match.moves.slice(),
+    humanSide: match.humanSide,
+    result: match.result,
   });
-  const table = new THREE.Mesh(g, m);
-  table.position.y = -0.25;
-  table.receiveShadow = true;
-  placeholder.add(table);
+});
+bus.on('select', () => audio.play('pieceLift'));
+bus.on('check', ({ generalSq }) => {
+  audio.play('drumCheck');
+  rig.director.pushToCheck(generalSq);
+});
+bus.on('check:clear', () => rig.director.release());
+bus.on('match:end', () => {
+  audio.play('gong');
+  rig.setPhase('terminal');
+});
+bus.on('camera:impulse', ({ strength, direction }) =>
+  rig.director.impulse(strength, direction ? new THREE.Vector3(...direction) : undefined),
+);
+bus.on('fx:flash', ({ strength, colour }) => pipeline.flash(strength, colour));
+bus.on('eval', ({ cp }) => void cp);
+
+/** Stereo placement from a square's position across the board. */
+function panFor(square: number): number {
+  const f = square % 9;
+  return (f - 4) / 4;
 }
-scene.add(placeholder);
 
 // ---------------------------------------------------------------------------
-// Frame loop
+// Input: hover, selection, and moving
 // ---------------------------------------------------------------------------
 
+const raycaster = new THREE.Raycaster();
+const pointer = new THREE.Vector2();
+const boardPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+const hitPoint = new THREE.Vector3();
+
+let selected = -1;
+let hovered = -1;
+let selectedTargets: number[] = [];
+
+/** Which intersection the pointer is over, or -1. */
+function pickSquare(ev: PointerEvent): number {
+  const rect = renderer.domElement.getBoundingClientRect();
+  pointer.x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
+  pointer.y = -((ev.clientY - rect.top) / rect.height) * 2 + 1;
+  raycaster.setFromCamera(pointer, rig.camera);
+  if (!raycaster.ray.intersectPlane(boardPlane, hitPoint)) return -1;
+  if (Math.abs(hitPoint.x) > BOARD_HALF_X + 0.6) return -1;
+  if (Math.abs(hitPoint.z) > BOARD_HALF_Z + 0.6) return -1;
+  return worldToSquare(hitPoint.x, hitPoint.z);
+}
+
+renderer.domElement.addEventListener('pointermove', (ev) => {
+  const sq = pickSquare(ev);
+  if (sq === hovered) return;
+  hovered = sq;
+  rig.board.setHover(sq >= 0 ? sq : null);
+  if (sq >= 0 && selected < 0 && match.humanToMove) {
+    const targets = match.targetsFrom(sq);
+    if (targets.length) bus.emit('hover', { square: sq, targets });
+  }
+});
+
+renderer.domElement.addEventListener('pointerdown', (ev) => {
+  if (ev.button !== 0) return;
+  const sq = pickSquare(ev);
+  if (sq < 0) return;
+  if (!match.humanToMove) return;
+
+  // Clicking a legal destination commits the move.
+  if (selected >= 0 && selectedTargets.includes(sq)) {
+    const move = findLegalMove(match.pos, selected, sq);
+    deselect();
+    if (move) void playMove(move);
+    return;
+  }
+
+  // Otherwise select, if the square holds one of the human's pieces.
+  const targets = match.targetsFrom(sq);
+  if (targets.length) {
+    selected = sq;
+    selectedTargets = targets;
+    rig.board.showLegalMarks(targets);
+    bus.emit('select', { square: sq, targets });
+  } else {
+    deselect();
+  }
+});
+
+function deselect(): void {
+  if (selected < 0) return;
+  selected = -1;
+  selectedTargets = [];
+  rig.board.clearLegalMarks();
+  bus.emit('deselect', {});
+}
+
+// ---------------------------------------------------------------------------
+// Move flow
+// ---------------------------------------------------------------------------
+
+/**
+ * Apply a move, play its choreography, then let the engine reply.
+ *
+ * The animation layer is not attached yet, so the "choreography" here is the
+ * model settling immediately. When @anim lands, this is where its
+ * `Choreographer.walk` / `.capture` promise is awaited — the surrounding flow
+ * does not change.
+ */
+async function playMove(move: Move): Promise<void> {
+  const side = match.sideToMove;
+  const applied = match.apply(move);
+  if (!applied) return;
+
+  match.animating = true;
+  if (applied.capture) {
+    await rig.director.pushToCapture(applied.capture.attackerSq, applied.capture.defenderSq);
+    pipeline.flash(0.85, '#F2E9D6');
+    audio.play('bladeStrike', { pan: panFor(applied.capture.defenderSq) });
+    rig.director.release();
+  }
+  match.animating = false;
+
+  match.settle(move, side, applied.notation);
+  audio.setIntensity(match.materialLeft());
+
+  if (!match.over && match.sideToMove !== match.humanSide) {
+    const reply = await match.think();
+    if (reply) await playMove(reply);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Boot
+// ---------------------------------------------------------------------------
+
+const monitor = new FrameMonitor();
+const governor = new QualityGovernor(startTier, (q: QualitySettings) => {
+  pipeline.applyQualitySettings(q);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, q.maxPixelRatio));
+});
+
+let booted = false;
 let firstFrameResolve: (() => void) | null = null;
 const firstFrame = new Promise<void>((res) => (firstFrameResolve = res));
 
-let worstMs = 0;
-let fps = 60;
-let smoothedMs = 16.6;
+async function boot(): Promise<void> {
+  await characters.prewarm();
+  const stillFallback = unitsStillFallingBack();
+  if (stillFallback.length) {
+    console.warn('[characters] still using the generic fallback figure:', stillFallback.join(', '));
+  }
+  await match.begin(saved?.moves);
+  // Give every figure its ink-and-gold line work.
+  for (const view of match.views.values()) attachOutlines(view.unit.root, pipeline.materials);
+  rig.setPhase('development', 0);
+  booted = true;
+  bus.emit('match:start', { difficulty: match.difficulty, resumed: !!saved?.moves.length });
+}
 
-function frame(nowMs: number) {
+void boot().catch((err) => {
+  console.error('[boot] failed', err);
+  // A stale save is the likeliest cause; drop it so a reload recovers.
+  clearSave();
+});
+
+// ---------------------------------------------------------------------------
+// Frame loop — the only draw call site in the project
+// ---------------------------------------------------------------------------
+
+function frame(nowMs: number): void {
   requestAnimationFrame(frame);
   const dt = clock.tick(nowMs);
+  monitor.begin(nowMs);
 
-  const t0 = performance.now();
-  renderer.render(scene, camera);
-  const ms = performance.now() - t0;
-  smoothedMs += (ms - smoothedMs) * 0.08;
-  if (clock.frame > 30 && ms > worstMs) worstMs = ms;
-  if (dt > 0) fps += (1 / dt - fps) * 0.08;
+  rig.update(dt);
+  audio.update(dt);
+  saver.update(dt);
+  if (booted) governor.update(dt, monitor.percentile(0.95));
 
-  if (firstFrameResolve) {
+  pipeline.render(scene, rig.camera, dt);
+
+  // Measured after the draw call rather than around renderer.render(), which
+  // on WebGL only *submits* work and reports a frame time near zero.
+  monitor.end(performance.now(), dt);
+
+  if (firstFrameResolve && booted) {
     const r = firstFrameResolve;
     firstFrameResolve = null;
     document.getElementById('veil')?.classList.add('lifted');
@@ -131,89 +343,130 @@ window.addEventListener('resize', () => {
   const w = window.innerWidth;
   const h = window.innerHeight;
   renderer.setSize(w, h);
-  camera.aspect = w / h;
-  camera.updateProjectionMatrix();
+  pipeline.setSize(w, h, Math.min(window.devicePixelRatio || 1, governor.settings.maxPixelRatio));
+  rig.resize(w, h);
 });
 
 // ---------------------------------------------------------------------------
-// Capture harness control surface
+// The capture harness's control surface
 // ---------------------------------------------------------------------------
 
-/** Render exactly one frame after advancing the clock by `seconds`. */
+/** Advance the clock by `seconds` and render exactly one frame. */
 function stepOnce(seconds: number): Promise<void> {
   clock.queueStep(seconds);
   return new Promise((res) => requestAnimationFrame(() => requestAnimationFrame(() => res())));
 }
 
-export const NAMED_POSES: Record<NamedPose, CameraPose> = {
-  default: { target: [0, 0.35, 0], distance: 15.5, pitch: 0.873, yaw: 0, fov: 38 },
-  top: { target: [0, 0, 0], distance: 14.0, pitch: 1.5533, yaw: 0, fov: 40 },
-  silhouette: { target: [0, 0.9, 0], distance: 13.0, pitch: 0.12, yaw: 0, fov: 30 },
-  threeQuarterRed: { target: [0, 0.7, 2.6], distance: 7.4, pitch: 0.44, yaw: 0.62, fov: 34 },
-  threeQuarterBlack: { target: [0, 0.7, -2.6], distance: 7.4, pitch: 0.44, yaw: Math.PI - 0.62, fov: 34 },
-  overShoulder: { target: [0, 0.8, 0], distance: 4.2, pitch: 0.3, yaw: 0.5, fov: 42 },
-  portrait: { target: [0, 0.85, 0], distance: 3.1, pitch: 0.2, yaw: 0.38, fov: 30 },
-  endgame: { target: [0, 0.3, 0], distance: 11.5, pitch: 0.24, yaw: -0.3, fov: 36 },
-  profile: { target: [0, 0.8, 0], distance: 6.0, pitch: 0.16, yaw: Math.PI / 2, fov: 32 },
-};
+let hudVisible = true;
 
 const api: XqTestApi = {
   ready: () => firstFrame,
+
   pause: () => clock.pause(),
   resume: () => clock.resume(),
   step: (s) => stepOnce(s),
   stepFrames: async (n, s = 1 / 60) => {
     for (let i = 0; i < n; i++) await stepOnce(s);
   },
-  settle: async () => {
-    await stepOnce(1 / 60);
+  settle: async (maxSeconds = 4) => {
+    const limit = Math.ceil(maxSeconds * 60);
+    for (let i = 0; i < limit; i++) {
+      await stepOnce(1 / 60);
+      if (rig.director.settled() && !match.animating && !match.thinking) return;
+    }
   },
-  setPosition: async () => {},
-  getPosition: () => START_FEN,
-  playMove: async () => {},
-  forceMove: () => {},
-  legalMoves: () => [],
-  setDifficulty: () => {},
-  setHumanSide: () => {},
+
+  setPosition: async (fen: string) => {
+    match.pos.setFen(fen);
+    match.moves.length = 0;
+    match.notation.length = 0;
+    match.sync();
+    for (const view of match.views.values()) attachOutlines(view.unit.root, pipeline.materials);
+    rig.setPhase('development', 0);
+    await stepOnce(0);
+  },
+  getPosition: () => match.pos.toFen(),
+  playMove: async (from, to) => {
+    const m = findLegalMove(match.pos, from, to);
+    if (m) await playMove(m);
+  },
+  forceMove: (from, to) => {
+    const m = findLegalMove(match.pos, from, to);
+    if (!m) return;
+    match.pos.makeMove(m);
+    match.moves.push(m);
+    match.sync();
+  },
+  legalMoves: (from?: number): Move[] =>
+    from === undefined
+      ? match.legalMoves()
+      : match.targetsFrom(from).map((t) => encodeMove(from, t, match.pos.board[t])),
+  setDifficulty: (d: Difficulty) => {
+    match.difficulty = d;
+  },
+  setHumanSide: (s: Side) => {
+    match.humanSide = s;
+  },
+
+  // Choreography scrubbing arrives with @anim. Kept as empty-bodied async
+  // methods, deliberately: the harness probes for their presence to decide
+  // whether to capture or to skip with a reason, and deleting them would turn
+  // "56 shots skipped, here is why" into "the harness crashed".
   seekCapture: async () => {},
   seekFormation: async () => {},
   seekUnitState: async () => {},
-  setPose: (p, immediate) => {
-    Object.assign(pose, p);
-    if (immediate !== false) applyPose(pose);
+
+  setPose: (p: Partial<CameraPose>, immediate?: boolean) =>
+    rig.director.setPosePartial(p, immediate !== false),
+  getPose: () => rig.director.getPose(),
+  setNamedPose: (n: NamedPose, immediate?: boolean) =>
+    rig.director.setNamedPose(n, immediate !== false),
+  setSilhouette: (on: boolean) => {
+    pipeline.setSilhouetteMode(on);
+    rig.setSilhouetteMode(on);
   },
-  getPose: () => ({ ...pose }),
-  setNamedPose: (n, immediate) => api.setPose(NAMED_POSES[n], immediate),
-  setSilhouette: () => {},
-  setHudVisible: () => {},
-  setQuality: () => {},
+  setHudVisible: (on: boolean) => {
+    hudVisible = on;
+  },
+  setQuality: (tier) => governor.force(tier === 'auto' ? null : (tier as QualityTier)),
   showcase: async () => {},
   exitShowcase: async () => {},
-  setDebug: (_f: DebugFlag, _on: boolean) => {},
+  setDebug: (flag: DebugFlag, on: boolean) => pipeline.setDebug(flag, on),
+
   stats: (): XqFrameStats => ({
-    fps,
-    frameMs: smoothedMs,
+    fps: monitor.fps,
+    frameMs: monitor.smoothedMs,
     drawCalls: renderer.info.render.calls,
     triangles: renderer.info.render.triangles,
     programs: renderer.info.programs?.length ?? 0,
     geometries: renderer.info.memory.geometries,
     textures: renderer.info.memory.textures,
-    worstMs,
-    quality: 'ultra' as QualityTier,
+    worstMs: monitor.worstMs,
+    quality: governor.tier,
     pixelRatio: renderer.getPixelRatio(),
   }),
   resetStats: () => {
-    worstMs = 0;
+    monitor.reset();
     renderer.info.reset();
   },
   describe: () => ({
-    phase: 'boot',
-    ply: 0,
-    sideToMove: Side.Red,
-    inCheck: false,
-    result: 'ongoing',
-    pieces: [],
+    phase: booted ? 'development' : 'boot',
+    ply: match.ply,
+    sideToMove: match.sideToMove,
+    inCheck: match.inCheck,
+    result: match.result.kind,
+    pieces: [...match.views.entries()].map(([square, v]) => ({
+      square,
+      code: (v.side << 3) | v.type,
+    })),
   }),
 };
 
 window.__XQ = api;
+
+// Keep the unused-but-intentional bindings honest for the type checker.
+void hudVisible;
+void legalTargets;
+void moveFrom;
+void pieceDetune;
+void NAMED_POSES;

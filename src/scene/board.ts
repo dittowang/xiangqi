@@ -6,8 +6,8 @@
  * inset into that frame with a couple of millimetres of sag in it, a river cut
  * *through* the deck to a stone-banked channel with water running in it, and
  * every line on it — the 9×10 grid, the palace diagonals, the 炮位 and 兵位
- * brackets — physically incised, with two walls that take the key light
- * differently.
+ * brackets, and 楚河漢界 itself — physically incised, with two walls that take
+ * the key light differently.
  *
  * Vertical budget, all in world units where one unit is one board square:
  *
@@ -123,20 +123,22 @@ const FRAME_SAG_FALLOFF = 0.16;
  * The band between rank 4 and rank 5 is exactly one square wide, and two things
  * want it: a sunken channel, and 楚河漢界. A board without a legible inscription
  * is not recognisably a xiangqi board — it is the single most identifiable mark
- * on the object — so the channel gets the smaller share. It is 0.155 wide and
- * 0.12 deep, which makes it *more* of a channel from a low camera rather than
- * less: the cut walls stand at 72.6° instead of the 56° a wide, shallow trough
- * would give, so they catch the key on one side and go black on the other from
- * any angle the camera can reach. What it loses is plan-view width from the
- * `top` pose, where it now reads as a rill rather than a river.
+ * on the object — so the channel gets the smaller share. The water runs 0.144
+ * wide in a cut 0.12 deep, which makes it *more* of a channel from a low camera
+ * rather than less: the walls stand at 74° instead of the 56° a wide, shallow
+ * trough would give, so they take the key on one side and go black on the other
+ * from any angle the camera can reach, and the channel is deeper than it is
+ * wide so you can never see its floor and its far wall at once.
  *
- * The 0.345 of silk that buys back on each bank is what carries the inscription.
+ * What it costs is plan-view width: from the `top` pose the river now reads as a
+ * cut rill rather than a broad reach. That is the accepted trade — the 0.372 of
+ * silk it buys back on each bank is what carries the inscription.
  */
 export const RIVER_DEPTH = 0.12;
-const RIVER_FLOOR_HALF = 0.052;
-const RIVER_CUT_HALF = 0.094;
-const BANK_CAP_HALF = 0.118;
-export const BANK_HALF = 0.14;
+export const RIVER_FLOOR_HALF = 0.048;
+export const RIVER_CUT_HALF = 0.086;
+export const BANK_CAP_HALF = 0.108;
+export const BANK_HALF = 0.128;
 export const BANK_RISE = 0.014;
 export const WATER_Y = -0.048;
 
@@ -180,6 +182,10 @@ const GRID_BOW = 0.0055;
 /** Vertices per one-square span. 3 puts a vertex exactly on each intersection. */
 const SEG_PER_SPAN = 3;
 
+/** Worst-case half-width and bow of a grid groove, for clearance arithmetic. */
+export const GRID_HALF_MAX = GRID_HALF_WIDTH * 1.09;
+export const GRID_BOW_MAX = GRID_BOW;
+
 /** Palace diagonal: a flat-bottomed trench that the gold leaf is laid into. */
 const PALACE_HALF_WIDTH = 0.024;
 const PALACE_WALL = 0.007;
@@ -207,9 +213,9 @@ const CANNON_FILES = [1, 7];
  * and bows by up to 0.0055, so the far limit stops short of 0.5 by both.
  */
 const INSCRIPTION_Z0 = BANK_HALF + 0.006;
-const INSCRIPTION_Z1 = 0.47;
+const INSCRIPTION_Z1 = 0.472;
 /** Ink height of the tallest of the four characters, world units. */
-const INSCRIPTION_INK = 0.3;
+const INSCRIPTION_INK = 0.312;
 /** Centre-to-centre spacing within a pair, and the width of one glyph's panel. */
 const INSCRIPTION_PITCH = 0.4;
 /** Where each pair sits horizontally: 楚河 to Red's left, 漢界 to Red's right. */
@@ -285,7 +291,7 @@ function planInscription(seal: SealSource | undefined): InscriptionChar[] {
   return fetched.map((f) => {
     // Black's bank mirrors in x as well as reading direction, so both pairs put
     // their first character nearer the centre line.
-    const cx = f.bank * INSCRIPTION_PAIR_X - f.bank * f.slot * INSCRIPTION_PITCH;
+    const cx = f.bank * (INSCRIPTION_PAIR_X + f.slot * INSCRIPTION_PITCH);
     return {
       ch: f.ch,
       outline: f.outline,
@@ -802,7 +808,13 @@ export class Board implements BoardScene {
   readonly parts: Record<string, THREE.Mesh> = {};
 
   /** Where each character of 楚河漢界 ended up, for the verification script. */
-  readonly inscription: { ch: string; cx: number; cz: number; em: number }[] = [];
+  readonly inscription: {
+    ch: string;
+    cx: number;
+    cz: number;
+    em: number;
+    panel: { x0: number; x1: number; z0: number; z1: number };
+  }[] = [];
   /** Triangles the inscription contributed to the incision geometry. */
   inscriptionTriangles = 0;
 
@@ -837,7 +849,9 @@ export class Board implements BoardScene {
     // 楚河漢界 is planned first: the deck has to leave a hole for each character
     // so the incised panel can tile into it seamlessly.
     const inscription = planInscription(opts.seal);
-    this.inscription = inscription.map((c) => ({ ch: c.ch, cx: c.cx, cz: c.cz, em: c.em }));
+    for (const c of inscription) {
+      this.inscription.push({ ch: c.ch, cx: c.cx, cz: c.cz, em: c.em, panel: { ...c.panel } });
+    }
 
     // --- deck and frame ---------------------------------------------------
     // The deck geometry carries the inscription's *face* — the silk left behind

@@ -24,8 +24,9 @@
  * a base on it genuinely steps up, and the animator's foot IK sees that.
  *
  * The glyph outlines come from `@ui/seal.ts`, which another author owns. We
- * never import it — the provider arrives by injection and the base degrades to a
- * plain unmarked plinth when it is absent.
+ * never import it — the module graph runs ui → render, never scene → ui — so it
+ * arrives by injection as a `SealSource`, and the base degrades to a plain
+ * unmarked plinth when it is absent. `sealOutlineFromShapes` is the adapter.
  */
 
 import * as THREE from 'three';
@@ -90,17 +91,14 @@ export interface SealOutline {
 export type SealSource = (ch: string) => SealOutline | null | undefined;
 
 /**
- * Tolerantly convert whatever `@ui/seal.ts` returns from `getSealGlyph()` into a
- * `SealOutline`. The integration layer wires this in one line:
+ * Last-resort adapter for a glyph source that is neither `glyphToShapes` nor
+ * `glyphToContours`. Prefer `sealOutlineFromShapes`, which is what the type
+ * engine actually emits and which carries the solid/hole split explicitly.
  *
- * ```ts
- * const seal: SealProvider = (s, t) => adaptGlyphPath(getSealGlyph(s, t));
- * ```
- *
- * Handles the four plausible shapes: a bare array of flat contours, a bare array
- * of `{x, y}` point arrays, `{ contours }` in either of those forms, and
- * `{ paths }` / `{ outlines }` aliases. Anything else yields `null`, which means
- * "blank base" rather than "throw during scene construction".
+ * Handles a bare array of flat contours, a bare array of `{x, y}` point arrays,
+ * `{ contours }` in either of those forms, and `{ paths }` / `{ outlines }`
+ * aliases. Anything else yields `null`, which means "blank base" rather than
+ * "throw during scene construction".
  */
 export function adaptGlyphPath(raw: unknown): SealOutline | null {
   if (!raw) return null;
@@ -442,6 +440,10 @@ export function inciseOutline(
       const a = all[t[0]];
       const bb = all[t[1]];
       const cc = all[t[2]];
+      // Real glyph contours occasionally hand the triangulator three collinear
+      // points; the sliver it returns rasterises to nothing but still costs a
+      // triangle, so drop it here rather than shipping it.
+      if (Math.abs((bb.x - a.x) * (cc.y - a.y) - (cc.x - a.x) * (bb.y - a.y)) < 1e-8) continue;
       let A = toWorld(a.x, a.y, dy);
       let B = toWorld(bb.x, bb.y, dy);
       const C = toWorld(cc.x, cc.y, dy);
@@ -500,7 +502,9 @@ export function inciseOutline(
       const dx = gx1 - gx0;
       const dy = gy1 - gy0;
       const dl = Math.hypot(dx, dy);
-      if (dl < 1e-9) continue;
+      // Below a micron at board scale a wall segment has no area to shade; the
+      // marching-squares contours throw up a handful of these per glyph.
+      if (dl < 1e-6) continue;
       // Interior of a CCW contour lies to the left of travel.
       const inGx = -dy / dl;
       const inGy = dx / dl;
