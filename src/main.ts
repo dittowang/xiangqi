@@ -22,7 +22,7 @@
 import * as THREE from 'three';
 
 import { clock } from '@game/clock.ts';
-import { Match } from '@game/match.ts';
+import { Match, type PieceView } from '@game/match.ts';
 import { SaveScheduler, load as loadSave, clear as clearSave } from '@game/persistence.ts';
 import { bus } from '@core/bus.ts';
 import type { CameraPose, QualitySettings, QualityTier } from '@core/contracts.ts';
@@ -31,7 +31,7 @@ import { START_FEN } from '@core/testapi.ts';
 import { BOARD_HALF_X, BOARD_HALF_Z, worldToSquare } from '@core/coords.ts';
 import { type Difficulty, type Move, Side, encodeMove, moveFrom, moveTo } from '@core/types.ts';
 
-import { createRenderPipeline, attachOutlines } from '@render/index.ts';
+import { createRenderPipeline, collapseToAtlas, disposeCollapse } from '@render/index.ts';
 import { createSceneRig, sealOutlineFromShapes, NAMED_POSES } from '@scene/index.ts';
 import { createCharacters, unitsStillFallingBack } from '@characters/index.ts';
 import { createEngineClient, legalTargets, findLegalMove } from '@engine/index.ts';
@@ -283,6 +283,37 @@ async function playMove(move: Move): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Line work
+// ---------------------------------------------------------------------------
+
+/**
+ * Give a figure its ink-and-gold line work.
+ *
+ * `collapseToAtlas` replaces `attachOutlines` rather than complementing it: it
+ * merges the figure's 8-13 per-material meshes into one that reads its class,
+ * pigment and outline profile per fragment, and builds the matching hull itself.
+ * Measured over the real cast that is 305 meshes and 288 materials down to 32
+ * and 1 — 2137 draw calls to 226.
+ *
+ * The collapse is tracked per figure so it can be released with the unit; the
+ * merged geometry is new data and the originals belong to the UnitInstance.
+ */
+const collapses = new Map<number, ReturnType<typeof collapseToAtlas>>();
+
+function dressUnit(view: PieceView): void {
+  const prev = collapses.get(view.id);
+  if (prev) disposeCollapse(prev);
+  collapses.set(
+    view.id,
+    // Per-figure value variation so a rank of five soldiers is not a xerox;
+    // the atlas reads it per fragment, so it costs no extra material.
+    collapseToAtlas(view.unit.root, pipeline.materials, {
+      variation: ((view.id * 37) % 16) / 16,
+    }),
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Boot
 // ---------------------------------------------------------------------------
 
@@ -303,8 +334,7 @@ async function boot(): Promise<void> {
     console.warn('[characters] still using the generic fallback figure:', stillFallback.join(', '));
   }
   await match.begin(saved?.moves);
-  // Give every figure its ink-and-gold line work.
-  for (const view of match.views.values()) attachOutlines(view.unit.root, pipeline.materials);
+  for (const view of match.views.values()) dressUnit(view);
   rig.setPhase('development', 0);
   booted = true;
   bus.emit('match:start', { difficulty: match.difficulty, resumed: !!saved?.moves.length });
@@ -387,7 +417,7 @@ const api: XqTestApi = {
     match.moves.length = 0;
     match.notation.length = 0;
     match.sync();
-    for (const view of match.views.values()) attachOutlines(view.unit.root, pipeline.materials);
+    for (const view of match.views.values()) dressUnit(view);
     rig.setPhase('development', 0);
     await stepOnce(0);
   },

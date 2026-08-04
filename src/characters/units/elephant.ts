@@ -30,10 +30,11 @@
  *           turned to the camera: a wedge with a disc in it.
  * The two outlines are different shapes, not the same shape in two colours.
  *
- * THE TRUNK IS THE ATTACK. `elephant.trunk01`..`trunk10` is a straight chain in
- * bind pose — deliberately straight, because a bind-pose curl bakes a direction
- * into the skin weights and the trunk then fights any sweep that goes the other
- * way. `trunkTip` is published as an end effector.
+ * THE TRUNK IS THE ATTACK. `elephant.trunk01`..`trunk10`, ten bones, each
+ * carrying one rigid section, laid on a shallow half-radian arc so the rest
+ * pose already shows the curve the silhouette is named for. `trunkTip` is
+ * published as an end effector; see `buildTrunk` for why a rest curve is safe
+ * here when the parts library's own trunk is built straight.
  *
  * Reference: Han bronze and lacquer elephants for the columnar leg and the low
  * heavy head; Dian and Chu bronze drums for the drum; Han 畫像石 for the
@@ -60,6 +61,8 @@ const v3 = (p: THREE.Vector3): V3 => [p.x, p.y, p.z];
 
 /** Segments in the trunk. The brief's floor is eight; ten sweeps smoother. */
 const TRUNK_SEGMENTS = 10;
+/** Total rest-pose bend of the trunk, radians. See `buildTrunk`. */
+const TRUNK_BEND = 0.5;
 
 // ===========================================================================
 // The animal's cross-section
@@ -145,6 +148,64 @@ function scale(d: Dims, s: BodyStation): Section {
 function backY(d: Dims, z: number): number {
   const s = bodyAt(d, z);
   return s.y + s.ry;
+}
+
+/**
+ * A point on the body at station `z` and angle `theta` (0 = the flank, +π/2 =
+ * the spine), pushed `off` clear of the hide along the true ellipse normal —
+ * pass a limb's own radius and the result is where that limb's centre line must
+ * sit for its surface to rest on the animal's.
+ */
+function bodySurface(d: Dims, z: number, theta: number, off: number, side: number): V3 {
+  const s = bodyAt(d, z);
+  const c = Math.cos(theta);
+  const sn = Math.sin(theta);
+  let nx = c / s.rx;
+  let ny = sn / s.ry;
+  const l = Math.hypot(nx, ny) || 1;
+  nx /= l;
+  ny /= l;
+  return [side * (s.rx * c + nx * off), s.y + s.ry * sn + ny * off, z];
+}
+
+/**
+ * Put a joint on the body at exactly `len` from `from`: scan the contour for
+ * the closest match, then snap to the bone's true length along that direction.
+ *
+ * An elephant is enormously wider than a man's leg is long, so on the back the
+ * knee lands high on the shoulder of the barrel and the shin splays down the
+ * upper flank rather than hanging beside it — which is precisely how a rider
+ * sits on an elephant with no saddle, and it comes out of the arithmetic rather
+ * than being posed by hand. The bone is never stretched, so the animator's IK
+ * and the rig's `bindLengths` agree with each other.
+ */
+function fitOnBody(
+  d: Dims,
+  z: number,
+  from: V3,
+  len: number,
+  off: number,
+  side: number,
+  fromTheta: number,
+  toTheta: number,
+): V3 {
+  let best: V3 = bodySurface(d, z, fromTheta, off, side);
+  let bestErr = Infinity;
+  const steps = 96;
+  for (let i = 0; i <= steps; i++) {
+    const th = fromTheta + ((toTheta - fromTheta) * i) / steps;
+    const p = bodySurface(d, z, th, off, side);
+    const err = Math.abs(Math.hypot(p[0] - from[0], p[1] - from[1], p[2] - from[2]) - len);
+    if (err < bestErr) {
+      bestErr = err;
+      best = p;
+    }
+  }
+  const dx = best[0] - from[0];
+  const dy = best[1] - from[1];
+  const dz = best[2] - from[2];
+  const l = Math.hypot(dx, dy, dz) || 1;
+  return [from[0] + (dx / l) * len, from[1] + (dy / l) * len, from[2] + (dz / l) * len];
 }
 
 // ===========================================================================
@@ -280,6 +341,35 @@ function buildBeast(ctx: UnitBuildContext, d: Dims): Beast {
       const beat = (tag === 'H' ? 0 : 1) + (s < 0 ? 0 : 2);
       for (const b of leg.bones) if (b.name.endsWith('01')) b.data = { walkBeat: beat };
 
+      // Hide creases. An elephant's leg is not a smooth column; it is a stack
+      // of loose folds, and under a three-band leather ramp each crease is a
+      // shadow line that reads at board distance where surface shading does
+      // not. Two per segment, sitting on the bone the segment already uses, so
+      // they flex with it.
+      for (const [seg, hAt, rAt] of [
+        [1, 0.485, 1.14],
+        [1, 0.415, 1.10],
+        [2, 0.275, 1.06],
+        [2, 0.190, 1.03],
+      ] as const) {
+        const y = S * hAt;
+        const crease = prim.loft(
+          [
+            prim.ring({ rx: legR * rAt * 0.97, rz: legR * rAt * 0.92, y: y - S * 0.012, cx: s * HW * 0.68, cz: z, sides: 7, squareness: 0.4 }),
+            prim.ring({ rx: legR * rAt, rz: legR * rAt * 0.95, y, cx: s * HW * 0.68, cz: z, sides: 7, squareness: 0.4 }),
+            prim.ring({ rx: legR * rAt * 0.95, rz: legR * rAt * 0.90, y: y + S * 0.016, cx: s * HW * 0.68, cz: z, sides: 7, squareness: 0.4 }),
+          ],
+          { capStart: false, capEnd: false, name: 'legCrease' },
+        );
+        g.parts.push(
+          P.mkPart(crease, 'leather', HIDE, 'root', {
+            name: 'legCrease',
+            rigid: true,
+            mountBone: `elephant.leg${tag}${side}0${seg}`,
+          }),
+        );
+      }
+
       // Toenails: four flat plates round the front of each foot. Tiny, and the
       // single thing that stops a columnar leg ending in a cylinder.
       const nails: THREE.BufferGeometry[] = [];
@@ -369,7 +459,7 @@ function buildBeast(ctx: UnitBuildContext, d: Dims): Beast {
     );
   } else {
     // The drummer rides the back behind the drum.
-    seatZ = L * 0.18;
+    seatZ = L * 0.23;
     seat = [0, backY(d, seatZ) + S * 0.045, seatZ];
     seatBone = 'elephant.spine';
     buildDrum(ctx, d, g);
@@ -512,6 +602,26 @@ function buildHead(
     prim.place(temple, { pos: [s * HW * 0.70, base + S * 0.13, headZ - L * 0.045], rot: [0, s * 0.3, s * 0.16] });
     g.parts.push(P.mkPart(temple, 'leather', HIDE, 'root', { name: 'temple', rigid: true, mountBone: bone }));
   }
+
+  // Eye and the crease above it. Twelve triangles each, and an elephant with no
+  // eye reads as a boulder however good the trunk is.
+  for (const s of [-1, 1]) {
+    const eye = prim.bevelSlab({ w: S * 0.028, h: S * 0.032, d: S * 0.022, bevel: S * 0.008 });
+    prim.place(eye, { pos: [s * HW * 0.60, base + S * 0.055, headZ - L * 0.085], rot: [0.15, s * 0.55, s * 0.2] });
+    g.parts.push(P.mkPart(eye, 'hair', 'ink', 'root', { name: 'eye', rigid: true, mountBone: bone }));
+  }
+
+  // The lower lip below the trunk's root — closes the front of the face so the
+  // trunk does not look socketed into a hole.
+  const lipBlock = prim.loft(
+    [
+      prim.ring({ rx: HW * 0.30, rz: S * 0.06, y: base - S * 0.075, cz: headZ - L * 0.095, sides: 6, squareness: 0.6 }),
+      prim.ring({ rx: HW * 0.24, rz: S * 0.045, y: base - S * 0.15, cz: headZ - L * 0.085, sides: 6, squareness: 0.6 }),
+      prim.ring({ rx: HW * 0.13, rz: S * 0.025, y: base - S * 0.20, cz: headZ - L * 0.065, sides: 6, squareness: 0.6 }),
+    ],
+    { name: 'elephantLip' },
+  );
+  g.parts.push(P.mkPart(lipBlock, 'leather', HIDE, 'root', { name: 'elephantLip', rigid: true, mountBone: bone }));
 }
 
 /**
@@ -533,13 +643,18 @@ function buildEars(ctx: UnitBuildContext, d: Dims, g: PartGroup, headZ: number, 
         const u = c / (cols - 1);
         // Widest at mid-height; the top margin folds forward, the trailing edge
         // is notched. `flare` is the span from the head outward.
-        const flare = 0.26 + Math.sin(Math.min(1, t * 1.12) * Math.PI) * 0.92;
-        const fold = r === 0 ? -L * 0.03 * u : 0;
-        const scallop = c === cols - 1 ? Math.sin(t * 8.5) * S * 0.028 : 0;
+        // Wide at the top corner rather than tapering to it: the ear has to
+        // stand ABOVE the animal's back line, so that from the front it puts
+        // two hard corners either side of the head instead of blending into
+        // one hexagonal blob, and from the side its top edge breaks the
+        // otherwise flat topline.
+        const flare = 0.55 + Math.sin(Math.min(1, t * 1.05) * Math.PI) * 0.78;
+        const fold = r === 0 ? -L * 0.035 * u : 0;
+        const scallop = c === cols - 1 ? Math.sin(t * 8.5) * S * 0.03 : 0;
         row.push([
           s * (HW * 0.56 + u * HW * flare),
-          base + S * (0.30 - t * 0.60) - u * S * 0.05,
-          headZ + L * (0.02 + u * 0.20) + scallop + t * L * 0.03 + fold,
+          base + S * (0.42 - t * 0.78) - u * S * 0.06,
+          headZ + L * (u * 0.26) + scallop + t * L * 0.035 + fold,
         ]);
       }
       grid.push(row);
@@ -597,6 +712,25 @@ function buildTusks(
       }),
     );
     tips.push(stations[n - 1].p);
+
+    // The socket the tusk grows out of — a short collar of hide swallowing the
+    // root, so the ivory emerges from the face rather than being stuck onto it.
+    const root = stations[0].p;
+    const socket = P.prim.loft(
+      [
+        P.prim.ring({ rx: S * 0.085, rz: S * 0.075, y: root[1] + S * 0.055, cx: root[0], cz: root[2] + L * 0.03, sides: 6, squareness: 0.5 }),
+        P.prim.ring({ rx: S * 0.075, rz: S * 0.065, y: root[1] - S * 0.005, cx: root[0], cz: root[2], sides: 6, squareness: 0.5 }),
+        P.prim.ring({ rx: S * 0.056, rz: S * 0.05, y: root[1] - S * 0.055, cx: root[0] + s * S * 0.008, cz: root[2] - L * 0.02, sides: 6, squareness: 0.5 }),
+      ],
+      { capStart: false, capEnd: false, name: 'tuskSocket' },
+    );
+    g.parts.push(
+      P.mkPart(socket, 'leather', HIDE, 'root', {
+        name: 'tuskSocket',
+        rigid: true,
+        mountBone: 'elephant.head',
+      }),
+    );
 
     if (han) {
       // Han: two gold bands near the socket — ornament, not weaponry.
@@ -672,33 +806,58 @@ function buildTrunk(
   const P = ctx.parts;
   const { S, L } = d;
   const top: V3 = [0, base - S * 0.055, headZ - L * 0.125];
-  const len = S * 0.545;
+  const len = S * 0.51;
   const segs = TRUNK_SEGMENTS;
   let parent = 'elephant.head';
+
+  // The rest curve. A circular arc of TRUNK_BEND radians total: the trunk drops
+  // from between the tusks and swings back under the chin, ending with its
+  // tangent about 29 degrees off vertical.
+  //
+  // The parts library builds its trunk dead straight, on the grounds that a
+  // bind-pose curl biases the skin weights against a sweep going the other way.
+  // That reasoning does not apply here: every segment is `rigid` on its own
+  // bone, so there is no weight blending across a joint to bias — the curl
+  // lives entirely in the bones' rest offsets, and a rotation applied to any
+  // bone still carries its whole subtree cleanly in either direction. What the
+  // curve buys is the silhouette cue the brief names: a straight vertical trunk
+  // reads as a post, and it is the *curve* between the tusks that says elephant.
+  // It is kept shallow so a rearward sweep is not fighting a deep rest shape.
+  const K = TRUNK_BEND / len;
+  const at = (s: number): V3 => [
+    top[0],
+    top[1] - Math.sin(K * s) / K,
+    top[2] + (1 - Math.cos(K * s)) / K,
+  ];
 
   for (let i = 0; i < segs; i++) {
     const t0 = i / segs;
     const t1 = (i + 1) / segs;
     const name = `elephant.trunk${String(i + 1).padStart(2, '0')}`;
-    const p0: V3 = [top[0], top[1] - len * t0, top[2] - S * 0.055 * t0];
-    const p1: V3 = [top[0], top[1] - len * t1, top[2] - S * 0.055 * t1];
+    const p0 = at(len * t0);
+    const p1 = at(len * t1);
     g.bones.push({ name, parent, position: p0, data: { segment: i, of: segs } });
     parent = name;
 
-    const r0 = S * 0.088 * (1 - t0 * 0.66);
-    const r1 = S * 0.088 * (1 - t1 * 0.66);
+    const r0 = S * 0.09 * (1 - t0 * 0.66);
+    const r1 = S * 0.09 * (1 - t1 * 0.66);
     const seg = P.prim.sweep(
       [
         { p: p0, rx: r0, rz: r0 * 0.9, squareness: 0.42 },
         // Overlap the next segment by 6% so a curl cannot open a seam.
-        { p: [p1[0], p1[1] + (p0[1] - p1[1]) * 0.06, p1[2]], rx: r1 * 1.03, rz: r1 * 0.93, squareness: 0.42 },
+        {
+          p: [p1[0], p1[1] + (p0[1] - p1[1]) * 0.06, p1[2] + (p0[2] - p1[2]) * 0.06],
+          rx: r1 * 1.03,
+          rz: r1 * 0.93,
+          squareness: 0.42,
+        },
       ],
       { sides: 7, name },
     );
     g.parts.push(P.mkPart(seg, 'leather', HIDE, 'root', { name, rigid: true, mountBone: name }));
   }
 
-  const tip: V3 = [top[0], top[1] - len, top[2] - S * 0.055];
+  const tip = at(len);
   // The prehensile finger at the lip — small, but it is the difference between
   // a trunk and a hose, and the animator's `trunkTip` sits on it.
   const lip = P.prim.bevelSlab({
@@ -708,7 +867,7 @@ function buildTrunk(
     bevel: S * 0.008,
     name: 'trunkLip',
   });
-  P.prim.place(lip, { pos: [tip[0], tip[1] + S * 0.012, tip[2] - S * 0.022], rot: [0.7, 0, 0] });
+  P.prim.place(lip, { pos: [tip[0], tip[1] + S * 0.012, tip[2] - S * 0.024], rot: [0.7 + TRUNK_BEND, 0, 0] });
   g.parts.push(
     P.mkPart(lip, 'leather', HIDE, 'root', {
       name: 'trunkLip',
@@ -1116,30 +1275,30 @@ function buildHeadplate(
  * back (wide, so his knees splay). One function, two very different poses,
  * because both come out of `bodyAt` at the station each man sits on.
  */
-function seatOffsets(rig: Rig, d: Dims, seatZ: number): NonNullable<RigOptions['offsets']> {
+function seatOffsets(
+  rig: Rig,
+  d: Dims,
+  kneeZ: number,
+  ankleZ: number,
+): NonNullable<RigOptions['offsets']> {
   const m = rig.metrics;
   const B = rig.bindWorld;
   const out: NonNullable<RigOptions['offsets']> = {};
-
-  const kneeZ = seatZ - d.L * 0.11;
-  const ankleZ = seatZ - d.L * 0.05;
-  const kneeSec = bodyAt(d, kneeZ);
-  const ankleSec = bodyAt(d, ankleZ);
 
   for (const S of ['L', 'R'] as const) {
     const s = S === 'L' ? -1 : 1;
     const knee = B[`shin${S}`];
     const ankle = B[`foot${S}`];
-    const kneeTarget: V3 = [
-      s * (kneeSec.rx * 0.94 + m.thighR * 0.95),
-      kneeSec.y + kneeSec.ry * 0.62,
-      kneeZ,
-    ];
-    const ankleTarget: V3 = [
-      s * (ankleSec.rx * 0.82 + m.shinR * 1.2),
-      ankleSec.y + ankleSec.ry * 0.02,
-      ankleZ,
-    ];
+    const hip = v3(B[`thigh${S}`]);
+
+    // The search starts just off the spine and runs down the flank. On the neck
+    // (Han) it settles about halfway down; on the back (Chu) the animal is so
+    // much broader than the man's leg is long that it settles high on the
+    // shoulder of the barrel, legs splayed — which is what riding an elephant
+    // bareback looks like.
+    const kneeTarget = fitOnBody(d, kneeZ, hip, m.thighLen, m.thighR * 0.88, s, 1.45, -0.2);
+    const ankleTarget = fitOnBody(d, ankleZ, kneeTarget, m.shinLen, m.shinR * 0.88, s, 1.2, -0.6);
+
     const dKnee: V3 = [kneeTarget[0] - knee.x, kneeTarget[1] - knee.y, kneeTarget[2] - knee.z];
     out[`shin${S}` as BoneName] = dKnee;
     out[`foot${S}` as BoneName] = [
@@ -1149,6 +1308,74 @@ function seatOffsets(rig: Rig, d: Dims, seatZ: number): NonNullable<RigOptions['
     ];
   }
   return out;
+}
+
+/**
+ * Pose an arm by *direction* instead of by angle: `upper` runs shoulder to
+ * elbow and `fore` elbow to wrist, each normalised and multiplied by the arm's
+ * own measured bind length, so a pose can be written as "forward and down"
+ * without stretching a bone. The shoulder does not move.
+ *
+ * Crew figures need this more than line soldiers do. A mahout with his arms in
+ * the rig's bind A-pose reads as a post with a turban on it; the same man with
+ * the goad held out level over the animal's crown ties his mass to the head's
+ * and turns two blobs into one silhouette.
+ */
+function armOffsets(
+  rig: Rig,
+  side: 'L' | 'R',
+  upper: V3,
+  fore: V3,
+  out: NonNullable<RigOptions['offsets']>,
+): void {
+  const B = rig.bindWorld;
+  const shoulder = B[`upperArm${side}`];
+  const elbowBind = B[`foreArm${side}`];
+  const wristBind = B[`hand${side}`];
+  const lenU = shoulder.distanceTo(elbowBind);
+  const lenF = elbowBind.distanceTo(wristBind);
+  const u = unit(upper);
+  const f = unit(fore);
+  const elbow: V3 = [shoulder.x + u[0] * lenU, shoulder.y + u[1] * lenU, shoulder.z + u[2] * lenU];
+  const wrist: V3 = [elbow[0] + f[0] * lenF, elbow[1] + f[1] * lenF, elbow[2] + f[2] * lenF];
+  const dElbow: V3 = [elbow[0] - elbowBind.x, elbow[1] - elbowBind.y, elbow[2] - elbowBind.z];
+  out[`foreArm${side}` as BoneName] = dElbow;
+  out[`hand${side}` as BoneName] = [
+    wrist[0] - wristBind.x - dElbow[0],
+    wrist[1] - wristBind.y - dElbow[1],
+    wrist[2] - wristBind.z - dElbow[2],
+  ];
+}
+
+function unit(v: V3): V3 {
+  const l = Math.hypot(v[0], v[1], v[2]) || 1;
+  return [v[0] / l, v[1] / l, v[2] / l];
+}
+
+/**
+ * Turn the fist so its bore lines up with what it is holding. `body.hand()`
+ * bores a grip cylinder along +Y and every weapon is authored haft-along-+Y at
+ * the origin, so the two only interpenetrate while they share an axis; rotating
+ * the weapon without rotating the fist sends the haft out through the knuckles.
+ */
+function rotateHand(g: PartGroup, side: 'L' | 'R', wrist: THREE.Vector3, rot: V3): void {
+  const m = new THREE.Matrix4()
+    .makeTranslation(wrist.x, wrist.y, wrist.z)
+    .multiply(
+      new THREE.Matrix4().makeRotationFromEuler(new THREE.Euler(rot[0], rot[1], rot[2], 'XYZ')),
+    )
+    .multiply(new THREE.Matrix4().makeTranslation(-wrist.x, -wrist.y, -wrist.z));
+  const names = new Set([
+    `palm${side}`,
+    `fingers${side}`,
+    `fistCapT${side}`,
+    `fistCapB${side}`,
+    `fistBore${side}`,
+    `thumb${side}`,
+  ]);
+  for (const p of g.parts) if (p.name && names.has(p.name)) p.geometry.applyMatrix4(m);
+  const grip = g.points[`grip${side}`];
+  if (grip) grip.applyMatrix4(m);
 }
 
 /**
@@ -1273,9 +1500,29 @@ function buildElephant(ctx: UnitBuildContext): PartGroup {
   // --- seat the rider -----------------------------------------------------
   const origin: [number, number, number] = [0, beast.seat[1] - ctx.rig.metrics.legLen, beast.seat[2]];
   const rig0 = ctx.useRig({ origin });
+  // The mahout tucks his knees close behind the ears; the drummer, sitting on
+  // a far broader surface, carries his further forward of the seat.
+  const offsets = seatOffsets(
+    rig0,
+    d,
+    beast.seatZ - d.L * (han ? 0.055 : 0.10),
+    beast.seatZ - d.L * (han ? 0.015 : 0.04),
+  );
+
+  // Working poses, and the two armies' crews work at different things.
+  const goadRot: V3 = han ? [-1.5, 0, -0.12] : [-1.45, 0, 0.1];
+  const malletRot: V3 = [0.75, 0, -0.3];
+  if (han) {
+    armOffsets(rig0, 'R', [0.42, -0.5, -0.76], [0.05, -0.15, -0.99], offsets);
+    armOffsets(rig0, 'L', [-0.42, -0.62, -0.66], [-0.08, -0.42, -0.9], offsets);
+  } else {
+    armOffsets(rig0, 'R', [0.55, 0.3, 0.42], [0.12, 0.86, 0.5], offsets);
+    armOffsets(rig0, 'L', [-0.42, -0.5, -0.75], [-0.1, -0.2, -0.97], offsets);
+  }
+
   const rig = ctx.useRig({
     origin: [0, beast.seat[1] - rig0.metrics.legLen, beast.seat[2]],
-    offsets: seatOffsets(rig0, d, beast.seatZ),
+    offsets,
   });
   const m = rig.metrics;
   const B = rig.bindWorld;
@@ -1376,6 +1623,9 @@ function buildElephant(ctx: UnitBuildContext): PartGroup {
   }
 
   // --- what he carries ----------------------------------------------------
+  // Align each fist to its haft before reading the grip point back out.
+  rotateHand(g, 'R', B.handR, han ? goadRot : malletRot);
+  rotateHand(g, 'L', B.handL, han ? [0, 0, 0] : goadRot);
   const gripR = g.points.gripR ?? B.handR;
   const gripL = g.points.gripL ?? B.handL;
   let tip: THREE.Vector3;
@@ -1384,7 +1634,7 @@ function buildElephant(ctx: UnitBuildContext): PartGroup {
     // The mahout drives with the goad held forward and down over the animal's
     // crown — the working pose, which also puts a diagonal across the gap
     // between his body and the head and ties the two masses together.
-    const gd = goad(ctx, v3(gripR), [-1.02, 0, -0.18], h * 0.72, 'handR');
+    const gd = goad(ctx, v3(gripR), goadRot, h * 0.72, 'handR');
     merge(g, gd);
     tip = gd.points.tip;
     // Left hand rests on the neck rope.
@@ -1406,10 +1656,10 @@ function buildElephant(ctx: UnitBuildContext): PartGroup {
   } else {
     // The drummer, caught between beats: mallet up and back over his shoulder,
     // long goad braced forward in the off hand.
-    const ml = mallet(ctx, v3(gripR), [0.55, 0, -0.5], h * 0.5, 'handR');
+    const ml = mallet(ctx, v3(gripR), malletRot, h * 0.5, 'handR');
     merge(g, ml);
     tip = ml.points.tip;
-    const gd = goad(ctx, v3(gripL), [-1.28, 0, 0.12], h * 1.05, 'handL');
+    const gd = goad(ctx, v3(gripL), goadRot, h * 1.05, 'handL');
     merge(g, gd);
   }
   g.attach.push({ name: 'haftTip', bone: 'handR', position: [tip.x, tip.y, tip.z] });

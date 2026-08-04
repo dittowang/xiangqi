@@ -92,6 +92,7 @@ import './units/general.ts';
 import './units/chariot.ts';
 
 import './units/soldier.ts';
+import './units/advisor.ts';
 
 import './units/cannon.ts';
 

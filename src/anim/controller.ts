@@ -161,9 +161,12 @@ interface LegRig {
   contact: number;
   /** Bind offset of the ankle from the root, rig space — the neutral stance. */
   neutral: THREE.Vector3;
-  /** Rising-edge detector for footfall audio. */
-  wasDown: boolean;
+  /** Signed lateral offset of the ankle from its own hip at bind, rig units. */
+  lateral: number;
 }
+
+/** How long a closing step takes when a walk stops mid-swing. */
+const CLOSE_STEP_SECONDS = 0.21;
 
 // ===========================================================================
 // Animator
@@ -227,7 +230,7 @@ export class Animator implements UnitAnimator {
 
   private audio: AudioEngine | null;
   private footstepGain: number;
-  private footPlanted = true;
+  private frozen = false;
 
   private readonly rootCorrection = new THREE.Vector3();
 
@@ -280,7 +283,7 @@ export class Animator implements UnitAnimator {
       lock: makeFootLock(),
       contact: side === 'L' ? this.plan.contactL : this.plan.contactR,
       neutral: this.bind.get(`foot${side}`)!.clone().sub(this.bindRoot),
-      wasDown: false,
+      lateral: this.bind.get(`foot${side}`)!.x - this.bind.get(`thigh${side}`)!.x,
     });
     this.legs = { L: mkLeg('L'), R: mkLeg('R') };
     this.arms = {
@@ -397,7 +400,8 @@ export class Animator implements UnitAnimator {
     // Entering `move` from rest starts on the phase we already hold, so a unit
     // that stops and starts does not teleport its feet.
     if (state === 'move') next.time = this.gaitPhase * clip.duration;
-    if (state === 'attackWindup' || state === 'attackStrike') this.releaseFeet();
+    if (this.state === 'move' && state !== 'move' && !this.plan.seated) this.beginClosingStep();
+    if (state === 'death') this.releaseFeet();
 
     this.state = state;
     this.stateKey = key;
@@ -478,6 +482,23 @@ export class Animator implements UnitAnimator {
   release(speed = 1): void {
     const a = this.actions.get(this.stateKey);
     if (a) a.setEffectiveTimeScale(this.travelDriven(this.state) ? 0 : speed);
+  }
+
+  /**
+   * Stop or restart this figure's clock without touching its pose.
+   *
+   * This is the frozen-time hold at the moment of impact: the bodies stop dead
+   * for two and a half frames while the flash and the camera keep running.
+   * Pausing the actions rather than zeroing dt keeps cross-fade weights alive,
+   * so a fade that was in flight when the world stopped resumes correctly.
+   */
+  freeze(on: boolean): void {
+    for (const a of this.actions.values()) a.paused = on;
+    this.frozen = on;
+  }
+
+  get isFrozen(): boolean {
+    return this.frozen;
   }
 
   /**
@@ -679,17 +700,26 @@ export class Animator implements UnitAnimator {
   // Mounts
   // -------------------------------------------------------------------------
 
-  /** Δθ = Δs / (radius · scale). The contract from the parts library. */
+  /**
+   * Δθ = Δs / (radius · scale) — the contract the parts library publishes with
+   * every wheel. The angle is accumulated *once* per frame and then written to
+   * every wheel: accumulating inside the loop would advance a two-wheeled
+   * chariot at twice the ground speed, which is a skid that grows without bound.
+   */
   private spinWheels(distance: number): void {
+    let radius = 0;
     for (const name of Object.keys(this.unit.mountBones)) {
       if (!name.includes('wheel')) continue;
-      const bone = this.unit.mountBones[name];
-      const radius = (bone.userData?.radius as number | undefined) ?? 0;
-      if (!(radius > 0)) continue;
-      // Rolling forward is −Z, so the wheel's top goes forward: a negative
-      // rotation about the axle, which lies along X.
-      this.wheelAngle -= distance / (radius * this.scale);
-      bone.rotation.x = this.wheelAngle;
+      const r = (this.unit.mountBones[name].userData?.radius as number | undefined) ?? 0;
+      if (r > radius) radius = r;
+    }
+    if (!(radius > 0)) return;
+    // Rolling forward is −Z, so the wheel's top goes forward: a negative
+    // rotation about the axle, which lies along X.
+    this.wheelAngle -= distance / (radius * this.scale);
+    for (const name of Object.keys(this.unit.mountBones)) {
+      if (!name.includes('wheel')) continue;
+      this.unit.mountBones[name].rotation.x = this.wheelAngle;
     }
   }
 
@@ -943,10 +973,38 @@ export class Animator implements UnitAnimator {
   // -------------------------------------------------------------------------
 
   private releaseFeet(): void {
-    this.legs.L.lock.locked = false;
-    this.legs.R.lock.locked = false;
-    this.legs.L.lock.weight = 0;
-    this.legs.R.lock.weight = 0;
+    for (const side of ['L', 'R'] as const) {
+      const lock = this.legs[side].lock;
+      lock.locked = false;
+      lock.weight = 0;
+      lock.primed = false;
+      lock.closing = 1;
+    }
+  }
+
+  /**
+   * Finish the step that was in the air when the walk stopped.
+   *
+   * A gait that simply switches off leaves one foot hanging where the swing
+   * happened to be, and the next state's IK either snaps it down or, worse,
+   * locks it there. The closing step brings it under its own hip on the same
+   * arc a normal swing would have used.
+   */
+  private beginClosingStep(): void {
+    for (const side of ['L', 'R'] as const) {
+      const leg = this.legs[side];
+      const lock = leg.lock;
+      if (!lock.primed || lock.locked) continue;
+      lock.from.copy(lock.world);
+      // Under the hip, not ahead of it: the figure is stopping, not stepping.
+      lock.to.setFromMatrixPosition(leg.chain.a.matrixWorld);
+      const s = Math.sin(this.yaw);
+      const c = Math.cos(this.yaw);
+      lock.to.x += c * leg.lateral;
+      lock.to.z -= s * leg.lateral;
+      lock.to.y = this.groundY(lock.to.x, lock.to.z) + this.ankleWorldHeight();
+      lock.closing = 0;
+    }
   }
 
   /**
@@ -982,7 +1040,7 @@ export class Animator implements UnitAnimator {
         : grounded
           ? 1
           : 0.35;
-      this.updateFoot(leg, side, w, moving);
+      this.updateFoot(leg, side, w, moving, dt);
     }
 
     // Two passes: the first correction changes the hip positions, so the second
@@ -996,7 +1054,14 @@ export class Animator implements UnitAnimator {
       const leg = this.legs[side];
       if (leg.lock.weight <= 0.001) continue;
       toRig(this.ikCtx, leg.lock.world, _v);
-      solveTwoBone(leg.chain, this.ikCtx, _v, leg.lock.weight);
+      // Full authority, in stance *and* in swing. Solving a planted foot at
+      // partial weight is the subtle version of foot slide: the ankle lands
+      // part-way between the clip's guess and the plant, and the gap between
+      // them shows up as a shuffle at every heel strike. The clip still owns
+      // the ankle's roll and the pole still owns the knee's plane; only the
+      // ankle's *position* belongs to the contact solver, and it owns it
+      // outright.
+      solveTwoBone(leg.chain, this.ikCtx, _v, 1);
     }
     this.unit.bones.root.updateMatrixWorld(true);
     for (const side of ['L', 'R'] as const) {
@@ -1016,8 +1081,38 @@ export class Animator implements UnitAnimator {
    * costs nothing. A swing that ends anywhere else is a pop, and a lock that
    * chases rather than freezes is a slide.
    */
-  private updateFoot(leg: LegRig, side: 'L' | 'R', w: number, moving: boolean): void {
+  private updateFoot(leg: LegRig, side: 'L' | 'R', w: number, moving: boolean, dt: number): void {
     const lock = leg.lock;
+    if (!lock.primed) {
+      // Seed from forward kinematics. Until this has run the lock holds the
+      // world origin, and solving a leg toward the world origin tears the
+      // figure apart — so nothing may read a lock before it is primed.
+      this.worldFootPosition(leg, lock.world);
+      lock.world.y = this.groundY(lock.world.x, lock.world.z) + this.ankleWorldHeight();
+      lock.from.copy(lock.world);
+      this.predictPlant(leg, lock.to);
+      lock.primed = true;
+    }
+
+    // A closing step: the figure stopped mid-swing, so the foot is brought down
+    // under its own hip instead of being abandoned in the air.
+    if (lock.closing < 1) {
+      lock.closing = Math.min(1, lock.closing + dt / CLOSE_STEP_SECONDS);
+      const u = lock.closing;
+      const eased = u * u * (3 - 2 * u);
+      lock.world.lerpVectors(lock.from, lock.to, eased);
+      lock.world.y =
+        this.groundY(lock.world.x, lock.world.z) +
+        this.ankleWorldHeight() +
+        swingLift(u, this.plan.lift * this.height * this.scale * 0.5);
+      lock.weight = 0.9;
+      if (lock.closing >= 1) {
+        lock.locked = true;
+        this.onFootfall(side, lock.world);
+      }
+      return;
+    }
+
     const wasLocked = lock.locked;
     const nowLocked = w >= IK.plantThreshold;
 
@@ -1064,6 +1159,23 @@ export class Animator implements UnitAnimator {
     return out.setFromMatrixPosition(leg.foot.matrixWorld);
   }
 
+  /**
+   * The contact state of one foot: where the lock says it is, and where it
+   * actually ended up. Those two agreeing is the definition of "no foot slide",
+   * so both are exposed — for the `contactPoints` debug overlay and for the
+   * verification script, which measures the gap rather than trusting it.
+   */
+  footState(
+    side: 'L' | 'R',
+    outTarget: THREE.Vector3,
+    outActual: THREE.Vector3,
+  ): { locked: boolean; weight: number } {
+    const leg = this.legs[side];
+    outTarget.copy(leg.lock.world);
+    this.worldFootPosition(leg, outActual);
+    return { locked: leg.lock.locked, weight: leg.lock.weight };
+  }
+
   /** Height of the ankle above the local floor, in world units. */
   private ankleWorldHeight(): number {
     return this.ankleHeight * this.scale;
@@ -1086,11 +1198,21 @@ export class Animator implements UnitAnimator {
   private predictPlant(leg: LegRig, out: THREE.Vector3): void {
     const hip = leg.chain.a;
     out.setFromMatrixPosition(hip.matrixWorld);
-    const ahead = this.strideWorld * (0.38 + 0.35);
-    out.x -= Math.sin(this.yaw) * ahead;
-    out.z -= Math.cos(this.yaw) * ahead;
-    // Keep the foot under its own hip laterally: a step that crosses the body's
-    // centre line reads as a catwalk.
+    // Over one cycle the foot is fixed for `duty` of it while the hip covers
+    // `duty × stride`, so the foot sits ±duty/2 of a stride either side of the
+    // hip. Add the `(1 − duty)` of a stride the hip will cover during the swing
+    // and the plant lands `1 − duty/2` of a stride ahead of the hip *now*. Both
+    // terms fall out of the duty factor, so retiming a gait retimes this.
+    const ahead = this.strideWorld * (1 - this.plan.duty * 0.5);
+    const s = Math.sin(this.yaw);
+    const c = Math.cos(this.yaw);
+    out.x -= s * ahead;
+    out.z -= c * ahead;
+    // Keep the foot under its own hip laterally. The rig's stance is narrower
+    // than its hips, so without this the figure walks with its feet outside its
+    // pelvis — a catwalk, not a march.
+    out.x += c * leg.lateral;
+    out.z -= s * leg.lateral;
     out.y = this.groundY(out.x, out.z) + this.ankleWorldHeight();
   }
 
@@ -1169,7 +1291,7 @@ export class Animator implements UnitAnimator {
       _v.copy(this.bind.get(`foot${side}`)!);
       // Follow the root so the legs travel with the seat rather than dangling.
       _v.add(this.unit.bones.root.position).sub(this.bindRoot);
-      solveTwoBone(leg.chain, this.ikCtx, _v, 0.85);
+      solveTwoBone(leg.chain, this.ikCtx, _v, 1);
     }
   }
 

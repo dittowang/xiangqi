@@ -128,7 +128,7 @@ const _p = new THREE.Vector3();
 const _axis = new THREE.Vector3();
 const _d1 = new THREE.Vector3();
 const _d2 = new THREE.Vector3();
-const _elbow = new THREE.Vector3();
+const _goal = new THREE.Vector3();
 const _fallback = new THREE.Vector3();
 
 /**
@@ -167,14 +167,21 @@ export function solveTwoBoneRaw(
   let d = distance;
   if (d > reachMax) d = reachMax;
   else if (d < reachMin) d = reachMin;
-  if (d < 1e-9) {
+  if (distance < 1e-9) {
     // Degenerate: the target is on top of the chain root. Point the limb along
     // the pole so the next frame has something continuous to work from.
     _u.copy(pole).normalize();
+    if (_u.lengthSq() < 0.5) _u.set(0, -1, 0);
     d = reachMin > 1e-9 ? reachMin : l1;
   } else {
     _u.multiplyScalar(1 / distance);
   }
+  // The solve runs against the *clamped* point, not the raw target. That is
+  // what makes an out-of-reach solve exact rather than approximate: the limb
+  // ends up fully extended along the ray to the target and short of it by
+  // precisely the shortfall, instead of bending off the line to reach a point
+  // it was never going to touch.
+  _goal.copy(a).addScaledVector(_u, d);
 
   // Law of cosines at the chain root.
   let cosAlpha = (l1 * l1 + d * d - l2 * l2) / (2 * l1 * d);
@@ -205,7 +212,7 @@ export function solveTwoBoneRaw(
   _d1.copy(_u).applyAxisAngle(_axis, alpha);
 
   out.copy(a).addScaledVector(_d1, l1);
-  _d2.copy(target).sub(out);
+  _d2.copy(_goal).sub(out);
   const tipDist = _d2.length();
   if (tipDist > 1e-9) _d2.multiplyScalar(1 / tipDist);
   else _d2.copy(_d1);
@@ -498,6 +505,13 @@ export function solveAim(
 export interface FootLock {
   /** True while this foot owns its world position. */
   locked: boolean;
+  /**
+   * False until the foot has been seeded from forward kinematics. An unseeded
+   * lock holds the world origin, and a leg solved toward the world origin is
+   * the most spectacular failure mode this system has; the flag exists so it
+   * cannot happen even on the first frame of the first move.
+   */
+  primed: boolean;
   /** The frozen world position of the ankle. */
   world: THREE.Vector3;
   /** Where the foot last released from, for the swing arc. */
@@ -508,16 +522,24 @@ export interface FootLock {
   yaw: number;
   /** 0..1 blend of the lock's authority, so a plant is not a snap. */
   weight: number;
+  /**
+   * Progress of the closing step, 0..1. Coming to a halt mid-swing would leave
+   * a foot locked in mid-air, so the last step is finished under the hip rather
+   * than abandoned. ≥ 1 means there is no closing step in flight.
+   */
+  closing: number;
 }
 
 export function makeFootLock(): FootLock {
   return {
     locked: false,
+    primed: false,
     world: new THREE.Vector3(),
     from: new THREE.Vector3(),
     to: new THREE.Vector3(),
     yaw: 0,
     weight: 0,
+    closing: 1,
   };
 }
 

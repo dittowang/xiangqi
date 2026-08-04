@@ -429,7 +429,9 @@ function marchPose(p: Pose, phase: number, c: AuthorCtx): void {
   });
   walkArms(p, phase, c, 1);
   add(p, 'spine01', c.motion.lean - 0.045);
-  breathLayer(p, phase * 0.5, 0.5);
+  // One breath per cycle. It has to be an integer multiple of the gait or the
+  // clip does not close, and a locomotion loop that does not close ticks.
+  breathLayer(p, phase, 0.4);
   // The shouldered 戈 rides on the beat: a small vertical bounce in the carrying
   // arm, half a cycle out of phase with the pelvis, so the haft does not appear
   // welded to the shoulder.
@@ -461,7 +463,7 @@ function stridePose(p: Pose, phase: number, c: AuthorCtx): void {
   add(p, 'foreArmL', 0.62, -0.14, 0);
   add(p, 'foreArmR', 0.62, 0.14, 0);
   add(p, 'spine01', c.motion.lean);
-  breathLayer(p, phase * 0.5, 0.7);
+  breathLayer(p, phase, 0.6);
 }
 
 function crewPose(p: Pose, phase: number, c: AuthorCtx): void {
@@ -489,7 +491,7 @@ function crewPose(p: Pose, phase: number, c: AuthorCtx): void {
   add(p, 'spine02', -0.04);
   add(p, 'neck', 0.09);
   add(p, 'head', 0.06);
-  breathLayer(p, phase * 0.7, 1.2);
+  breathLayer(p, phase, 1.1);
 }
 
 /**
@@ -524,7 +526,7 @@ function canterPose(p: Pose, phase: number, c: AuthorCtx): void {
   add(p, 'foreArmL', 0.74);
   add(p, 'upperArmR', -0.12 + 0.05 * rockLag, 0, -0.22);
   add(p, 'foreArmR', 0.42 + 0.04 * rock);
-  breathLayer(p, phase * 0.4, 0.6);
+  breathLayer(p, phase, 0.6);
 }
 
 /** The mahout: a slow lateral roll with the elephant, absorbed in the spine. */
@@ -551,7 +553,7 @@ function lumberPose(p: Pose, phase: number, c: AuthorCtx): void {
   add(p, 'foreArmR', 0.86);
   add(p, 'upperArmL', 0.42, 0, 0.24);
   add(p, 'foreArmL', 0.55 + 0.05 * sway);
-  breathLayer(p, phase * 0.5, 0.9);
+  breathLayer(p, phase, 0.9);
 }
 
 /**
@@ -586,7 +588,7 @@ function rollPose(p: Pose, phase: number, c: AuthorCtx): void {
   add(p, 'foreArmL', 0.52 - 0.06 * pn);
   add(p, 'upperArmR', 0.34, 0, -0.14);
   add(p, 'foreArmR', 0.68 - 0.04 * pn);
-  breathLayer(p, phase * 0.6, 0.7);
+  breathLayer(p, phase, 0.7);
 }
 
 const MOVE_POSE: Record<GaitName, (p: Pose, phase: number, c: AuthorCtx) => void> = {

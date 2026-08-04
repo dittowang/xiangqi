@@ -150,6 +150,76 @@ function scale(d: Dims, s: BarrelStation): Section {
   return { y: s.y * d.W, rx: s.rx * d.HW, ry: s.ry * d.W };
 }
 
+/**
+ * A point on the barrel at station `z`, angle `theta` measured from the widest
+ * point (0 = the flank, +π/2 = the spine, -π/2 = the belly), pushed `off` clear
+ * of the hide along the true ellipse normal.
+ *
+ * `off` is how the rider's leg is made to *touch* rather than intersect: pass
+ * the limb's own radius and the returned point is where that limb's centre line
+ * has to be for its surface to lie on the horse's.
+ */
+function barrelSurface(d: Dims, z: number, theta: number, off: number, side: number): V3 {
+  const s = barrelAt(d, z);
+  const c = Math.cos(theta);
+  const sn = Math.sin(theta);
+  // Normal of x²/rx² + y²/ry² = 1 at that parameter, normalised.
+  let nx = c / s.rx;
+  let ny = sn / s.ry;
+  const l = Math.hypot(nx, ny) || 1;
+  nx /= l;
+  ny /= l;
+  return [side * (s.rx * c + nx * off), s.y + s.ry * sn + ny * off, z];
+}
+
+/**
+ * Put a joint on the barrel at exactly `len` from `from`.
+ *
+ * Walks the contour at station `z` between two angles, takes the point whose
+ * distance from `from` is closest to the bone's own length, then snaps the
+ * result to exactly that length along the same direction. Two properties come
+ * out of that, and both matter:
+ *
+ *   - the bone is **never stretched**, so `rig.bindLengths` stays honest and an
+ *     IK solver that normalises against proportions lands where it expects to;
+ *   - the joint is **on the surface** wherever the surface is reachable, so the
+ *     leg grips the horse instead of hovering beside it.
+ *
+ * Where the two fight — a short thigh on a deep-barrelled horse — length wins
+ * and the knee rides higher up the flank. That is the correct answer as well as
+ * the safe one: Western Han cavalry had no stirrups, and the surviving cavalry
+ * figurines all sit with the knees carried high and the thighs gripping the
+ * upper flank, which is exactly what a short thigh on a deep horse produces.
+ */
+function fitOnBarrel(
+  d: Dims,
+  z: number,
+  from: V3,
+  len: number,
+  off: number,
+  side: number,
+  fromTheta: number,
+  toTheta: number,
+): V3 {
+  let best: V3 = barrelSurface(d, z, fromTheta, off, side);
+  let bestErr = Infinity;
+  const steps = 96;
+  for (let i = 0; i <= steps; i++) {
+    const th = fromTheta + ((toTheta - fromTheta) * i) / steps;
+    const p = barrelSurface(d, z, th, off, side);
+    const err = Math.abs(Math.hypot(p[0] - from[0], p[1] - from[1], p[2] - from[2]) - len);
+    if (err < bestErr) {
+      bestErr = err;
+      best = p;
+    }
+  }
+  const dx = best[0] - from[0];
+  const dy = best[1] - from[1];
+  const dz = best[2] - from[2];
+  const l = Math.hypot(dx, dy, dz) || 1;
+  return [from[0] + (dx / l) * len, from[1] + (dy / l) * len, from[2] + (dz / l) * len];
+}
+
 /** Everything downstream of the horse needs from it. */
 interface Steed {
   group: PartGroup;
@@ -186,7 +256,7 @@ function buildSteed(ctx: UnitBuildContext, d: Dims): Steed {
   const loinY = barrelAt(d, L * 0.24).y;
   const croupY = barrelAt(d, L * 0.4).y;
   const chestY = barrelAt(d, -L * 0.3).y;
-  const seatY = barrelAt(d, -L * 0.04).y + barrelAt(d, -L * 0.04).ry + W * 0.105;
+  const seatY = barrelAt(d, -L * 0.04).y + barrelAt(d, -L * 0.04).ry + W * 0.072;
   const pollP: V3 = [0, W * 1.175, -L * 0.615];
   const muzzleP: V3 = [0, W * 0.845, -L * 0.86];
 
@@ -196,21 +266,34 @@ function buildSteed(ctx: UnitBuildContext, d: Dims): Steed {
       parent: 'root',
       position: [0, loinY, L * 0.2],
       data: {
-        // --- the published barrel, rig units -----------------------------
-        // The section at longitudinal station z is an ellipse centred at
-        // (0, barrelY + barrelSlope * (z - barrelZ), z) with half-extents
-        // barrelHalfWidth and barrelHalfHeight; it is valid for
-        // barrelZFront <= z <= barrelZBack. Anything outside that is the
-        // shoulder or the quarter, not the barrel, and the leg does not touch
-        // it. `barrelSquareness` is the superellipse parameter `ring()` uses:
-        // 0 is a true ellipse, 1 is nearly a rectangle.
-        barrelY: barrelAt(d, -L * 0.06).y,
-        barrelZ: -L * 0.06,
-        barrelHalfWidth: barrelAt(d, -L * 0.06).rx,
-        barrelHalfHeight: barrelAt(d, -L * 0.06).ry,
-        barrelZFront: -L * 0.3,
-        barrelZBack: L * 0.18,
-        barrelSlope: (barrelAt(d, L * 0.18).y - barrelAt(d, -L * 0.3).y) / (L * 0.48),
+        // ---- THE PUBLISHED BARREL, rig units (pre-scale) -----------------
+        // Everything the rider's leg IK needs, as numbers, so it never has to
+        // measure the mesh. The barrel's cross-section at longitudinal station
+        // z is the ellipse
+        //
+        //     x² / barrelHalfWidth²
+        //   + (y - barrelY - barrelSlope·(z - barrelZ))² / barrelHalfHeight²
+        //   = 1
+        //
+        // valid for barrelZFront <= z <= barrelZBack; the numbers are taken at
+        // barrelZ, the station the rider's knee sits on, and the section varies
+        // by under 5% across the band the leg actually touches. Outside the
+        // band the surface belongs to the shoulder or the quarter, and the leg
+        // does not touch it. `barrelSquareness` is the superellipse exponent
+        // parameter `prim.ring()` was built with — 0 is a true ellipse, 1 is
+        // nearly a rectangle — for anyone who wants the exact drawn surface
+        // rather than its elliptical approximation.
+        //
+        // The BIND POSE ALREADY SATISFIES THIS: `shinL/R` and `footL/R` sit on
+        // the surface offset outward by their own limb radius, so a solver only
+        // has to *maintain* contact, never establish it.
+        barrelY: barrelAt(d, -L * 0.1).y,
+        barrelZ: -L * 0.1,
+        barrelHalfWidth: barrelAt(d, -L * 0.1).rx,
+        barrelHalfHeight: barrelAt(d, -L * 0.1).ry,
+        barrelZFront: -L * 0.26,
+        barrelZBack: L * 0.14,
+        barrelSlope: (barrelAt(d, L * 0.14).y - barrelAt(d, -L * 0.26).y) / (L * 0.4),
         barrelSquareness: 0.52,
         seatY,
         seatZ: -L * 0.04,
@@ -751,6 +834,33 @@ function buildHarness(ctx: UnitBuildContext, d: Dims, g: PartGroup, seatZ: numbe
     );
   }
 
+  // 杏葉 — the bronze phalerae strung along the breast collar. A Han cavalry
+  // horse's harness is hung with them, and they are the one thing that breaks
+  // the long unmodulated run of the chest at board distance.
+  for (const s of [-1, 1]) {
+    for (let i = 0; i < 2; i++) {
+      const t = 0.32 + i * 0.34;
+      const at: V3 = [
+        s * (flank.rx * 0.92 + (front.rx * 1.02 - flank.rx * 0.92) * t),
+        flank.y + flank.ry * 0.85 + (front.y + front.ry * 0.2 - (flank.y + flank.ry * 0.85)) * t,
+        -L * (0.24 + 0.16 * t),
+      ];
+      g.parts.push(
+        P.trim.boss({
+          at,
+          r: HW * 0.15,
+          height: HW * 0.07,
+          boneHint: 'root',
+          mountBone: 'horse.chest',
+          pigment: 'metal',
+          cls: 'iron',
+          rot: [0, 0, s * Math.PI * 0.42],
+          sides: 6,
+        }),
+      );
+    }
+  }
+
   // Crupper: over the croup, round the dock.
   const croup = barrelAt(d, L * 0.4);
   g.parts.push(
@@ -1145,12 +1255,11 @@ function buildBarding(ctx: UnitBuildContext, d: Dims, g: PartGroup): void {
 /**
  * Fold the rider's legs onto the barrel.
  *
- * The knee is placed at the widest point of the barrel's section a little ahead
- * of the girth, offset outward by the thigh's own radius so the *surface* of
- * the leg touches the *surface* of the horse; the ankle is placed at the belly
- * line, tucked back in, so the shin wraps under the barrel rather than hanging
- * beside it. Both come out of `barrelAt`, so they cannot drift when the horse's
- * proportions change.
+ * The knee is fitted to the barrel's surface a little ahead of the girth and
+ * the ankle to the surface below and behind it, both by `fitOnBarrel`, so the
+ * leg's own thickness is accounted for and neither bone is stretched. Both come
+ * out of `barrelAt`, so they cannot drift when the horse's proportions change —
+ * change the barrel table and the rider's legs follow it.
  *
  * Offsets are deltas from the rig's own bind positions and are applied to a
  * bone *and its subtree*, so `footL`'s delta has `shinL`'s subtracted out.
@@ -1160,26 +1269,23 @@ function seatOffsets(rig: Rig, d: Dims): NonNullable<RigOptions['offsets']> {
   const B = rig.bindWorld;
   const out: NonNullable<RigOptions['offsets']> = {};
 
-  const kneeZ = -d.L * 0.11;
-  const ankleZ = -d.L * 0.03;
-  const kneeSec = barrelAt(d, kneeZ);
-  const ankleSec = barrelAt(d, ankleZ);
+  const kneeZ = -d.L * 0.10;
+  const ankleZ = -d.L * 0.015;
 
   for (const S of ['L', 'R'] as const) {
     const s = S === 'L' ? -1 : 1;
     const knee = B[`shin${S}`];
     const ankle = B[`foot${S}`];
+    const hip = v3(B[`thigh${S}`]);
 
-    const kneeTarget: V3 = [
-      s * (kneeSec.rx + m.thighR * 0.92),
-      kneeSec.y + kneeSec.ry * 0.30,
-      kneeZ,
-    ];
-    const ankleTarget: V3 = [
-      s * (ankleSec.rx * 0.66 + m.shinR * 1.3),
-      ankleSec.y - ankleSec.ry * 0.96,
-      ankleZ,
-    ];
+    // Search from high on the shoulder down past the flank. The thigh grips
+    // where its length puts it; on a deep-chested horse that is above the
+    // widest point, which is the stirrupless Han seat.
+    const kneeTarget = fitOnBarrel(d, kneeZ, hip, m.thighLen, m.thighR * 0.86, s, 1.3, -0.35);
+    // The calf continues down and back around the flank from wherever the knee
+    // landed, ending at the ankle: the shin wraps the barrel instead of hanging
+    // off the side of it.
+    const ankleTarget = fitOnBarrel(d, ankleZ, kneeTarget, m.shinLen, m.shinR * 0.86, s, 0.25, -1.35);
 
     const dKnee: V3 = [kneeTarget[0] - knee.x, kneeTarget[1] - knee.y, kneeTarget[2] - knee.z];
     out[`shin${S}` as BoneName] = dKnee;
@@ -1197,6 +1303,87 @@ function seatOffsets(rig: Rig, d: Dims): NonNullable<RigOptions['offsets']> {
   // stops reading as lean and starts reading as a hunchback.
   out.spine02 = [0, 0, -m.torsoLen * 0.07];
   return out;
+}
+
+/**
+ * Pose an arm by *direction* instead of by angle.
+ *
+ * `upper` points from the shoulder to the elbow and `fore` from the elbow to
+ * the wrist; both are normalised here and multiplied by the arm's own measured
+ * bind lengths, so the pose can be authored as "out, back and up" without ever
+ * stretching a bone. The shoulder itself does not move, which is what keeps the
+ * pauldron sitting on it.
+ *
+ * The A-pose the rig hands out is a *bind* pose, not a stance. Left alone on a
+ * mounted figure it reads as a man asleep in the saddle, and it hides the one
+ * thing that separates the two armies' cavalry above the waist — the weapon.
+ */
+function armOffsets(
+  rig: Rig,
+  side: 'L' | 'R',
+  upper: V3,
+  fore: V3,
+  out: NonNullable<RigOptions['offsets']>,
+): void {
+  const B = rig.bindWorld;
+  const shoulder = B[`upperArm${side}`];
+  const elbowBind = B[`foreArm${side}`];
+  const wristBind = B[`hand${side}`];
+  const lenU = shoulder.distanceTo(elbowBind);
+  const lenF = elbowBind.distanceTo(wristBind);
+
+  const u = unit(upper);
+  const f = unit(fore);
+  const elbow: V3 = [
+    shoulder.x + u[0] * lenU,
+    shoulder.y + u[1] * lenU,
+    shoulder.z + u[2] * lenU,
+  ];
+  const wrist: V3 = [elbow[0] + f[0] * lenF, elbow[1] + f[1] * lenF, elbow[2] + f[2] * lenF];
+
+  const dElbow: V3 = [elbow[0] - elbowBind.x, elbow[1] - elbowBind.y, elbow[2] - elbowBind.z];
+  out[`foreArm${side}` as BoneName] = dElbow;
+  out[`hand${side}` as BoneName] = [
+    wrist[0] - wristBind.x - dElbow[0],
+    wrist[1] - wristBind.y - dElbow[1],
+    wrist[2] - wristBind.z - dElbow[2],
+  ];
+}
+
+function unit(v: V3): V3 {
+  const l = Math.hypot(v[0], v[1], v[2]) || 1;
+  return [v[0] / l, v[1] / l, v[2] / l];
+}
+
+/**
+ * Turn the fist so its bore lines up with what it is holding.
+ *
+ * `body.hand()` bores a real grip cylinder along +Y through the closed fingers,
+ * and every weapon is authored haft-along-+Y at the origin — so a weapon placed
+ * at the published grip passes *through* the hand only while the two share an
+ * axis. Rotating a weapon without rotating the fist makes the haft leave
+ * through the side of the knuckles, which is exactly the "detached hand" the
+ * animator's contract forbids. Rotating the fist by the same Euler the weapon
+ * gets keeps them locked.
+ */
+function rotateHand(g: PartGroup, side: 'L' | 'R', wrist: THREE.Vector3, rot: V3): void {
+  const m = new THREE.Matrix4()
+    .makeTranslation(wrist.x, wrist.y, wrist.z)
+    .multiply(
+      new THREE.Matrix4().makeRotationFromEuler(new THREE.Euler(rot[0], rot[1], rot[2], 'XYZ')),
+    )
+    .multiply(new THREE.Matrix4().makeTranslation(-wrist.x, -wrist.y, -wrist.z));
+  const names = new Set([
+    `palm${side}`,
+    `fingers${side}`,
+    `fistCapT${side}`,
+    `fistCapB${side}`,
+    `fistBore${side}`,
+    `thumb${side}`,
+  ]);
+  for (const p of g.parts) if (p.name && names.has(p.name)) p.geometry.applyMatrix4(m);
+  const grip = g.points[`grip${side}`];
+  if (grip) grip.applyMatrix4(m);
 }
 
 // ===========================================================================
@@ -1220,9 +1407,26 @@ function buildHorse(ctx: UnitBuildContext): PartGroup {
   // them on the barrel. The origin puts the pelvis exactly at the saddle seat.
   const origin: [number, number, number] = [0, steed.seat[1] - ctx.rig.metrics.legLen, steed.seat[2]];
   const rig0 = ctx.useRig({ origin });
+  const offsets = seatOffsets(rig0, d);
+
+  // Arm pose. Both riders carry the reins low and forward in the left hand; the
+  // right differs by army, and that difference is most of what separates the
+  // two cavalry silhouettes above the saddle.
+  //   Han  the 環首刀 up at the shoulder, elbow out and back — a compact,
+  //        vertical accent standing clear of the helmet.
+  //   Chu  the 戟 carried forward and low, so the haft rakes back over the
+  //        croup and lengthens the horizontal mass instead.
+  // The yaw is not decoration: a blade is a thin plate, and one held in the
+  // XY plane vanishes to a needle from the side. Turning it 50 degrees keeps
+  // some blade width visible from every azimuth the camera director uses.
+  const daoRot: V3 = [0.3, 0.88, -0.2];
+  const jiRot: V3 = [1.38, 0, -0.05];
+  armOffsets(rig0, 'R', han ? [0.62, 0.1, 0.44] : [0.55, -0.62, -0.5], han ? [0.14, 0.96, -0.24] : [0.18, -0.5, -0.85], offsets);
+  armOffsets(rig0, 'L', [-0.46, -0.62, -0.64], [-0.06, -0.26, -0.96], offsets);
+
   const rig = ctx.useRig({
     origin: [0, steed.seat[1] - rig0.metrics.legLen, steed.seat[2]],
-    offsets: seatOffsets(rig0, d),
+    offsets,
   });
   const m = rig.metrics;
   const B = rig.bindWorld;
@@ -1359,6 +1563,9 @@ function buildHorse(ctx: UnitBuildContext): PartGroup {
   );
 
   // --- weapons ------------------------------------------------------------
+  // Turn each fist to match what it holds, *then* read the grip: the published
+  // point moves with the hand, so the haft still runs through the bore.
+  rotateHand(g, 'R', B.handR, han ? daoRot : jiRot);
   const gripR = g.points.gripR ?? B.handR;
   const gripL = g.points.gripL ?? B.handL;
   let tip: THREE.Vector3;
@@ -1374,8 +1581,8 @@ function buildHorse(ctx: UnitBuildContext): PartGroup {
       P.weapons.dao({
         grip: v3(gripR),
         bone: 'handR',
-        rot: [0.52, 0, -0.30],
-        length: h * 0.46,
+        rot: daoRot,
+        length: h * 0.52,
         halfWidth: h * 0.021,
         metalPigment: 'metal',
       }),
@@ -1389,7 +1596,7 @@ function buildHorse(ctx: UnitBuildContext): PartGroup {
     const halberd = P.weapons.ji({
       grip: v3(gripR),
       bone: 'handR',
-      rot: [1.38, 0, -0.05],
+      rot: jiRot,
       length: h * 1.86,
       gripAt: 0.34,
       shaftR: h * 0.014,

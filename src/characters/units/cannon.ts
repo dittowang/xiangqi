@@ -39,11 +39,16 @@
  *
  * WHAT THE ANIMATOR GETS
  *   `treb.pivot`   the fixed bearing at the apex.
- *   `treb.beam`    the throwing beam. Rotate about **+X** to wind and release:
- *                  negative winds the sling end down toward the trough,
- *                  positive throws it up and forward over the pivot. Its
- *                  `userData` carries `armLength`, `buttLength`, `restAngle`
- *                  and `releaseAngle` in rig units and radians.
+ *   `treb.beam`    the throwing beam, built in the **loaded** pose: at
+ *                  `rotation.x = 0` the sling is already lying in the trough
+ *                  with the stone on the boards, which is where a wound engine
+ *                  sits. Rotating about +X is the throw, and the sign matters —
+ *                  the sling end starts *behind* the pivot, so a **negative**
+ *                  `rotation.x` sweeps it up and forward over the axle and a
+ *                  positive one presses it further down. `userData` carries
+ *                  `armLength`, `buttLength`, `armAngle` (the beam's rake at
+ *                  rest), `throwSign` and `releaseAngle` — the `rotation.x` at
+ *                  which the pouch has passed the pivot and should let go.
  *   `treb.sling`   the sling head, a child of the beam. It carries the pouch,
  *                  the stone and the `muzzle` socket, so the projectile origin
  *                  travels the release arc for free.
@@ -160,8 +165,11 @@ function layout(h: number, side: Side): Layout {
     armAngle,
     armLen,
     buttLen,
-    beamHW: 0.05 * h,
-    beamHH: 0.064 * h,
+    // Deliberately heavy. The beam is the unit's one long diagonal and the
+    // silhouette contract rests on it, so it is sized to survive the far rank
+    // rather than to be structurally minimal.
+    beamHW: 0.058 * h,
+    beamHH: 0.075 * h,
     armTip,
     buttTip,
     // The loaded sling lies back along the trough with the stone on the boards.
@@ -171,8 +179,11 @@ function layout(h: number, side: Side): Layout {
     // winders stand aft at the windlass levers. Either way they are outside the
     // sled in plan, so they read as separate strokes in silhouette instead of
     // dissolving into the frame.
-    crewA: chu ? [0.6 * h, 0, 0.78 * h] : [0.58 * h, 0, -0.46 * h],
-    crewB: chu ? [-0.6 * h, 0, 0.8 * h] : [-0.62 * h, 0, -0.6 * h],
+    // Han haulers stand directly under the rope fan at the bow, clear of the
+    // frame's front legs, so in profile they are two separate upright strokes
+    // instead of a thickening of the frame. Chu winders stand aft at the bars.
+    crewA: chu ? [0.6 * h, 0, 0.78 * h] : [0.58 * h, 0, -0.71 * h],
+    crewB: chu ? [-0.6 * h, 0, 0.8 * h] : [-0.62 * h, 0, -0.82 * h],
     mastTop: 1.36 * h,
   };
 }
@@ -275,6 +286,25 @@ function throughTenon(
     ],
     name,
   );
+}
+
+/**
+ * The common case: a member lying athwart the machine, spanning ±`half` to the
+ * outer faces of its two hosts, with its tenons standing `proud` beyond them.
+ * Every cross member on this unit is one of these.
+ */
+function athwartTenon(
+  P: Parts,
+  half: number,
+  proud: number,
+  yy: number,
+  zz: number,
+  body: { hw: number; hh: number },
+  tenon: { hw: number; hh: number },
+  name: string,
+): THREE.BufferGeometry {
+  const t = proud / (2 * (half + proud));
+  return throughTenon(P, [-(half + proud), yy, zz], [half + proud, yy, zz], t, 1 - t, body, tenon, name);
 }
 
 /**
@@ -453,15 +483,12 @@ function buildSled(y: Yard, L: Layout): void {
   const proud = 0.062 * h;
   const outer = L.runnerX + L.runnerHW;
   for (const tz of [-0.66 * h, 0.1 * h, 0.8 * h]) {
-    const a: V3 = [-(outer + proud), L.runnerHH + 0.028 * h, tz];
-    const b: V3 = [outer + proud, L.runnerHH + 0.028 * h, tz];
-    const span = b[0] - a[0];
-    const tie = throughTenon(
+    const tie = athwartTenon(
       P,
-      a,
-      b,
-      proud / span,
-      1 - proud / span,
+      outer,
+      proud,
+      L.runnerHH + 0.028 * h,
+      tz,
       { hw: 0.045 * h, hh: 0.042 * h },
       { hw: 0.026 * h, hh: 0.03 * h },
       'sledTie',
@@ -603,12 +630,12 @@ function buildHanFrame(y: Yard, L: Layout): void {
   // Collar tie across the frame, through-tenoned into both bolsters.
   const collarY = apexY - 0.4 * h;
   const cx = 0.2 * h;
-  const collar = throughTenon(
+  const collar = athwartTenon(
     P,
-    [-cx - 0.05 * h, collarY, L.pivot[2] + 0.02 * h],
-    [cx + 0.05 * h, collarY, L.pivot[2] + 0.02 * h],
-    0.05 / (2 * 0.25),
-    1 - 0.05 / (2 * 0.25),
+    cx,
+    0.05 * h,
+    collarY,
+    L.pivot[2] + 0.02 * h,
     { hw: 0.03 * h, hh: 0.036 * h },
     { hw: 0.019 * h, hh: 0.022 * h },
     'collarTie',
@@ -709,12 +736,12 @@ function buildChuFrame(y: Yard, L: Layout): void {
     [headY - 0.34 * h, postZ[1]],
   ]) {
     const bx = 0.21 * h;
-    const brace = throughTenon(
+    const brace = athwartTenon(
       P,
-      [-bx - 0.05 * h, ty, tz],
-      [bx + 0.05 * h, ty, tz],
-      0.05 / (2 * 0.26),
-      1 - 0.05 / (2 * 0.26),
+      bx,
+      0.05 * h,
+      ty,
+      tz,
       { hw: 0.028 * h, hh: 0.034 * h },
       { hw: 0.018 * h, hh: 0.021 * h },
       'towerBrace',
@@ -886,7 +913,9 @@ function buildSling(y: Yard, L: Layout, rng: Rng): void {
   const tip = L.armTip;
   const pouch = L.pouch;
   const halfLen = 0.16 * h;
-  const halfW = 0.12 * h;
+  // Wider than the shot's own radius, or the stone bulges through the leather —
+  // and this is the one piece of the machine the capture camera gets close to.
+  const halfW = 0.165 * h;
   // The cord eyes sit at the stone's equator: that is where a sling's pouch is
   // actually gathered, and it is what stops the shot reading as a ball resting
   // on a flap of leather.
@@ -949,7 +978,7 @@ function buildSling(y: Yard, L: Layout, rng: Rng): void {
   // A saddle that actually cradles the shot: deepest across the middle, drawn
   // in at both ends where the cords take it.
   const rows = 5;
-  const cols = 5;
+  const cols = 6;
   const grid: V3[][] = [];
   for (let r = 0; r < rows; r++) {
     const u = (r / (rows - 1)) * 2 - 1; // across
@@ -1057,12 +1086,12 @@ function buildSpreader(y: Yard, L: Layout): Working {
   const tip = L.buttTip;
   const half = 0.3 * h;
 
-  const bar = throughTenon(
+  const bar = athwartTenon(
     P,
-    [-half - 0.05 * h, tip[1], tip[2]],
-    [half + 0.05 * h, tip[1], tip[2]],
-    0.05 / (2 * 0.35),
-    1 - 0.05 / (2 * 0.35),
+    half,
+    0.05 * h,
+    tip[1],
+    tip[2],
     { hw: 0.033 * h, hh: 0.036 * h },
     { hw: 0.021 * h, hh: 0.023 * h },
     'spreaderBar',
@@ -1303,7 +1332,27 @@ function buildWindlass(y: Yard, L: Layout): Working {
   for (const s of [-1, 1]) {
     const a: V3 = [s * 0.18 * h, drum[1] - 0.02 * h, drum[2] - 0.02 * h];
     const b: V3 = [s * 0.46 * h, drum[1] + 0.46 * h, drum[2] + 0.05 * h];
-    timberPart(y, strutBaulk(P, a, b, 0.022 * h, 0.024 * h, 'capstanBar'), D, 'capstanBar');
+    // Tapered to the tip — what a lever wants structurally, and what makes the
+    // outer end thin enough for a fist to close on it. There is a section
+    // station at each of the two grip heights, so the bar has real geometry
+    // exactly where a hand is, not an interpolated gap.
+    const GRIP_LOW = 0.58;
+    const GRIP_HIGH = 0.88;
+    timberPart(
+      y,
+      baulk(
+        P,
+        [
+          { p: a, hw: 0.028 * h, hh: 0.03 * h },
+          { p: lerp3(a, b, GRIP_LOW), hw: 0.0185 * h, hh: 0.0195 * h },
+          { p: lerp3(a, b, GRIP_HIGH), hw: 0.016 * h, hh: 0.0168 * h },
+          { p: b, hw: 0.014 * h, hh: 0.015 * h },
+        ],
+        'capstanBar',
+      ),
+      D,
+      'capstanBar',
+    );
     y.g.parts.push(
       P.trim.ferrule({
         at: lerp3(a, b, 0.42),
@@ -1317,8 +1366,8 @@ function buildWindlass(y: Yard, L: Layout): Working {
         sides: 6,
       }),
     );
-    // Rope grommets whipped round the bar where the hands close on it.
-    for (const t of [0.6, 0.94]) {
+    // Rope grommets whipped round the bar just clear of where the hands close.
+    for (const t of [0.44, 0.73]) {
       y.g.parts.push(
         P.mkPart(
           lashing(P, {
@@ -1337,7 +1386,7 @@ function buildWindlass(y: Yard, L: Layout): Working {
         ),
       );
     }
-    grips.push({ high: lerp3(a, b, 0.94), low: lerp3(a, b, 0.6) });
+    grips.push({ high: lerp3(a, b, GRIP_HIGH), low: lerp3(a, b, GRIP_LOW) });
   }
 
   // Winding rope from the drum up to the arm tip: the tackle that cocks it.
@@ -1463,8 +1512,16 @@ function reachOffsets(rig: Rig, side: 'L' | 'R', elbow: V3, wrist: V3): Offsets 
   return out;
 }
 
-/** Legs braced against the pull: knees out and bent, feet planted apart. */
-function braceOffsets(rig: Rig, forward: number): Offsets {
+/**
+ * Legs braced against the pull: knees bent, one foot forward, one back.
+ *
+ * `origin` is the crewman's standing point and is *not* optional. `buildRig`
+ * folds a rig's vertical origin into its metrics but adds the horizontal origin
+ * to every bone at the end, so a target expressed in bare metrics would be an
+ * absolute rig-space coordinate near x = 0 — and would haul the crewman's legs
+ * out from under him toward the machine's centre line.
+ */
+function braceOffsets(rig: Rig, origin: V3, forward: number): Offsets {
   const m = rig.metrics;
   const B = rig.bindWorld;
   const y0 = B.root.y;
@@ -1474,14 +1531,14 @@ function braceOffsets(rig: Rig, forward: number): Offsets {
     const knee = B[`shin${S}`];
     const ankle = B[`foot${S}`];
     const kneeT: V3 = [
-      s * m.hipWidth * 0.72,
+      origin[0] + s * m.hipWidth * 0.72,
       y0 + m.legLen * 0.5,
-      -m.legLen * (0.12 + forward * 0.16) + (s > 0 ? -m.legLen * 0.06 : m.legLen * 0.1),
+      origin[2] - m.legLen * (0.12 + forward * 0.16) + (s > 0 ? -m.legLen * 0.06 : m.legLen * 0.1),
     ];
     const ankleT: V3 = [
-      s * m.stanceWidth * 0.78,
+      origin[0] + s * m.stanceWidth * 0.78,
       y0 + m.ankleY,
-      m.legLen * (0.1 - forward * 0.2) + (s > 0 ? -m.legLen * 0.22 : m.legLen * 0.2),
+      origin[2] + m.legLen * (0.1 - forward * 0.2) + (s > 0 ? -m.legLen * 0.22 : m.legLen * 0.2),
     ];
     const dK: V3 = [kneeT[0] - knee.x, kneeT[1] - knee.y, kneeT[2] - knee.z];
     out[`shin${S}` as BoneName] = dK;
@@ -1545,6 +1602,12 @@ interface CrewLook {
   side: Side;
   chu: boolean;
   rng: Rng;
+  /**
+   * Bore radius through the closed fist. It has to match what the man is
+   * actually holding, or the thing he is holding passes through his fingers:
+   * a Han hauler closes on a rope, a Chu winder on a capstan bar.
+   */
+  bore: number;
 }
 
 /**
@@ -1619,6 +1682,7 @@ function crewFigure(P: Parts, m: Metrics, B: Bind, look: CrewLook): PartGroup {
       wrist: v(B[`hand${S}`]),
       length: m.handLen,
       r: m.handR,
+      gripR: look.bore,
       pose: 'fist',
     });
     g.parts.push(...hand.parts);
@@ -1846,13 +1910,24 @@ const buildCannon = (ctx: UnitBuildContext): PartGroup => {
       data: {
         armLength: L.armLen,
         buttLength: L.buttLen,
-        // Rest is the loaded pose: the sling end is down and back. Release is
-        // where the pouch passes over the pivot heading forward.
-        restAngle: -L.armAngle,
-        releaseAngle: 0.95,
+        armAngle: L.armAngle,
+        // Rotating about +X by θ moves the arm from angle φ to φ−θ measured
+        // from +Z toward +Y; the loaded arm sits at φ = −armAngle, so throwing
+        // it forward over the pivot means driving θ negative. Release once the
+        // arm is about 25° past vertical, which is θ ≈ −2.4.
+        throwSign: -1,
+        releaseAngle: -2.4,
       },
     },
-    { name: 'treb.sling', parent: 'treb.beam', position: L.armTip, data: { cordLength: 0.44 * h } },
+    {
+      name: 'treb.sling',
+      parent: 'treb.beam',
+      position: L.armTip,
+      data: {
+        cordLength: Math.hypot(L.pouch[1] - L.armTip[1], L.pouch[2] - L.armTip[2]),
+        stoneRadius: L.stoneR,
+      },
+    },
   );
 
   // -- the machine ---------------------------------------------------------
@@ -1882,7 +1957,14 @@ const buildCannon = (ctx: UnitBuildContext): PartGroup => {
   // called twice per man — once to read where his joints land by default, once
   // with the offsets derived from that — exactly as the fallback does for a
   // seated rider.
-  const look: CrewLook = { side: ctx.side, chu: L.chu, rng };
+  const look: CrewLook = {
+    side: ctx.side,
+    chu: L.chu,
+    rng,
+    // Sized to what each army's crew closes on: the haul rope is 0.011h thick,
+    // the capstan bar necks to 0.014h at the grips.
+    bore: L.chu ? 0.017 * h : 0.0125 * h,
+  };
 
   // Crew B first. He is baked onto his own `crew.*` bones, so the rig he is
   // measured from is discarded and only crew A's rig reaches the skinner. The
@@ -1892,7 +1974,7 @@ const buildCannon = (ctx: UnitBuildContext): PartGroup => {
   const gripB =
     rope.fixedL ?? haulGrip(probeB.metrics, L.crewB, -1, probeB.metrics.shoulderY + 0.02 * h);
   const offB: Offsets = {
-    ...braceOffsets(probeB, L.chu ? 0.15 : 0.85),
+    ...braceOffsets(probeB, L.crewB, L.chu ? 0.15 : 0.85),
     ...gripOffsets(probeB, gripB, -1),
   };
   const rigB = ctx.useRig({ origin: L.crewB, offsets: offB });
@@ -1925,7 +2007,7 @@ const buildCannon = (ctx: UnitBuildContext): PartGroup => {
   const gripA =
     rope.fixedR ?? haulGrip(probeA.metrics, L.crewA, 1, probeA.metrics.shoulderY + 0.12 * h);
   const offA: Offsets = {
-    ...braceOffsets(probeA, L.chu ? 0.15 : 0.85),
+    ...braceOffsets(probeA, L.crewA, L.chu ? 0.15 : 0.85),
     ...gripOffsets(probeA, gripA, 1),
   };
   const rigA = ctx.useRig({ origin: L.crewA, offsets: offA });

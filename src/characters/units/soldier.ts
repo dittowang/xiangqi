@@ -12,9 +12,10 @@
  *   Han 兵 rakes a short 矛 spear FORWARD, gripped in both hands, butt behind
  *           the right heel and point out past the knee-line: a tall thin column
  *           with a stroke cutting down-and-forward across it.
- *   Chu 卒 rakes a long 戈 dagger-axe BACK over the right shoulder, so the same
- *           column carries the opposite diagonal, topped by the 戈's forward
- *           hook — an inverted L that nothing else in either army makes.
+ *   Chu 卒 rakes a long 戈 dagger-axe BACK over the right shoulder, held in one
+ *           hand with the off arm swinging free, so the same column carries the
+ *           opposite diagonal, topped by the 戈's forward hook — an inverted L
+ *           that nothing else in either army makes.
  *
  * Two opposite diagonals is a difference that survives being reduced to a black
  * shape at forty pixels, which colour, plate count and helmet detail do not. The
@@ -508,8 +509,8 @@ function chuWrap(
  */
 function squareShield(P: Lib, m: RigMetrics, shoulder: THREE.Vector3, elbow: THREE.Vector3, scale: number): PartGroup {
   const g = P.emptyGroup();
-  const H = m.height * 0.19 * scale;
-  const W = m.height * 0.145 * scale;
+  const H = m.height * 0.21 * scale;
+  const W = m.height * 0.16 * scale;
   const dish = W * 0.16;
 
   const rows = 4;
@@ -561,11 +562,65 @@ function squareShield(P: Lib, m: RigMetrics, shoulder: THREE.Vector3, elbow: THR
   // Sit it outboard of the upper arm, face turned forward and out.
   const mid = shoulder.clone().lerp(elbow, 0.5);
   const M = new THREE.Matrix4().compose(
-    new THREE.Vector3(mid.x - m.upperArmR * 2.1, mid.y - H * 0.06, mid.z - m.upperArmR * 0.4),
+    new THREE.Vector3(mid.x - m.upperArmR * 2.5, mid.y - H * 0.06, mid.z - m.upperArmR * 0.4),
     new THREE.Quaternion().setFromEuler(new THREE.Euler(0.14, -0.5, 0.26, 'XYZ')),
     new THREE.Vector3(1, 1, 1),
   );
   return P.transformGroup(g, M);
+}
+
+/**
+ * What hangs off the belt. Three kits, chosen by variant, because a rank of
+ * five identical conscripts is the failure this unit is most likely to make and
+ * the belt is where a real rank differs most: one man carries a ration pouch,
+ * the next a sheathed knife, the third both.
+ */
+function beltKit(P: Lib, m: RigMetrics, variant: number): PartGroup {
+  const g = P.emptyGroup();
+  const kit = variant % 3;
+  const y = m.waistY - m.torsoLen * 0.16;
+
+  if (kit === 0 || kit === 2) {
+    // Ration pouch on the left hip: a soft bag with a stiff flap over it.
+    const bag = P.prim.loft(
+      [
+        P.prim.ring({ rx: m.hipWidth * 0.2, rz: m.hipWidth * 0.11, y, sides: 6, phase: Math.PI / 6, squareness: 0.5 }),
+        P.prim.ring({ rx: m.hipWidth * 0.23, rz: m.hipWidth * 0.13, y: y - m.torsoLen * 0.1, sides: 6, phase: Math.PI / 6, squareness: 0.5 }),
+        P.prim.ring({ rx: m.hipWidth * 0.18, rz: m.hipWidth * 0.1, y: y - m.torsoLen * 0.2, sides: 6, phase: Math.PI / 6, squareness: 0.5 }),
+      ],
+      { name: 'pouch' },
+    );
+    bag.translate(-m.hipWidth * 0.66, 0, m.hipDepth * 0.28);
+    g.parts.push(P.mkPart(bag, 'leather', 'leather', 'pelvis', { name: 'pouch', rigid: true }));
+
+    const flap = P.prim.bevelSlab({
+      w: m.hipWidth * 0.42,
+      h: m.torsoLen * 0.13,
+      d: m.hipWidth * 0.06,
+      bevel: m.hipWidth * 0.03,
+    });
+    P.prim.place(flap, {
+      pos: [-m.hipWidth * 0.66, y - m.torsoLen * 0.04, m.hipDepth * 0.28 - m.hipWidth * 0.1],
+      rot: [0.2, 0, 0],
+    });
+    g.parts.push(P.mkPart(flap, 'leather', 'leather', 'pelvis', { name: 'pouchFlap', rigid: true }));
+  }
+
+  if (kit === 1 || kit === 2) {
+    // A short knife, sheathed, tucked behind the right hip out of the weapon's
+    // way. Small — it must never compete with the haft for the outline.
+    const sheath = P.weapons.scabbard({
+      grip: [m.hipWidth * 0.6, y + m.torsoLen * 0.06, m.hipDepth * 0.5],
+      rot: [0.5, 0, -0.3],
+      bone: 'pelvis',
+      length: m.height * 0.15,
+      width: m.height * 0.026,
+      metalPigment: 'metal',
+    });
+    g.parts.push(...unifyMetal(sheath).parts);
+  }
+
+  return g;
 }
 
 // ---------------------------------------------------------------------------
@@ -592,20 +647,22 @@ function buildSoldier(ctx: UnitBuildContext): PartGroup {
   // 41° forward for the Han thrust, 32° back for the Chu shoulder carry. Both
   // are past the angle at which the haft stops reading as "vertical, roughly" —
   // that is the point of them.
-  const rake = (han ? -0.72 : 0.56) + rng.range(-0.05, 0.05);
+  const rake = (han ? -0.68 : 0.56) + rng.range(-0.05, 0.05);
 
   // --- the carry, before any geometry exists -----------------------------
-  // Han: rear hand just above the right hip, spear running up and FORWARD, the
-  // left hand leading across the body at belly height.
-  // Chu: upper hand back beside the hip, the 戈 running up and BACK past the
-  // shoulder, the left hand trailing low and forward down the haft.
-  // The Han grip sits a little forward of the hip so the shaft clears the body
-  // in profile: a haft buried in the torso's own outline is not a diagonal, it
-  // is a texture.
+  // TWO HANDS OR ONE. The Han 兵 grips his 矛 with both, out and forward of the
+  // right hip so the shaft clears the ribs in profile and the leading forearm
+  // passes *in front of* the belly rather than through it. The Chu 卒 carries
+  // his longer 戈 one-handed at the shoulder with the off arm swinging free:
+  // that is how a 戈 is actually marched with, it separates the two armies by
+  // arm silhouette as well as by haft angle, and it keeps a left elbow out of
+  // the stomach — which is where a two-handed grip on a back-raked haft puts
+  // it, whatever pole vector the IK is given.
+  const twoHanded = han;
   const anchor = han
-    ? new THREE.Vector3(m.hipWidth * 0.66, m.waistY - m.torsoLen * 0.24, -m.hipDepth * 0.12)
-    : new THREE.Vector3(m.hipWidth * 0.48, m.waistY + m.torsoLen * 0.16, m.hipDepth * 0.55);
-  const weaponLen = m.height * (han ? 0.9 : 0.95);
+    ? new THREE.Vector3(m.hipWidth * 0.8, m.waistY - m.torsoLen * 0.24, -m.hipDepth * 0.3)
+    : new THREE.Vector3(m.hipWidth * 0.86, m.waistY + m.torsoLen * 0.16, m.hipDepth * 0.5);
+  const weaponLen = m.height * (han ? 0.86 : 0.95);
   const c = fitCarry(
     ctx.rig.bindWorld,
     m,
@@ -613,16 +670,19 @@ function buildSoldier(ctx: UnitBuildContext): PartGroup {
     anchor,
     weaponLen,
     han ? 0.33 : 0.42,
-    m.armLen * (han ? 0.42 : -0.42),
+    twoHanded ? m.armLen * 0.42 : 0,
   );
   const poles: { L: V3; R: V3 } = han
     ? { L: [-0.55, -0.5, -1.0], R: [0.45, -0.1, 1.0] }
-    : { L: [-0.75, -0.55, -0.6], R: [0.5, -0.1, 1.0] };
+    : { L: [-0.9, -0.6, -0.4], R: [0.5, -0.1, 1.0] };
 
   // --- install the pose ---------------------------------------------------
   const bore = m.height * (han ? 0.018 : 0.0155);
   const wristR = wristFor(c.gripR, c.pitch, m);
-  const wristL = wristFor(c.gripL, c.pitch, m);
+  const wristL = twoHanded
+    ? wristFor(c.gripL, c.pitch, m)
+    : // Free arm: a loose fist swinging just clear of the hip.
+      new THREE.Vector3(-m.hipWidth * 0.62, m.hipY + m.torsoLen * 0.16, -m.hipDepth * 0.35);
   const rig = ctx.useRig({
     offsets: armOffsets(ctx.rig.bindWorld, m, { L: wristL, R: wristR }, poles),
   });
@@ -687,7 +747,14 @@ function buildSoldier(ctx: UnitBuildContext): PartGroup {
         shaft: han ? 0.16 : 0.52,
       }).parts,
     );
-    const hand = posedHand(P, S, B[`hand${S}` as BoneName], c.pitch, m, bore);
+    const hand = posedHand(
+      P,
+      S,
+      B[`hand${S}` as BoneName],
+      S === 'R' || twoHanded ? c.pitch : 0.18,
+      m,
+      bore,
+    );
     g.parts.push(...hand.parts);
     for (const k of Object.keys(hand.points)) g.points[k] = hand.points[k];
   }
@@ -733,6 +800,7 @@ function buildSoldier(ctx: UnitBuildContext): PartGroup {
     knot: variant % 2 === 0,
   });
   g.parts.push(...sash.parts);
+  g.parts.push(...beltKit(P, m, variant).parts);
 
   // --- armour -------------------------------------------------------------
   if (han) {

@@ -181,7 +181,12 @@ function dimensions(h: number, han: boolean): Car {
   const floorThk = R * 0.1;
   const floorY = R * 1.1;
   const hd = h * 0.37;
-  const canopyH = h * 1.32;
+  // Canopy height is the whole unit's height, and it is a compromise between
+  // two hard constraints: it must clear the driver's fan crest (about 1.1
+  // statures above the floor) and it must stay under the elephant, which is the
+  // next unit up the height ladder at 2.76 world units. 1.22 statures leaves
+  // roughly a finger's clearance over the crest and lands the finial at 2.5.
+  const canopyH = h * 1.22;
   const canopyR = h * (han ? 0.86 : 0.8);
   return {
     R,
@@ -447,6 +452,9 @@ function nailRing(
 ): PartGroup {
   const P = ctx.parts;
   const g = P.emptyGroup();
+  // Seated at 0.965 R with a 0.03 R head, so the nail crowns land at 0.995 R —
+  // inside the tread. Nails proud of the rim look right in isolation and dip
+  // below y = 0 at the bottom of the wheel, which puts them through the board.
   const geo = P.rivets.rivetGeometry({ r: R * 0.045, h: R * 0.03, sides: 6 });
   const up = new THREE.Vector3(0, 1, 0);
   const n = new THREE.Vector3();
@@ -457,7 +465,7 @@ function nailRing(
     n.set(0, Math.cos(th), Math.sin(th));
     mats.push(
       new THREE.Matrix4().compose(
-        new THREE.Vector3(at[0], at[1] + n.y * R * 0.99, at[2] + n.z * R * 0.99),
+        new THREE.Vector3(at[0], at[1] + n.y * R * 0.965, at[2] + n.z * R * 0.965),
         new THREE.Quaternion().setFromUnitVectors(up, n),
         one,
       ),

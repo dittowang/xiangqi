@@ -136,10 +136,17 @@ export type GaitName = 'march' | 'stride' | 'canter' | 'lumber' | 'roll' | 'crew
  * solver so the two can never disagree about when a foot is down.
  *
  * `strideOverLeg` is the ground distance covered by one *full cycle* (two steps
- * for a biped) as a multiple of the figure's leg length. Expressing it that way
- * is what makes the gait retarget: a 0.60-scale conscript and a 1.12-scale
- * general take the same number of steps per square only if their strides scale
- * with their legs, and they do not otherwise.
+ * for a biped) as a multiple of the figure's **hip-to-ankle** length. Expressing
+ * it that way is what makes the gait retarget: a 0.60-scale conscript and a
+ * 1.12-scale general take the same number of steps per square only if their
+ * strides scale with their legs, and they do not otherwise.
+ *
+ * The ceiling on `strideOverLeg` is geometry, not taste. The foot plants
+ * `duty/2` of a stride ahead of the hip, and the hip has to stay within the
+ * leg's reach of it; anything past about 1.1 forces a pelvis dip deep enough to
+ * read as a crouch. The numbers below sit just under that, so the small dip the
+ * contact solver produces at heel strike is the real one a walk has rather than
+ * a symptom.
  *
  * `duty` is the fraction of the cycle each foot spends in stance. Above 0.5 the
  * two stance windows overlap and the walk has a real double-support phase —
@@ -171,13 +178,13 @@ export const GAIT: Record<GaitName, GaitPlan> = {
   march: {
     name: 'march',
     cycle: 1.03,
-    strideOverLeg: 1.52,
+    strideOverLeg: 1.02,
     duty: 0.62,
     contactL: 0.5,
     contactR: 0.0,
     lift: 0.052,
     seated: false,
-    bob: 0.0165,
+    bob: 0.021,
   },
   /**
    * The robed walk. Longer double support, shorter steps, and a bob small
@@ -186,13 +193,13 @@ export const GAIT: Record<GaitName, GaitPlan> = {
   stride: {
     name: 'stride',
     cycle: 1.19,
-    strideOverLeg: 1.24,
+    strideOverLeg: 0.86,
     duty: 0.66,
     contactL: 0.5,
     contactR: 0.0,
     lift: 0.031,
     seated: false,
-    bob: 0.0047,
+    bob: 0.0058,
   },
   /** The rider's clock. The horse's three beats live in `CANTER` below. */
   canter: {
@@ -237,7 +244,7 @@ export const GAIT: Record<GaitName, GaitPlan> = {
   crew: {
     name: 'crew',
     cycle: 1.47,
-    strideOverLeg: 0.72,
+    strideOverLeg: 0.54,
     duty: 0.73,
     contactL: 0.5,
     contactR: 0.0,
@@ -515,11 +522,16 @@ export const IK = {
   aimRate: 7.4,
   /**
    * Contact solve: how much of a locked foot's over-extension is taken out of
-   * the root rather than by stretching the leg. 1.0 is physically correct and
-   * makes the hips dip hard on a long stride; 0.82 keeps the dip readable
-   * without the figure squatting.
+   * the root rather than by leaving the leg over-extended.
+   *
+   * It is 1.0 and it has to be. Anything less leaves the ankle short of its
+   * plant by the uncorrected fraction, and "short of its plant" measured frame
+   * to frame is exactly foot slide — at 0.82 it measured 3.3 mm a frame, which
+   * is small, visible, and the defect the whole system exists to prevent. The
+   * price is that the pelvis dips the full geometric amount at heel strike,
+   * which is what a pelvis does.
    */
-  hipGive: 0.82,
+  hipGive: 1.0,
   /** Iterations of the hip solve. One is enough at walking speeds; two is safe. */
   hipIterations: 2,
   /** A foot enters stance when its stance weight rises past this. */

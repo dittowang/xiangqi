@@ -84,8 +84,16 @@ function aim(dir: THREE.Vector3, roll = 0): Aim {
 
 /** Wrist position that puts an aimed fist's bore centre exactly on `grip`. */
 function wristFor(grip: THREE.Vector3, a: Aim, m: RigMetrics): THREE.Vector3 {
-  const local = new THREE.Vector3(0, -m.handLen * 0.5, -m.handR * 0.55).applyQuaternion(a.quat);
-  return grip.clone().sub(local);
+  return grip.clone().sub(boreOffset(a, m));
+}
+
+/** The inverse: where the bore of a fist at `wrist` actually ends up. */
+function gripOf(wrist: THREE.Vector3, a: Aim, m: RigMetrics): THREE.Vector3 {
+  return wrist.clone().add(boreOffset(a, m));
+}
+
+function boreOffset(a: Aim, m: RigMetrics): THREE.Vector3 {
+  return new THREE.Vector3(0, -m.handLen * 0.5, -m.handR * 0.55).applyQuaternion(a.quat);
 }
 
 // ---------------------------------------------------------------------------
@@ -270,6 +278,27 @@ function hanCap(P: Lib, m: RigMetrics, headZ: number, headBaseY: number, rise: n
     g.parts.push(P.mkPart(cap, 'gold', 'metal', 'head', { name: 'capBarEnd', rigid: true }));
   }
 
+  // The rear projection of a 進賢冠: a plate sloping back and down off the cap,
+  // which is what stops the profile reading as a plain block on a head.
+  const lobe: V3[][] = [];
+  for (let r = 0; r < 3; r++) {
+    const t = r / 2;
+    const y = top - L * (0.02 + t * 0.5);
+    const z = headZ + R * (0.34 + t * 0.66);
+    const hw = R * (0.46 - t * 0.12);
+    lobe.push([
+      [-hw, y, z],
+      [0, y + L * 0.03 * (1 - t), z],
+      [hw, y, z],
+    ]);
+  }
+  g.parts.push(
+    P.mkPart(P.prim.shell(lobe, R * 0.07, { name: 'capLobe' }), 'lacquer', 'lacquer', 'head', {
+      name: 'capLobe',
+      rigid: true,
+    }),
+  );
+
   // Chin ties, hanging from under the wrap past the jaw.
   for (const s of [-1, 1]) {
     const grid: V3[][] = [];
@@ -338,11 +367,13 @@ function chuCrown(P: Lib, m: RigMetrics, headZ: number, headBaseY: number, rise:
     const rows = 4;
     for (let r = 0; r < rows; r++) {
       const t = r / (rows - 1);
-      // Rises fast, leans out and back, and narrows to a point.
-      const x = s * R * (0.55 + t * spread);
-      const y = base + L * (rise * 0.3 + t * (rise * 0.95));
-      const z = headZ + R * (0.1 + t * t * 0.7);
-      const w = L * (0.12 - t * 0.085);
+      // UP first, out second. A wing that travels as far sideways as it does
+      // upward is a horizontal bar with a kink in it — which is the Han
+      // advisor's silhouette, and the one shape this crown must not make.
+      const x = s * R * (0.5 + t * spread);
+      const y = base + L * rise * (0.25 + t * 1.5);
+      const z = headZ + R * (0.1 + t * t * 0.55);
+      const w = L * (0.12 - t * 0.09);
       grid.push([
         [x, y - w, z],
         [x, y + w, z],
@@ -373,6 +404,19 @@ function chuCrown(P: Lib, m: RigMetrics, headZ: number, headBaseY: number, rise:
     );
   }
   for (const p of g.parts) if (p.name === 'ferrule') p.cls = 'ivory';
+
+  // 纓 — the cord and tassel knotted at the back of the band. The animator has
+  // a `crest` socket on this head; this is the thing that should swing on it.
+  const knot = P.trim.tassel({
+    at: [0, base + L * 0.02, headZ + R * 1.02],
+    length: L * 0.66,
+    r: L * 0.13,
+    strands: 7,
+    boneHint: 'head',
+    pigment: 'accent',
+  });
+  g.parts.push(...knot.parts);
+  g.instanced.push(...knot.instanced);
 
   g.points.crest = new THREE.Vector3(0, top + L * 0.04, headZ + R * 0.12);
   return g;
@@ -405,7 +449,7 @@ interface SkirtOpts {
  * dies at dead centre-back — so the hem forks instead of sagging.
  */
 function robeSkirt(P: Lib, o: SkirtOpts): Part {
-  const rows = 6;
+  const rows = 7;
   const rings: V3[][] = [];
   for (let i = 0; i < rows; i++) {
     const t = i / (rows - 1);
@@ -505,6 +549,78 @@ function sleeveDrape(
 }
 
 /**
+ * 蔽膝 — the knee-cover panel hanging down the front of a court robe.
+ *
+ * It follows the skirt's own elliptical section and stands a little proud of
+ * it, so it catches a different band of the ramp all the way down: one hard
+ * vertical stripe on what is otherwise the largest unbroken cloth surface in
+ * the cast. `point` pulls the bottom edge down at the centre, which is the Chu
+ * cut; the Han panel ends square.
+ */
+function apron(
+  P: Lib,
+  o: {
+    topY: number;
+    botY: number;
+    rTop: number;
+    rBot: number;
+    squash: number;
+    halfWidth: number;
+    point: number;
+  },
+): Part {
+  const rows = 5;
+  const cols = 4;
+  const grid: V3[][] = [];
+  for (let r = 0; r < rows; r++) {
+    const t = r / (rows - 1);
+    const rr = o.rTop + (o.rBot - o.rTop) * (t * t * 0.72 + t * 0.28);
+    const hw = Math.min(o.halfWidth * (0.86 + t * 0.4), rr * 0.86);
+    const row: V3[] = [];
+    for (let c = 0; c < cols; c++) {
+      const u = c / (cols - 1);
+      const x = (u - 0.5) * 2 * hw;
+      // Ride the skirt's ellipse rather than a flat plane, or the panel's edges
+      // sink into the cloth while its centre floats.
+      const z = -rr * o.squash * Math.sqrt(Math.max(0, 1 - (x / rr) * (x / rr))) * 1.04;
+      const dip = o.point * (1 - Math.abs(u - 0.5) * 2) * t;
+      row.push([x, o.topY + (o.botY - o.topY) * t - dip, z]);
+    }
+    grid.push(row);
+  }
+  return P.mkPart(
+    P.prim.shell(grid, Math.abs(o.rTop) * 0.045, { name: 'apron' }),
+    'cloth',
+    'accent',
+    'pelvis',
+    { name: 'apron', allow: ['spine01', 'thighL', 'thighR'] },
+  );
+}
+
+/**
+ * A cuff band at the mouth of a sleeve: two rings swept along the forearm. The
+ * cuff is where a court sleeve's silhouette ends, and an unbanded one reads as
+ * a bag rather than a garment.
+ */
+function cuffBand(P: Lib, side: 'L' | 'R', elbow: THREE.Vector3, wrist: THREE.Vector3, r: number): Part {
+  const at = elbow.clone().lerp(wrist, 0.78);
+  const along = wrist.clone().sub(elbow).normalize().multiplyScalar(r * 0.34);
+  return P.mkPart(
+    P.prim.sweep(
+      [
+        { p: v3(at.clone().sub(along)), rx: r * 1.02, squareness: 0.35 },
+        { p: v3(at.clone().add(along)), rx: r * 1.06, squareness: 0.35 },
+      ],
+      { sides: 8, name: `cuff${side}` },
+    ),
+    'cloth',
+    'accent',
+    `foreArm${side}` as BoneName,
+    { name: `cuff${side}` },
+  );
+}
+
+/**
  * 玉璧 — the jade disc at the sash, on its cord. Pale stone against a lacquered
  * figure: the only high-key value below the collar, and the reason the advisor
  * has an `ivory` bucket at all.
@@ -554,8 +670,8 @@ function buildAdvisor(ctx: UnitBuildContext): PartGroup {
   // to differ from each other as well as from the other army.
   const beard: 'short' | 'long' = ctx.variant % 2 === 0 ? 'short' : 'long';
   const capRise = (han ? 0.62 : 0.94) * (1 + rng.range(-0.05, 0.05));
-  const wingSpread = 2.0 + rng.range(-0.15, 0.15);
-  const folds = 10 + (ctx.variant % 2);
+  const wingSpread = 1.35 + rng.range(-0.12, 0.12);
+  const folds = 12 + (ctx.variant % 2);
 
   // --- the weapon, and the hands that hold it -----------------------------
   // Han: 劍 low and forward in a parrying guard, point out past the left knee.
@@ -564,12 +680,14 @@ function buildAdvisor(ctx: UnitBuildContext): PartGroup {
   // 劍 held forward puts the point half a square ahead of the figure, which
   // wrecks the declared aspect and crowds the next piece on the board.
   const swordDir = new THREE.Vector3(-0.62, -0.55, -0.56);
-  // The 鉞 is rolled a quarter turn so its crescent is broadside from the front
-  // — edge-on it is a line, and a ritual axe that reads as a line is a staff.
-  const aimR = han ? aim(swordDir, 0.5) : aim(UP, Math.PI / 2);
+  // The 鉞 stays unrolled, so its crescent lies in the sagittal plane: broadside
+  // from the side, a bare vertical shaft from the front. That split is
+  // deliberate — the front view already carries the winged crown, and two big
+  // shapes at the same height in the same view merge into one blob.
+  const aimR = han ? aim(swordDir, 0.5) : aim(UP);
   const gripR = han
     ? new THREE.Vector3(m.hipWidth * 0.72, m.waistY - m.torsoLen * 0.02, -m.chestDepth * 1.15)
-    : new THREE.Vector3(m.hipWidth * 0.86, m.waistY + m.torsoLen * 0.28, -m.chestDepth * 0.72);
+    : new THREE.Vector3(m.hipWidth * 1.0, m.waistY + m.torsoLen * 0.28, -m.chestDepth * 0.72);
 
   // Off hand: Han raises it, palm out, in the formal 揖 gesture that opens the
   // sleeve; Chu lets it hang, so his drape is one long vertical.
@@ -668,7 +786,8 @@ function buildAdvisor(ctx: UnitBuildContext): PartGroup {
   const bodice = P.prim.loft(
     [
       P.cloth.pleatedRing(folds, m.shoulderWidth * 0.54, m.shoulderWidth * 0.5, shoulderY, { squash: 0.78 }),
-      P.cloth.pleatedRing(folds, m.shoulderWidth * 0.52, m.shoulderWidth * 0.48, (shoulderY + waistY) / 2, { squash: 0.78 }),
+      P.cloth.pleatedRing(folds, m.shoulderWidth * 0.53, m.shoulderWidth * 0.49, m.chestY + m.torsoLen * 0.06, { squash: 0.78 }),
+      P.cloth.pleatedRing(folds, m.shoulderWidth * 0.5, m.shoulderWidth * 0.45, (shoulderY + waistY) / 2, { squash: 0.78 }),
       P.cloth.pleatedRing(folds, m.waistWidth * 0.68, m.waistWidth * 0.63, waistY, { squash: 0.8 }),
     ],
     { capStart: true, capEnd: false, name: 'robeBodice' },
@@ -694,7 +813,7 @@ function buildAdvisor(ctx: UnitBuildContext): PartGroup {
   // Sleeves: wrapped over the arm, then dropped below it.
   g.parts.push(
     ...P.cloth.sleeves(
-      { r0: m.upperArmR * 2.0, r1: m.upperArmR * (han ? 3.9 : 3.4), folds: 7, length: 0.9 },
+      { r0: m.upperArmR * 2.0, r1: m.upperArmR * (han ? 3.9 : 3.4), folds: 8, length: 0.9 },
       { shoulder: v3(B.upperArmL), elbow: v3(B.foreArmL), wrist: v3(B.handL) },
       { shoulder: v3(B.upperArmR), elbow: v3(B.foreArmR), wrist: v3(B.handR) },
     ).parts,
@@ -713,7 +832,9 @@ function buildAdvisor(ctx: UnitBuildContext): PartGroup {
     );
   }
 
-  // 交領 — the crossed collar, and the sash that cuts the robe in two values.
+  // 交領 — the crossed collar, twice: a court robe is worn over a 中衣 and the
+  // two collars step at the throat. Two lapped bands is the detail that dates
+  // the costume, and it survives at silhouette size as a notch at the neck.
   g.parts.push(
     ...P.cloth.collar({
       shoulderY,
@@ -721,6 +842,14 @@ function buildAdvisor(ctx: UnitBuildContext): PartGroup {
       rx: m.shoulderWidth * 0.52,
       rz: m.chestDepth * 0.72,
       width: m.shoulderWidth * 0.16,
+    }).parts,
+    ...P.cloth.collar({
+      shoulderY: shoulderY - m.torsoLen * 0.06,
+      chestY: m.chestY - m.torsoLen * 0.26,
+      rx: m.shoulderWidth * 0.46,
+      rz: m.chestDepth * 0.66,
+      width: m.shoulderWidth * 0.12,
+      pigment: 'cloth',
     }).parts,
   );
   g.parts.push(
@@ -752,6 +881,29 @@ function buildAdvisor(ctx: UnitBuildContext): PartGroup {
   );
 
   g.parts.push(
+    apron(P, {
+      topY: waistY - m.torsoLen * 0.06,
+      botY: hemY + m.legLen * (han ? 0.2 : 0.13),
+      rTop: m.waistWidth * 0.68,
+      rBot: hemR,
+      squash: 0.8,
+      halfWidth: m.hipWidth * 0.44,
+      point: han ? 0 : m.legLen * 0.12,
+    }),
+  );
+  for (const S of ['L', 'R'] as const) {
+    g.parts.push(
+      cuffBand(
+        P,
+        S,
+        B[`foreArm${S}` as BoneName],
+        B[`hand${S}` as BoneName],
+        m.upperArmR * (han ? 3.9 : 3.4),
+      ),
+    );
+  }
+
+  g.parts.push(
     ...jadePendant(
       P,
       [
@@ -774,10 +926,14 @@ function buildAdvisor(ctx: UnitBuildContext): PartGroup {
   // The design record asks for a 劍 in both hands' worth of both armies; the
   // Chu 士 carries a ritual 鉞 instead, which is the unit brief's call and the
   // reason his outline is a vertical shaft rather than a low diagonal.
+  // Placed at where the fist's bore actually ended up, not at the point that was
+  // asked for: `poseArm` pulls an over-long reach back inside the arm, and a
+  // weapon left at the original point would hang in mid-air beside the hand.
+  const heldAt = gripOf(wristR, aimR, m);
   let weapon: PartGroup;
   if (han) {
     weapon = P.weapons.sword({
-      grip: v3(gripR),
+      grip: v3(heldAt),
       rot: aimR.euler,
       bone: 'handR',
       length: m.height * 0.36,
@@ -788,9 +944,9 @@ function buildAdvisor(ctx: UnitBuildContext): PartGroup {
     const length = m.height * 0.84;
     // Butt clear of the board: the haft is vertical, so this is a straight
     // clamp on how far below the grip the shaft may run.
-    const gripAt = Math.min(0.46, (gripR.y - BUTT_CLEARANCE) / length);
+    const gripAt = Math.min(0.46, (heldAt.y - BUTT_CLEARANCE) / length);
     weapon = P.weapons.axe({
-      grip: v3(gripR),
+      grip: v3(heldAt),
       rot: aimR.euler,
       bone: 'handR',
       length,

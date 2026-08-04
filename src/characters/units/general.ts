@@ -81,6 +81,13 @@ function unit(v: V3): V3 {
   return [v[0] / l, v[1] / l, v[2] / l];
 }
 
+/**
+ * Rake of the Chu general's 劍 from vertical, radians. Shared between the fist
+ * rotation and the sword placement — they have to agree or the blade grows out
+ * of the side of the hand.
+ */
+const CHU_SWORD_TILT = 0.3;
+
 // ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
@@ -123,8 +130,12 @@ function buildGeneral(ctx: UnitBuildContext): PartGroup {
   });
 
   // Rotate each fist about its own grip so the bore lines up with what it holds.
-  const rHold: V3 = han ? [-0.13, 0, 0.52] : [-0.34, 0, 0.06];
-  const lHold: V3 = han ? [0.28, 0, -0.16] : [0.1, 0, -0.1];
+  // The bore is a cylinder and therefore bidirectional, so a point-down sword
+  // wants the same fist rotation as a point-up one: `sword({ reversed })` adds
+  // the half-turn itself, and adding it here too would twist the hand off the
+  // hilt for no visible gain.
+  const rHold: V3 = han ? [-0.13, 0, 0.52] : [CHU_SWORD_TILT, 0, 0.06];
+  const lHold: V3 = han ? [0.3, 0, -0.2] : [0.12, 0, -0.12];
   rotateFist(fig, 'R', rHold);
   rotateFist(fig, 'L', lHold);
   mergeInto(g, fig, P);
@@ -229,7 +240,7 @@ function buildGeneral(ctx: UnitBuildContext): PartGroup {
   mergeInto(g, han ? rearPlume(ctx, crestAt, m.headLen, m.headWidth) : hornWings(ctx, crestAt, m.headLen, m.headWidth), P);
 
   // --- 7. arms: what each hand actually holds -----------------------------
-  armKit(g, ctx, rig, han, gripR, gripL, platformTop, rHold);
+  armKit(g, ctx, rig, han, gripR, gripL, platformTop, rHold, lHold);
 
   // --- 8. the standard at the back ----------------------------------------
   backStandard(g, ctx, rig, han);
@@ -382,30 +393,35 @@ function commandPose(rig: Rig, han: boolean): NonNullable<RigOptions['offsets']>
   const out: NonNullable<RigOptions['offsets']> = {};
 
   // [upper-arm direction, forearm direction] per side.
+  // Both elbows carry a forward component. Without it the forearm alone has to
+  // cover the whole distance from a shoulder at z = 0 to a hand clear of the
+  // chest, and a general in a six-row cuirass has 0.15 rig units of lamellar in
+  // front of his sternum: the hand ends up *inside* his own armour and whatever
+  // it holds grows out of his ribs.
   const dirs: Record<'L' | 'R', [V3, V3]> = han
     ? {
         // Right hand carries the 節 up across the chest; the left rests on the
         // sword hilt at the hip. Asymmetric on purpose — a symmetric commander
         // reads as a statue.
         R: [
-          [-0.14, -0.95, 0.28],
-          [-0.3, 0.26, -0.92],
+          [-0.14, -0.92, -0.36],
+          [-0.26, 0.3, -0.92],
         ],
         L: [
-          [0.1, -0.96, 0.26],
-          [-0.06, -0.62, -0.78],
+          [0.12, -0.94, -0.3],
+          [-0.04, -0.6, -0.8],
         ],
       }
     : {
         // Chu: elbows pinned in at the ribs, both hands low and close. He
         // strikes at contact range, so the guard is coiled rather than extended.
         R: [
-          [-0.26, -0.9, 0.2],
-          [-0.3, -0.34, -0.89],
+          [-0.28, -0.84, -0.36],
+          [-0.24, -0.2, -0.94],
         ],
         L: [
-          [-0.22, -0.94, 0.18],
-          [0.12, -0.76, -0.64],
+          [-0.24, -0.9, -0.3],
+          [0.14, -0.66, -0.74],
         ],
       };
 
@@ -769,6 +785,7 @@ function armKit(
   gripL: THREE.Vector3,
   platformTop: number,
   rHold: V3,
+  lHold: V3,
 ): void {
   const P = ctx.parts;
   const m = rig.metrics;
@@ -793,17 +810,18 @@ function armKit(
     mergeInto(g, w, P);
     g.attach.push({ name: 'haftTip', bone: 'handR', position: [tip.x, tip.y, tip.z] });
   } else {
-    // 長劍 held point-down in front. The blade length is solved from the drop
-    // available above the plinth rather than fixed, so the point rests just
-    // clear of the top step whatever the proportions jitter does.
-    const tilt = 0.34;
+    // 長劍 held point-down and raked forward. The blade length is *solved* from
+    // the drop available above the plinth rather than fixed, so the point rests
+    // just clear of the top step whatever the per-variant proportion jitter
+    // does — a sword whose point disappears into the plinth on one of the two
+    // generals is exactly the kind of thing a fixed length produces.
     const clearance = h * 0.045;
     const reach = 1.144; // grip centre → point, in blade lengths (see weapons.sword)
     const drop = Math.max(h * 0.2, gripR.y - platformTop - clearance);
-    const L = Math.min(h * 0.5, drop / (reach * Math.cos(tilt)));
+    const L = Math.min(h * 0.5, drop / (reach * Math.cos(CHU_SWORD_TILT)));
     const w = P.weapons.sword({
       grip: v3(gripR),
-      rot: [rHold[0] - tilt, 0, rHold[2]],
+      rot: [CHU_SWORD_TILT, 0, rHold[2]],
       bone: 'handR',
       length: L,
       halfWidth: h * 0.028,
@@ -823,7 +841,9 @@ function armKit(
     g,
     P.weapons.scabbard({
       grip: hipAt,
-      rot: han ? [0.2, 0, 0.3] : [0.34, 0, 0.42],
+      // Han's hangs on the axis his left fist is turned to, so the hilt runs
+      // through the bore and the hand is genuinely resting on it.
+      rot: han ? [lHold[0], 0, lHold[2]] : [0.34, 0, 0.42],
       bone: 'pelvis',
       length: h * (han ? 0.3 : 0.28),
       width: h * 0.034,
@@ -844,7 +864,7 @@ function armKit(
       squareness: 0.4,
       name: 'hipHilt',
     });
-    P.prim.place(hilt, { pos: hipAt, rot: [0.2, 0, 0.3] });
+    P.prim.place(hilt, { pos: hipAt, rot: [lHold[0], 0, lHold[2]] });
     g.parts.push(
       P.mkPart(hilt, 'leather', 'leather', 'pelvis', { name: 'hipHilt', rigid: true }),
     );
@@ -878,10 +898,10 @@ function backStandard(g: PartGroup, ctx: UnitBuildContext, rig: Rig, han: boolea
       // Han's 旌 is deliberately the smaller of the two: his silhouette already
       // spends its height on the plume, and a banner big enough to compete with
       // the crown turns the commander into a standard-bearer.
-      poleLength: h * (han ? 0.62 : 0.88),
+      poleLength: h * (han ? 0.74 : 0.82),
       poleR: h * 0.014,
-      bannerHeight: h * (han ? 0.19 : 0.32),
-      bannerWidth: h * (han ? 0.22 : 0.3),
+      bannerHeight: h * (han ? 0.21 : 0.31),
+      bannerWidth: h * (han ? 0.24 : 0.3),
       lean: han ? 0.36 : 0.1,
       fly: han ? -0.55 : 0.45,
       boneHint: 'spine02',
