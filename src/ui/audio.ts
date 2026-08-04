@@ -230,7 +230,7 @@ function makeImpulse(ctx: BaseAudioContext, seconds: number): AudioBuffer {
 }
 
 /** tanh soft-clip curve. The last line of defence against a clipped capture. */
-function makeSoftClip(): Float32Array {
+function makeSoftClip() {
   const n = 2048;
   const curve = new Float32Array(n);
   for (let i = 0; i < n; i++) {
@@ -606,6 +606,7 @@ class Engine implements XiangqiAudio {
   private music!: GainNode;
   private send!: GainNode;
   private verbReturn!: GainNode;
+  private convolver: ConvolverNode | null = null;
 
   // Persistent underscore voices.
   private drone: Voice | null = null;
@@ -714,14 +715,19 @@ class Engine implements XiangqiAudio {
 
     this.send = ctx.createGain();
     this.send.gain.value = 0.3;
-    if (typeof ctx.createConvolver === 'function') {
+    // Feature-detect by *calling*: a context can expose the constructor and
+    // still refuse it. Without a convolver the send becomes a plain parallel
+    // path, which is drier but never silent.
+    try {
       const conv = ctx.createConvolver();
       conv.buffer = makeImpulse(ctx, 1.15);
       conv.normalize = true;
       this.send.connect(conv);
       conv.connect(this.verbReturn);
-    } else {
+      this.convolver = conv;
+    } catch {
       this.send.connect(this.verbReturn);
+      this.convolver = null;
     }
   }
 
@@ -743,6 +749,7 @@ class Engine implements XiangqiAudio {
         this.music.disconnect();
         this.send.disconnect();
         this.verbReturn.disconnect();
+        this.convolver?.disconnect();
       } catch {
         // Already torn down.
       }
@@ -807,28 +814,46 @@ class Engine implements XiangqiAudio {
 
   // -- voice plumbing ------------------------------------------------------
 
+  /**
+   * Make room for one more voice.
+   *
+   * The victim is the voice with the *least life left*, not the oldest. Under a
+   * capture the oldest live voice is usually the gong or a chariot rumble — the
+   * one thing a listener would notice vanishing — while the voices about to
+   * expire anyway cost nothing to drop a frame early.
+   */
+  private cullOne(now: number): void {
+    if (!this.voices.length) return;
+    let worst = 0;
+    for (let i = 1; i < this.voices.length; i++) {
+      if (this.voices[i].endAt < this.voices[worst].endAt) worst = i;
+    }
+    this.voices[worst].dispose(now);
+    this.voices[worst] = this.voices[this.voices.length - 1];
+    this.voices.pop();
+  }
+
   private begin(pan?: number, gain = 1): { voice: Voice; dest: AudioNode; kit: Kit } | null {
     if (!this.ctx || !this.kit) return null;
-    if (this.voices.length >= MAX_VOICES) {
-      // Cull the oldest rather than refusing to play: a dropped transient is
-      // more noticeable than a shortened tail.
-      this.voices.shift()?.dispose(this.ctx.currentTime);
-    }
+    if (this.voices.length >= MAX_VOICES) this.cullOne(this.ctx.currentTime);
     const voice = new Voice();
     const out = voice.add(this.ctx.createGain());
     out.gain.value = gain;
 
-    let dest: AudioNode = out;
-    if (pan !== undefined && typeof this.ctx.createStereoPanner === 'function') {
-      const p = voice.add(this.ctx.createStereoPanner());
-      p.pan.value = clamp(pan, -1, 1);
-      out.connect(p);
-      p.connect(this.sfx);
-      p.connect(this.send);
-    } else {
-      out.connect(this.sfx);
-      out.connect(this.send);
+    const dest: AudioNode = out;
+    let tap: AudioNode = out;
+    if (pan !== undefined) {
+      try {
+        const p = voice.add(this.ctx.createStereoPanner());
+        p.pan.value = clamp(pan, -1, 1);
+        out.connect(p);
+        tap = p;
+      } catch {
+        // No StereoPanner on this context; the cue plays centred.
+      }
     }
+    tap.connect(this.sfx);
+    tap.connect(this.send);
     this.voices.push(voice);
     return { voice, dest, kit: this.kit };
   }
@@ -1570,7 +1595,7 @@ class Engine implements XiangqiAudio {
   private pluck(freq: number, when: number, timbre: 'qin' | 'bright', gain: number, pan: number): void {
     if (!this.ctx || !this.kit) return;
     const ctx = this.ctx;
-    if (this.voices.length >= MAX_VOICES) this.voices.shift()?.dispose(ctx.currentTime);
+    if (this.voices.length >= MAX_VOICES) this.cullOne(ctx.currentTime);
 
     const v = new Voice();
     const buf = pluckBuffer(this.kit, freq, timbre);
@@ -1581,11 +1606,13 @@ class Engine implements XiangqiAudio {
     g.gain.value = gain;
 
     let out: AudioNode = g;
-    if (typeof ctx.createStereoPanner === 'function') {
+    try {
       const p = v.add(ctx.createStereoPanner());
       p.pan.value = clamp(pan, -1, 1);
       g.connect(p);
       out = p;
+    } catch {
+      // No StereoPanner on this context; the note plays centred.
     }
     src.connect(g);
     out.connect(this.music);

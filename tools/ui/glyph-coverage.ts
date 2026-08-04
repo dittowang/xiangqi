@@ -240,6 +240,44 @@ console.log(`high fidelity   : ${cov.high.length}  ${cov.high.join('')}`);
 console.log(`legible         : ${cov.legible.length}  ${cov.legible.join('')}`);
 console.log(`tofu requested  : ${missingRequests().join('') || '(none beyond the deliberate specimen)'}`);
 
+// The tofu path has to survive everything a real glyph does, or a missing
+// character takes the HUD down with it instead of showing a box.
+{
+  const tofu = getSealGlyph('龘'); // deliberately unauthored
+  if (tofu.tier !== 'missing') problems.push('tofu: an unauthored char did not come back as tier "missing"');
+  if (tofu.strokes.length === 0) problems.push('tofu: has no strokes — a gap would render as nothing');
+  if (Math.abs(tofu.advance - 1) > 1e-6) problems.push('tofu: advance is not one em, so runs would mis-lay-out');
+  try {
+    const cs = glyphToContours(tofu, { size: 1 });
+    if (cs.length === 0) problems.push('tofu: produced no contour');
+    if (glyphToShapes(tofu).length === 0) problems.push('tofu: produced no Shape');
+  } catch (err) {
+    problems.push(`tofu: contouring threw — ${(err as Error).message}`);
+  }
+}
+
+// The per-stroke Shape mode is the escape hatch for flat inlays; it must work
+// for every glyph even though the union path is the default.
+for (const ch of required) {
+  try {
+    const shapes = glyphToShapes(ch, { mode: 'perStroke', size: 2 });
+    if (shapes.length !== getSealGlyph(ch).strokes.length) {
+      problems.push(`${ch}: perStroke mode returned ${shapes.length} shapes for ${getSealGlyph(ch).strokes.length} strokes`);
+    }
+  } catch (err) {
+    problems.push(`${ch}: perStroke mode threw — ${(err as Error).message}`);
+  }
+}
+
+// Vertical runs are how the move record is laid out, so measure them too.
+{
+  const v = measureText('車一進一', 50, { vertical: true });
+  if (Math.abs(v.advance - 200) > 1e-6) problems.push(`vertical measureText advance is ${v.advance}, expected 200`);
+  if (v.offsets.length !== 4) problems.push('vertical measureText returned the wrong number of offsets');
+  const t = measureText('炮二平五', 40, { tracking: 0.1 });
+  if (Math.abs(t.advance - (160 + 3 * 4)) > 1e-6) problems.push(`tracking is not applied: ${t.advance}`);
+}
+
 // Metrics spot check — an advance that is not one em would break HUD layout.
 const badAdvance = required.filter((c) => Math.abs(measureGlyph(c).advance - 1) > 1e-6);
 if (badAdvance.length) problems.push(`non-unit advance on: ${badAdvance.join(' ')}`);

@@ -187,15 +187,22 @@ class StubScheduledSource extends StubNode {
     this.started = when;
   }
 
+  private stopCalls = 0;
+
   stop(when = 0): void {
     if (this.started < 0) {
       // Stopping a source that never started throws InvalidStateError. The
       // engine guards this with a try/catch, so record it without failing.
       return;
     }
+    this.stopCalls++;
     if (!Number.isFinite(when) || when < 0) this.reg.fail(this.kind, `stop() at ${when}`);
-    else if (when < this.started - 1e-9) {
-      this.reg.fail(this.kind, `stop(${when.toFixed(4)}) before start(${this.started.toFixed(4)})`);
+    else if (this.stopCalls === 1 && when < this.started - 1e-9) {
+      // Only the *scheduling* stop is checked. A later stop() before the start
+      // time is how voice culling and teardown cancel a note that has not begun
+      // yet — legal, and the intended behaviour — whereas a first stop that
+      // precedes its own start is always an envelope arithmetic bug.
+      this.reg.fail(this.kind, `stop(${when.toFixed(4)}) scheduled before start(${this.started.toFixed(4)})`);
     }
     this.stopped = when;
   }

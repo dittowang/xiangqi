@@ -846,12 +846,14 @@ export const GLYPHS: Record<string, RawGlyph> = {
 
   '四': {
     tier: 'legible',
+    // The two inner strokes must not meet at the foot: closed up they read as
+    // 回, which would turn Red's fourth file into a different character.
     s: [
-      '24 20 L 24 80',
-      '24 20 L 68 20 Q 76 20 76 28 L 76 80',
-      '24 80 L 76 80',
-      '39 30 L 39 58 Q 39 68 48 68',
-      '61 30 L 61 58 Q 61 68 52 68',
+      '22 20 L 22 80',
+      '22 20 L 70 20 Q 78 20 78 28 L 78 80',
+      '22 80 L 78 80',
+      '41 32 Q 38 52 33 68',
+      '59 32 L 59 60 Q 59 69 68 68',
     ],
   },
 
