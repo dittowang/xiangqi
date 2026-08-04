@@ -102,6 +102,8 @@ export interface BandOpts {
   /** Lay a lacing cord along the top edge of every row. */
   cord?: boolean;
   cordPigment?: PartPigment;
+  /** Material class for the lacing. */
+  cordCls?: Part['cls'];
   /** Cord thickness as a fraction of plate height. */
   cordScale?: number;
   name?: string;
@@ -207,7 +209,7 @@ export function lamellarBand(o: BandOpts): PartGroup {
       if (mats.length === 0) continue;
       g.instanced.push({
         geometry: cordGeo,
-        cls: 'leather',
+        cls: o.cordCls ?? 'leather',
         pigment: o.cordPigment ?? 'accent',
         boneHint: bone,
         rigid: true,
@@ -246,6 +248,15 @@ export interface CuirassOpts {
   upperBone?: BoneName;
   cord?: boolean;
   pigment?: PartPigment;
+  /**
+   * Pigment for the lacing. Defaults to `'accent'`, which is a whole extra
+   * material bucket — and therefore a whole extra draw call — for a few hundred
+   * triangles of cord. Set it to `'lacquer'` to fold the lacing into the plate
+   * bucket, or to `'leather'` to fold it into the harness.
+   */
+  cordPigment?: PartPigment;
+  /** Material class for the lacing. Follows `cordPigment` for the same reason. */
+  cordCls?: Part['cls'];
   /** Plate thickness as a fraction of plate width. */
   thickness?: number;
 }
@@ -292,6 +303,8 @@ export function cuirass(o: CuirassOpts): PartGroup {
     boneHint: o.upperBone ?? 'spine02',
     pigment: o.pigment ?? 'lacquer',
     cord: o.cord ?? true,
+    ...(o.cordPigment ? { cordPigment: o.cordPigment } : {}),
+    ...(o.cordCls ? { cordCls: o.cordCls } : {}),
     name: 'cuirass',
   });
 }
@@ -311,6 +324,8 @@ export interface SkirtArmourOpts {
   pigment?: PartPigment;
   bone?: BoneName;
   cord?: boolean;
+  cordPigment?: PartPigment;
+  cordCls?: Part['cls'];
 }
 
 /**
@@ -356,6 +371,8 @@ export function skirtArmour(o: SkirtArmourOpts): PartGroup {
     boneHint: o.bone ?? 'pelvis',
     pigment: o.pigment ?? 'lacquer',
     cord: o.cord ?? true,
+    ...(o.cordPigment ? { cordPigment: o.cordPigment } : {}),
+    ...(o.cordCls ? { cordCls: o.cordCls } : {}),
     name: 'skirtArmour',
   });
 }

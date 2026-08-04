@@ -167,7 +167,9 @@ function verifyClips(): ClipStat[] {
   for (const key of UNIT_KEYS_IN_VALUE_ORDER) {
     const gait = GAIT_FOR[key];
     const set = buildClipSet(key, gait);
-    check(set.size === 10, `${key}: expected 10 clips, got ${set.size}`);
+    // idle, move, windup, strike, four directional hits, death, victory,
+    // victoryHold, salute.
+    check(set.size === 12, `${key}: expected 12 clips, got ${set.size}`);
 
     for (const [name, n] of set) {
       let keys = 0;
@@ -440,6 +442,8 @@ function measureFootSlide(b: UnitBundle, squares: number, speed: number): {
   plants: number;
   maxTargetError: number;
   dip: number;
+  maxToeSlide: number;
+  height: number;
 } {
   const { unit, anim } = b;
   anim.play('move', 0);
@@ -451,6 +455,9 @@ function measureFootSlide(b: UnitBundle, squares: number, speed: number): {
   const held = { L: false, R: false };
   const target = new THREE.Vector3();
   const actual = new THREE.Vector3();
+  const toe = new THREE.Vector3();
+  const prevToe = { L: new THREE.Vector3(), R: new THREE.Vector3() };
+  let maxToeSlide = 0;
   let maxSlide = 0;
   let sum = 0;
   let count = 0;
@@ -470,18 +477,25 @@ function measureFootSlide(b: UnitBundle, squares: number, speed: number): {
       dipMax = Math.max(dipMax, rootY);
     }
     for (const side of ['L', 'R'] as const) {
-      const st = anim.footState(side, target, actual);
+      const st = anim.footState(side, target, actual, toe);
       if (st.locked) {
         maxTargetError = Math.max(maxTargetError, target.distanceTo(actual));
         if (held[side]) {
-          const slide = prev[side].distanceTo(actual);
-          maxSlide = Math.max(maxSlide, slide);
-          sum += slide;
-          count++;
+          // The contact point is the ball of the foot; the ankle is allowed to
+          // rise over it at push-off. Both are measured — the toe is the one
+          // that must be frozen.
+          maxToeSlide = Math.max(maxToeSlide, prevToe[side].distanceTo(toe));
+          if (st.heelOff <= 1e-6) {
+            const slide = prev[side].distanceTo(actual);
+            maxSlide = Math.max(maxSlide, slide);
+            sum += slide;
+            count++;
+          }
         } else {
           plants++;
         }
         prev[side].copy(actual);
+        prevToe[side].copy(toe);
         held[side] = true;
       } else {
         held[side] = false;
@@ -494,25 +508,38 @@ function measureFootSlide(b: UnitBundle, squares: number, speed: number): {
     plants,
     maxTargetError,
     dip: (dipMax - dipMin) * unit.root.scale.x,
+    maxToeSlide,
+    height: unit.meta.size[1],
   };
 }
 
 function verifyContact(factory: ReturnType<typeof createCharacters>): void {
   console.log('\n=== contact: feet ===');
-  console.log('  unit       plants  max slide/frame  mean slide/frame  max |target−actual|   pelvis dip');
+  console.log(
+    '  unit       plants   toe slide/frame  ankle slide/frame  max |target−actual|   pelvis dip (% of height)',
+  );
   for (const type of [PieceType.Soldier, PieceType.Advisor, PieceType.General, PieceType.Cannon]) {
     const b = makeUnit(factory, type);
     const speed = 1.6;
     const r = measureFootSlide(b, 6, speed);
     console.log(
-      `  ${UNIT_KEY[type].padEnd(9)}  ${String(r.plants).padStart(6)}  ${f(r.maxSlide, 8).padStart(15)}` +
-        `  ${f(r.meanSlide, 8).padStart(16)}  ${f(r.maxTargetError, 8).padStart(19)}  ${f(r.dip, 4).padStart(11)}`,
+      `  ${UNIT_KEY[type].padEnd(9)}  ${String(r.plants).padStart(6)}  ${f(r.maxToeSlide, 8).padStart(15)}` +
+        `  ${f(r.maxSlide, 8).padStart(17)}  ${f(r.maxTargetError, 8).padStart(19)}` +
+        `  ${f(r.dip, 4).padStart(8)} (${((r.dip / r.height) * 100).toFixed(1)}%)`,
     );
     // A frame of travel at 1.6 units/s is 26.7 mm. Anything the eye reads as a
     // slide is a large fraction of that; the tolerance below is 4% of it.
     check(
+      r.maxToeSlide < 1e-9,
+      `${UNIT_KEY[type]}: the contact point moved ${f(r.maxToeSlide, 9)} world units`,
+    );
+    check(
       r.maxSlide < 0.0004,
-      `${UNIT_KEY[type]}: locked ankle moved ${f(r.maxSlide, 6)} world units in one frame`,
+      `${UNIT_KEY[type]}: flat-footed ankle moved ${f(r.maxSlide, 6)} world units in one frame`,
+    );
+    check(
+      r.dip / r.height < 0.04,
+      `${UNIT_KEY[type]}: pelvis dips ${((r.dip / r.height) * 100).toFixed(1)}% of its height`,
     );
     check(r.plants >= 4, `${UNIT_KEY[type]}: only ${r.plants} plants over six squares`);
     check(
@@ -741,7 +768,7 @@ function verifyPigment(factory: ReturnType<typeof createCharacters>): void {
 // 6. Choreography
 // ---------------------------------------------------------------------------
 
-function verifyChoreography(factory: ReturnType<typeof createCharacters>): void {
+async function verifyChoreography(factory: ReturnType<typeof createCharacters>): Promise<void> {
   console.log('\n=== choreography ===');
   const camera = new StubCamera();
   const audio = new StubAudio();
@@ -771,7 +798,7 @@ function verifyChoreography(factory: ReturnType<typeof createCharacters>): void 
   const from = sq(4, 6);
   const to = sq(4, 4);
   let resolved = false;
-  void choreo
+  const capturePromise = choreo
     .capture(attacker, defender, {
       attackerSq: from,
       defenderSq: to,
@@ -792,6 +819,10 @@ function verifyChoreography(factory: ReturnType<typeof createCharacters>): void 
     if (animators.get(defender)!.isFrozen) frozenFrames++;
     clock += dt;
   }
+  // The sequence resolves synchronously inside `update`, but a `then` callback
+  // is a microtask: it cannot have run until the stack unwinds. Yielding once is
+  // the difference between measuring the promise and measuring the event loop.
+  await capturePromise;
 
   console.log(`  total duration         ${f(expected, 4)} s  (settle ${CAPTURE.settleEnd} + hold ${f(CAPTURE_HOLD, 4)})`);
   console.log(`  beats fired            ${beats.map((b) => `${b.beat}@${f(b.at, 3)}`).join('  ')}`);
@@ -820,7 +851,7 @@ function verifyChoreography(factory: ReturnType<typeof createCharacters>): void 
   // Abort must leave nothing mid-pose.
   defender.root.visible = true;
   let abortedResolve = false;
-  void choreo
+  const abortPromise = choreo
     .capture(attacker, defender, {
       attackerSq: to,
       defenderSq: from,
@@ -836,6 +867,7 @@ function verifyChoreography(factory: ReturnType<typeof createCharacters>): void 
     for (const a of animators.values()) a.update(dt);
   }
   choreo.abort();
+  await abortPromise;
   console.log(`  abort mid-capture      promise settled: ${abortedResolve}, busy: ${choreo.busy}`);
   check(abortedResolve, 'aborting left the capture promise pending');
   check(!choreo.busy, 'aborting left a sequence running');
@@ -850,7 +882,7 @@ function verifyChoreography(factory: ReturnType<typeof createCharacters>): void 
   const cTo = sq(1, 2);
   let rangedDone = false;
   let movedEarly = 0;
-  void choreo
+  const rangedPromise = choreo
     .capture(cannon, victim, {
       attackerSq: cFrom,
       defenderSq: cTo,
@@ -869,6 +901,7 @@ function verifyChoreography(factory: ReturnType<typeof createCharacters>): void 
     if (pigment.projectileActive) sawProjectile = true;
     if (i * dt < 3.0) movedEarly = Math.max(movedEarly, cannon.root.position.distanceTo(startPos));
   }
+  await rangedPromise;
   console.log(`  ranged: projectile seen ${sawProjectile}, attacker moved before 3.0 s: ${f(movedEarly, 4)}`);
   check(sawProjectile, 'the ranged capture never launched a projectile');
   check(movedEarly < 1e-6, 'the 砲 left its square during the exchange');
@@ -889,7 +922,7 @@ function verifyChoreography(factory: ReturnType<typeof createCharacters>): void 
 // Main
 // ---------------------------------------------------------------------------
 
-function main(): void {
+async function main(): Promise<void> {
   const argv = typeof process !== 'undefined' ? process.argv.slice(2) : [];
   const only = (flag: string): boolean => argv.length === 0 || argv.includes(flag);
 
@@ -903,7 +936,7 @@ function main(): void {
   if (only('--contact')) verifyContact(factory);
   if (only('--pose')) verifyPosing(factory);
   if (only('--pigment')) verifyPigment(factory);
-  if (only('--choreo')) verifyChoreography(factory);
+  if (only('--choreo')) await verifyChoreography(factory);
 
   console.log('');
   for (const n of notes) console.log(`  note  ${n}`);
@@ -916,4 +949,4 @@ function main(): void {
   factory.dispose();
 }
 
-main();
+void main();

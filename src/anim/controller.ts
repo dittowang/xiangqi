@@ -51,6 +51,7 @@ import {
 } from './clips.ts';
 import {
   chainReach,
+  heelOffAmount,
   makeAimChain,
   makeChain,
   makeFootLock,
@@ -210,6 +211,7 @@ export class Animator implements UnitAnimator {
   private ankleHeight = 0;
   private floorLocal = 0;
   private legLength = 1;
+  private footLength = 0.1;
 
   /** Attack progress, 0..2, mirrored from the live windup/strike actions. */
   private attackProgress = 0;
@@ -232,7 +234,14 @@ export class Animator implements UnitAnimator {
   private footstepGain: number;
   private frozen = false;
 
+  /** Contact-solver correction: persists between frames and decays. */
   private readonly rootCorrection = new THREE.Vector3();
+  /** Deck follow for a crew standing on a vehicle. Absolute, rewritten every frame. */
+  private readonly deckOffset = new THREE.Vector3();
+  /** The mount bone the seated legs are held against, and its bind position. */
+  private mountAnchor: THREE.Object3D | null = null;
+  private readonly mountAnchorBind = new THREE.Vector3();
+  private readonly mountDelta = new THREE.Vector3();
 
   constructor(unit: UnitInstance, opts: AnimatorOptions = {}) {
     this.unit = unit;
@@ -264,6 +273,8 @@ export class Animator implements UnitAnimator {
     this.bindHandR.copy(this.bind.get('handR')!);
 
     this.legLength = b.shinL.position.length() + b.footL.position.length();
+    // Foot length in world units, from the proportion table's own ratio.
+    this.footLength = this.height * 0.145 * this.scale;
     this.ankleHeight = this.bind.get('footL')!.y - this.bindRoot.y;
     this.floorLocal = this.bindRoot.y;
     this.strideWorld = Math.max(0.05, this.plan.strideOverLeg * this.legLength * this.scale);
@@ -307,6 +318,20 @@ export class Animator implements UnitAnimator {
     );
 
     this.setupTrunk();
+
+    // The bone a seated rider's legs are held against.
+    const anchorName =
+      unit.meta.mount === 'horse'
+        ? 'horse.spine'
+        : unit.meta.mount === 'elephant'
+          ? 'elephant.spine'
+          : unit.meta.mount === 'chariot'
+            ? 'chariot.body'
+            : null;
+    if (anchorName && unit.mountBones[anchorName]) {
+      this.mountAnchor = unit.mountBones[anchorName];
+      rigPosition(this.ikCtx, this.mountAnchor, this.mountAnchorBind);
+    }
 
     // --- actions ------------------------------------------------------------
     for (const [k, n] of this.clips) {
@@ -621,6 +646,8 @@ export class Animator implements UnitAnimator {
     // --- 4. contact ---------------------------------------------------------
     this.resolveContacts(dt);
 
+    this.autoChain();
+
     this.unit.bones.root.updateMatrixWorld(true);
     this.unit.skeleton.update();
   }
@@ -666,9 +693,9 @@ export class Animator implements UnitAnimator {
     }
     const b = this.unit.bones;
     b.root.position.set(
-      this.bindRoot.x + _rootAcc[0] * this.height + this.rootCorrection.x,
-      this.bindRoot.y + _rootAcc[1] * this.height + this.rootCorrection.y,
-      this.bindRoot.z + _rootAcc[2] * this.height + this.rootCorrection.z,
+      this.bindRoot.x + _rootAcc[0] * this.height + this.rootCorrection.x + this.deckOffset.x,
+      this.bindRoot.y + _rootAcc[1] * this.height + this.rootCorrection.y + this.deckOffset.y,
+      this.bindRoot.z + _rootAcc[2] * this.height + this.rootCorrection.z + this.deckOffset.z,
     );
     // The correction is re-derived from the plants every frame; decaying what
     // is left keeps a stale dip from persisting after the feet let go.
@@ -881,11 +908,11 @@ export class Animator implements UnitAnimator {
     const rock = ROLL.rockA * Math.sin(Math.PI * 2 * ph - 0.4);
     body.rotation.x = pitch * amp;
     body.rotation.z = rock * amp;
-    // The deck the crew stands on moves, so the crew moves with it. The knees
-    // absorb the rest, which is authored in the roll clip.
+    // The deck the crew stands on moves, so the crew moves with it. Written
+    // absolutely rather than accumulated: an accumulating offset would build to
+    // several times the deck's actual travel within a second.
     const deck = (1 - ROLL.kneeAbsorb) * amp;
-    this.rootCorrection.z += pitch * deck * this.height * 0.4;
-    this.rootCorrection.y += -Math.abs(pitch) * deck * this.height * 0.18;
+    this.deckOffset.set(0, -Math.abs(pitch) * deck * this.height * 0.18, pitch * deck * this.height * 0.4);
   }
 
   private driveTrebuchet(): void {
@@ -1090,6 +1117,8 @@ export class Animator implements UnitAnimator {
       this.worldFootPosition(leg, lock.world);
       lock.world.y = this.groundY(lock.world.x, lock.world.z) + this.ankleWorldHeight();
       lock.from.copy(lock.world);
+      lock.plant.copy(lock.world);
+      this.toeOf(lock.world, lock.toe);
       this.predictPlant(leg, lock.to);
       lock.primed = true;
     }
@@ -1122,8 +1151,11 @@ export class Animator implements UnitAnimator {
       if (lock.to.lengthSq() > 0 && moving) lock.world.copy(lock.to);
       else this.worldFootPosition(leg, lock.world);
       lock.world.y = this.groundY(lock.world.x, lock.world.z) + this.ankleWorldHeight();
+      lock.plant.copy(lock.world);
+      this.toeOf(lock.world, lock.toe);
       lock.yaw = this.yaw;
       lock.locked = true;
+      lock.heelOff = 0;
       this.onFootfall(side, lock.world);
     } else if (!nowLocked && wasLocked) {
       lock.locked = false;
@@ -1146,7 +1178,9 @@ export class Animator implements UnitAnimator {
       // the arc instead of being left wherever forward kinematics put it.
       lock.weight = 0.85;
     } else if (lock.locked) {
-      lock.world.y = this.groundY(lock.world.x, lock.world.z) + this.ankleWorldHeight();
+      lock.plant.y = this.groundY(lock.plant.x, lock.plant.z) + this.ankleWorldHeight();
+      lock.heelOff = moving ? heelOffAmount(this.gaitPhase, leg.contact, this.plan.duty) : 0;
+      this.applyHeelOff(lock);
     } else if (!moving) {
       // Standing but not locked (a hit, a recovery): follow the FK foot loosely
       // so the solver has something continuous to hand back to the next plant.
@@ -1159,6 +1193,44 @@ export class Animator implements UnitAnimator {
     return out.setFromMatrixPosition(leg.foot.matrixWorld);
   }
 
+  /** The ball of the foot, in front of an ankle at `ankle`, at the current yaw. */
+  private toeOf(ankle: THREE.Vector3, out: THREE.Vector3): THREE.Vector3 {
+    const reach = this.footLength * IK.toeAt;
+    out.set(ankle.x - Math.sin(this.yaw) * reach, ankle.y, ankle.z - Math.cos(this.yaw) * reach);
+    return out;
+  }
+
+  /**
+   * Push-off. The ankle rotates *about the frozen toe*, so the contact point
+   * does not move a millimetre while the heel comes up.
+   *
+   * This is what buys the stride. A near-straight standing leg cannot reach a
+   * foot planted far behind the hip without the pelvis dropping into a squat;
+   * lifting the ankle over the toe shortens the required reach at exactly the
+   * moment it is longest, which is the same trick a real ankle plays and for the
+   * same reason.
+   */
+  private applyHeelOff(lock: FootLock): void {
+    if (lock.heelOff <= 1e-4) {
+      lock.world.copy(lock.plant);
+      return;
+    }
+    _v2.copy(lock.plant).sub(lock.toe);
+    _v2.y = 0;
+    const len = _v2.length();
+    if (len < 1e-6) {
+      lock.world.copy(lock.plant);
+      return;
+    }
+    _v2.multiplyScalar(1 / len);
+    const theta = IK.heelRise * lock.heelOff;
+    lock.world.set(
+      lock.toe.x + _v2.x * len * Math.cos(theta),
+      lock.toe.y + len * Math.sin(theta),
+      lock.toe.z + _v2.z * len * Math.cos(theta),
+    );
+  }
+
   /**
    * The contact state of one foot: where the lock says it is, and where it
    * actually ended up. Those two agreeing is the definition of "no foot slide",
@@ -1169,11 +1241,13 @@ export class Animator implements UnitAnimator {
     side: 'L' | 'R',
     outTarget: THREE.Vector3,
     outActual: THREE.Vector3,
-  ): { locked: boolean; weight: number } {
+    outToe?: THREE.Vector3,
+  ): { locked: boolean; weight: number; heelOff: number } {
     const leg = this.legs[side];
     outTarget.copy(leg.lock.world);
     this.worldFootPosition(leg, outActual);
-    return { locked: leg.lock.locked, weight: leg.lock.weight };
+    if (outToe) outToe.copy(leg.lock.toe);
+    return { locked: leg.lock.locked, weight: leg.lock.weight, heelOff: leg.lock.heelOff };
   }
 
   /** Height of the ankle above the local floor, in world units. */
@@ -1199,11 +1273,12 @@ export class Animator implements UnitAnimator {
     const hip = leg.chain.a;
     out.setFromMatrixPosition(hip.matrixWorld);
     // Over one cycle the foot is fixed for `duty` of it while the hip covers
-    // `duty × stride`, so the foot sits ±duty/2 of a stride either side of the
-    // hip. Add the `(1 − duty)` of a stride the hip will cover during the swing
-    // and the plant lands `1 − duty/2` of a stride ahead of the hip *now*. Both
-    // terms fall out of the duty factor, so retiming a gait retimes this.
-    const ahead = this.strideWorld * (1 - this.plan.duty * 0.5);
+    // `duty × stride`, so the ankle spans `duty × stride` relative to the hip:
+    // `plantAhead` in front at the plant, the rest behind at toe-off. Add the
+    // `(1 − duty)` of a stride the hip covers during the swing and the plant
+    // lands `1 − duty + plantAhead` ahead of the hip *now*. Every term comes
+    // from the gait plan, so retiming a gait retimes this with it.
+    const ahead = this.strideWorld * (1 - this.plan.duty + IK.plantAhead);
     const s = Math.sin(this.yaw);
     const c = Math.cos(this.yaw);
     out.x -= s * ahead;
@@ -1286,11 +1361,20 @@ export class Animator implements UnitAnimator {
    * exactly where the mesh was built to have them however much the seat moves.
    */
   private holdSeatedLegs(): void {
+    // The legs are pinned to the *mount*, not to the rider. When the barrel
+    // pitches, the ankles go with it; when the rider's own root moves against
+    // it — which is what the absorb curves in the clip do — the knees take the
+    // difference. Pinning them to the root instead would make the whole lower
+    // body rigid and turn the rider into part of the saddle.
+    if (this.mountAnchor) {
+      rigPosition(this.ikCtx, this.mountAnchor, _v3);
+      this.mountDelta.copy(_v3).sub(this.mountAnchorBind);
+    } else {
+      this.mountDelta.set(0, 0, 0);
+    }
     for (const side of ['L', 'R'] as const) {
       const leg = this.legs[side];
-      _v.copy(this.bind.get(`foot${side}`)!);
-      // Follow the root so the legs travel with the seat rather than dangling.
-      _v.add(this.unit.bones.root.position).sub(this.bindRoot);
+      _v.copy(this.bind.get(`foot${side}`)!).add(this.mountDelta);
       solveTwoBone(leg.chain, this.ikCtx, _v, 1);
     }
   }
@@ -1303,6 +1387,34 @@ export class Animator implements UnitAnimator {
       pan: clamp(world.x / 6, -1, 1),
       detune: side === 'L' ? -40 : 30,
     });
+  }
+
+  /**
+   * What happens when a one-shot runs out.
+   *
+   * `victory` is authored as a raise that ends exactly on the pose the hold
+   * loop breathes around, so it chains into it and the figure keeps living
+   * instead of freezing with its weapon in the air. `hit` and `salute` return to
+   * idle on their own — a unit struck in passing is not the choreographer's
+   * problem to clean up. `death` clamps and stays clamped, which is the point.
+   */
+  private autoChain(): void {
+    if (!this.finished()) return;
+    if (this.state === 'victory' && this.stateKey.endsWith(':victory')) {
+      const key = `${this.key}:victoryHold`;
+      const next = this.actions.get(key);
+      const prev = this.actions.get(this.stateKey);
+      if (!next) return;
+      next.reset();
+      next.enabled = true;
+      next.setEffectiveTimeScale(1);
+      next.setEffectiveWeight(1);
+      next.play();
+      if (prev) next.crossFadeFrom(prev, FADE.victoryToHold, false);
+      this.stateKey = key;
+      return;
+    }
+    if (this.state === 'hit' || this.state === 'salute') this.play('idle', FADE.fromOneShot);
   }
 
   // -------------------------------------------------------------------------

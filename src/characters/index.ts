@@ -87,6 +87,7 @@ export type {
 // `fallback.ts`; `createCharacters()` reports which through its `onWarn` sink.
 
 import './units/horse.ts';
+import './units/elephant.ts';
 
 import './units/general.ts';
 import './units/chariot.ts';

@@ -28,8 +28,17 @@ import { bus } from '@core/bus.ts';
 import type { CameraPose, QualitySettings, QualityTier } from '@core/contracts.ts';
 import type { DebugFlag, NamedPose, XqFrameStats, XqTestApi } from '@core/testapi.ts';
 import { START_FEN } from '@core/testapi.ts';
-import { BOARD_HALF_X, BOARD_HALF_Z, worldToSquare } from '@core/coords.ts';
-import { type Difficulty, type Move, Side, encodeMove, moveFrom, moveTo } from '@core/types.ts';
+import { BOARD_HALF_X, BOARD_HALF_Z, facingY, worldToSquare } from '@core/coords.ts';
+import {
+  type Difficulty,
+  type Move,
+  Side,
+  type UnitKey,
+  UNIT_TYPE_BY_KEY,
+  encodeMove,
+  moveFrom,
+  moveTo,
+} from '@core/types.ts';
 
 import { createRenderPipeline, collapseToAtlas, disposeCollapse } from '@render/index.ts';
 import { createSceneRig, sealOutlineFromShapes, NAMED_POSES } from '@scene/index.ts';
@@ -395,6 +404,27 @@ function stepOnce(seconds: number): Promise<void> {
 
 let hudVisible = true;
 
+/** One isolated figure for character review. See `showcase` below. */
+const showcaseGroup = new THREE.Group();
+showcaseGroup.name = 'showcase';
+scene.add(showcaseGroup);
+let showcaseUnit: ReturnType<typeof characters.create> | null = null;
+let showcaseCollapse: ReturnType<typeof collapseToAtlas> | null = null;
+
+async function exitShowcase(): Promise<void> {
+  if (showcaseCollapse) {
+    disposeCollapse(showcaseCollapse);
+    showcaseCollapse = null;
+  }
+  if (showcaseUnit) {
+    showcaseUnit.root.removeFromParent();
+    showcaseUnit.dispose();
+    showcaseUnit = null;
+  }
+  stage.visible = true;
+  await stepOnce(0);
+}
+
 const api: XqTestApi = {
   ready: () => firstFrame,
 
@@ -465,8 +495,31 @@ const api: XqTestApi = {
     hudVisible = on;
   },
   setQuality: (tier) => governor.force(tier === 'auto' ? null : (tier as QualityTier)),
-  showcase: async () => {},
-  exitShowcase: async () => {},
+  showcase: async (side, unit, opts) => {
+    await exitShowcase();
+    const type = UNIT_TYPE_BY_KEY[unit as UnitKey];
+    if (!type) throw new Error(`showcase: unknown unit "${unit}"`);
+
+    // Hide the match rather than tearing it down, so exitShowcase is cheap and
+    // the position the harness set up survives a whole showcase sweep.
+    stage.visible = false;
+    rig.board.clearLegalMarks();
+    rig.board.setHover(null);
+
+    const built = characters.create(side, type, 0);
+    // Stand it on the board's centre intersection so it is lit and shadowed
+    // exactly as it would be in play — a figure floating in a void reads
+    // differently, and the critic is judging the shipped look.
+    built.root.position.set(0, rig.board.heightAt(0, 0), 0);
+    built.root.rotation.y = opts?.turntable ?? facingY(side);
+    showcaseGroup.add(built.root);
+    showcaseUnit = built;
+    showcaseCollapse = collapseToAtlas(built.root, pipeline.materials, { variation: 0 });
+
+    api.setNamedPose('portrait', true);
+    await stepOnce(0);
+  },
+  exitShowcase: () => exitShowcase(),
   setDebug: (flag: DebugFlag, on: boolean) => pipeline.setDebug(flag, on),
 
   stats: (): XqFrameStats => ({

@@ -512,8 +512,18 @@ export interface FootLock {
    * cannot happen even on the first frame of the first move.
    */
   primed: boolean;
-  /** The frozen world position of the ankle. */
+  /** The live ankle target — the frozen plant, plus any heel-off pivot. */
   world: THREE.Vector3;
+  /** The ankle position captured at the plant. Frozen for the whole stance. */
+  plant: THREE.Vector3;
+  /**
+   * The contact point: the ball of the foot, world space, frozen at the plant.
+   * This is the point that must not move. The ankle is allowed to rise over it
+   * at push-off, because that is what an ankle does.
+   */
+  toe: THREE.Vector3;
+  /** Heel-off progress, 0 (flat) .. 1 (fully up on the toe). */
+  heelOff: number;
   /** Where the foot last released from, for the swing arc. */
   from: THREE.Vector3;
   /** Where the foot is predicted to plant next. */
@@ -535,6 +545,9 @@ export function makeFootLock(): FootLock {
     locked: false,
     primed: false,
     world: new THREE.Vector3(),
+    plant: new THREE.Vector3(),
+    toe: new THREE.Vector3(),
+    heelOff: 0,
     from: new THREE.Vector3(),
     to: new THREE.Vector3(),
     yaw: 0,
@@ -546,23 +559,33 @@ export function makeFootLock(): FootLock {
 /**
  * Stance weight for one foot at a cycle phase, given the gait's duty factor.
  *
- * Rises through `IK.plantBlend` of phase at the plant and falls again just
- * before toe-off, so the authority of a lock ramps rather than switching. Both
- * feet can be above zero at once — that overlap *is* the double-support phase,
- * and a gait whose duty is 0.5 or below has none, which is why it glides.
+ * Full authority from the instant of the plant — a plant is not something a
+ * foot eases into — and a short ramp down at toe-off so the release is not a
+ * switch. Both feet can be above zero at once: that overlap *is* the
+ * double-support phase, and a gait whose duty is 0.5 or below has none, which
+ * is exactly why it glides.
  */
 export function stanceWeight(phase: number, contact: number, duty: number): number {
   let p = phase - contact;
   p -= Math.floor(p);
   if (p >= duty) return 0;
-  const blend = IK.plantBlend;
   const release = duty - IK.releaseLead;
-  if (p < blend) return p / blend;
   if (p > release) {
     const u = (p - release) / Math.max(1e-6, duty - release);
     return Math.max(0, 1 - u);
   }
   return 1;
+}
+
+/** Heel-off progress at a stance phase: 0 while the foot is flat, 1 at toe-off. */
+export function heelOffAmount(phase: number, contact: number, duty: number): number {
+  let p = phase - contact;
+  p -= Math.floor(p);
+  if (p >= duty || p < 0) return 0;
+  const u = (p / duty - IK.heelOffAt) / Math.max(1e-6, 1 - IK.heelOffAt);
+  if (u <= 0) return 0;
+  if (u >= 1) return 1;
+  return u * u * (3 - 2 * u);
 }
 
 /**

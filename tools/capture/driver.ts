@@ -242,6 +242,8 @@ export class Driver {
   private compositorContext: BrowserContext | null = null;
   private compositorPage: Page | null = null;
   private readonly reviewLongEdge: number;
+  /** Budget for any single page operation, including a screenshot. */
+  private readonly timeoutMs: number;
   private readonly log: (line: string) => void;
 
   private constructor(init: {
@@ -253,6 +255,7 @@ export class Driver {
     viewport: { width: number; height: number; deviceScaleFactor: number };
     webgl: WebGLReport;
     reviewLongEdge: number;
+    timeoutMs: number;
     errors: string[];
     log: (line: string) => void;
   }) {
@@ -260,6 +263,7 @@ export class Driver {
     this.browser = init.browser;
     this.context = init.context;
     this.outDir = init.outDir;
+    this.timeoutMs = init.timeoutMs;
     this.suite = init.suite;
     this.viewport = init.viewport;
     this.webgl = init.webgl;
@@ -362,6 +366,7 @@ export class Driver {
       viewport: { width, height, deviceScaleFactor },
       webgl,
       reviewLongEdge: opts.reviewLongEdge ?? 1600,
+      timeoutMs,
       errors,
       log,
     });
@@ -611,6 +616,12 @@ export class Driver {
       type: 'png',
       animations: 'disabled',
       caret: 'hide',
+      // Playwright's 30s default is a browser-UI timeout and has nothing to do
+      // with how long this scene takes to composite. On a software rasteriser a
+      // retina frame of the full cast can exceed it, and the failure looks like
+      // a harness bug rather than "the machine is slow". Use the driver's own
+      // budget, which the caller sizes for the environment.
+      timeout: this.timeoutMs,
       scale: opts.scale ?? 'device',
       ...(opts.clip ? { clip: opts.clip } : {}),
     });

@@ -1419,9 +1419,21 @@ function buildHorse(ctx: UnitBuildContext): PartGroup {
   // The yaw is not decoration: a blade is a thin plate, and one held in the
   // XY plane vanishes to a needle from the side. Turning it 50 degrees keeps
   // some blade width visible from every azimuth the camera director uses.
-  const daoRot: V3 = [0.3, 0.88, -0.2];
+  // Raked back about 63 degrees from vertical — the cavalry shoulder carry, and
+  // the steepest angle that keeps the point inside the unit's height budget.
+  // Held upright the blade stands a fifth of a horse above the helmet and the
+  // piece out-tops the general; height is monotone with piece value across this
+  // cast, and a sabre is not worth breaking that ladder for. The 50-degree yaw
+  // keeps the blade's flat visible from every azimuth the director uses.
+  const daoRot: V3 = [1.1, 0.88, -0.3];
   const jiRot: V3 = [1.38, 0, -0.05];
-  armOffsets(rig0, 'R', han ? [0.62, 0.1, 0.44] : [0.55, -0.62, -0.5], han ? [0.14, 0.96, -0.24] : [0.18, -0.5, -0.85], offsets);
+  armOffsets(
+    rig0,
+    'R',
+    han ? [0.62, 0.1, 0.44] : [0.55, -0.62, -0.5],
+    han ? [0.2, 0.86, -0.2] : [0.18, -0.5, -0.85],
+    offsets,
+  );
   armOffsets(rig0, 'L', [-0.46, -0.62, -0.64], [-0.06, -0.26, -0.96], offsets);
 
   const rig = ctx.useRig({

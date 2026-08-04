@@ -178,7 +178,7 @@ export const GAIT: Record<GaitName, GaitPlan> = {
   march: {
     name: 'march',
     cycle: 1.03,
-    strideOverLeg: 1.02,
+    strideOverLeg: 1.32,
     duty: 0.62,
     contactL: 0.5,
     contactR: 0.0,
@@ -193,7 +193,7 @@ export const GAIT: Record<GaitName, GaitPlan> = {
   stride: {
     name: 'stride',
     cycle: 1.19,
-    strideOverLeg: 0.86,
+    strideOverLeg: 1.10,
     duty: 0.66,
     contactL: 0.5,
     contactR: 0.0,
@@ -244,7 +244,7 @@ export const GAIT: Record<GaitName, GaitPlan> = {
   crew: {
     name: 'crew',
     cycle: 1.47,
-    strideOverLeg: 0.54,
+    strideOverLeg: 0.76,
     duty: 0.73,
     contactL: 0.5,
     contactR: 0.0,
@@ -536,10 +536,32 @@ export const IK = {
   hipIterations: 2,
   /** A foot enters stance when its stance weight rises past this. */
   plantThreshold: 0.5,
-  /** Blend in and out of a lock, in cycle phase, so a plant is not a snap. */
-  plantBlend: 0.08,
   /** Toe-off releases the lock this far before the swing formally starts. */
   releaseLead: 0.04,
+  /**
+   * Heel-off. Fraction of stance after which the foot begins pivoting about its
+   * toe, and how far it pivots by toe-off, in radians.
+   *
+   * This is not a flourish. A rig whose bind pose has near-straight legs — which
+   * is every standing figure, this one included — can only reach a foot planted
+   * `A` in front of its hip by dropping the pelvis, and the drop needed for a
+   * natural stride is a visible squat. Real walking solves it by raising the
+   * *ankle* over a fixed toe at push-off, which shortens the trailing limb's
+   * reach requirement without moving the contact point at all. With heel-off the
+   * stride is a stride; without it, it is a shuffle or a duck walk, and there is
+   * no third option.
+   */
+  heelOffAt: 0.62,
+  heelRise: 0.46,
+  /** Where along the foot the contact point sits, as a fraction of foot length. */
+  toeAt: 0.86,
+  /**
+   * How far in front of the hip the ankle plants, as a fraction of a stride.
+   * The identity `ahead + behind = duty × stride` is fixed by the kinematics;
+   * this is the split, and it is asymmetric because heel-off lets the trailing
+   * limb reach further back than the leading one reaches forward.
+   */
+  plantAhead: 0.26,
 } as const;
 
 // ===========================================================================

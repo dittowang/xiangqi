@@ -129,7 +129,12 @@ export function spokedWheel(o: WheelOpts): PartGroup {
   const pos = new THREE.Vector3(...o.at);
   for (let i = 0; i < n; i++) {
     const a = (i / n) * Math.PI * 2;
-    const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(a, 0, Math.PI / 2, 'YXZ'));
+    // The wheel stands in the YZ plane with the axle along X, so a spoke
+    // authored along +Y is fanned by a rotation about X and nothing else.
+    // The previous transform composed a Z rotation first, which laid the spoke
+    // flat along the axle where the X rotation could no longer move it — all
+    // twenty-six collapsed into one sideways stub.
+    const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(a, 0, 0, 'XYZ'));
     mats.push(new THREE.Matrix4().compose(pos, q, new THREE.Vector3(1, 1, 1)));
   }
   g.instanced.push({

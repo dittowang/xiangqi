@@ -200,16 +200,89 @@ export interface LoftOpts {
 /**
  * Stitch a stack of rings into a solid. All rings must have the same point
  * count; the caller controls every crease by choosing where to put a ring.
+ *
+ * ORIENTATION IS SOLVED, NOT ASSUMED. `strip()` produces outward normals only
+ * when the rings wind one particular way relative to the direction the stack
+ * travels — so a skirt lofted waist-to-hem, a hoof lofted downward, a scabbard,
+ * a canopy lofted apex-to-rim, and *every* sweep whose tangent points down came
+ * out inside-out. That is not a constraint worth documenting and remembering at
+ * two dozen call sites; it is a constraint worth removing.
+ *
+ * So: measure it. For every strip, `cross(sweepDirection, ringTangent)` is the
+ * direction `strip()` will emit normals in; dotting that with the outward
+ * radial from the ring's own centroid says whether it points out of the solid
+ * or into it. Sum over the whole loft, and if the total is negative reverse
+ * every ring — which flips the wall normals *and* both end caps together,
+ * because a fan's facing follows its ring's winding too.
+ *
+ * The sum is signed area-weighted, so a form whose sweep direction reverses
+ * partway (a torus profile lathed through a full turn) still resolves to the
+ * one globally correct answer rather than being decided by whichever strip
+ * happened to come first.
  */
 export function loft(rings: V3[][], o: LoftOpts = {}): THREE.BufferGeometry {
-  const b = new MeshBuilder();
   const closed = o.closed !== false;
-  for (let i = 0; i < rings.length - 1; i++) {
-    b.strip(rings[i], rings[i + 1], closed, i / (rings.length - 1), (i + 1) / (rings.length - 1));
+  const work = orientRings(rings, closed);
+  const b = new MeshBuilder();
+  for (let i = 0; i < work.length - 1; i++) {
+    b.strip(work[i], work[i + 1], closed, i / (work.length - 1), (i + 1) / (work.length - 1));
   }
-  if (o.capStart !== false) b.fan(rings[0], false);
-  if (o.capEnd !== false) b.fan(rings[rings.length - 1], true);
+  if (o.capStart !== false) b.fan(work[0], false);
+  if (o.capEnd !== false) b.fan(work[work.length - 1], true);
   return b.build(o.name ?? '');
+}
+
+/** Mean of a ring's points. For a lathe this lands on the axis. */
+function ringCentroid(r: V3[]): V3 {
+  let x = 0;
+  let y = 0;
+  let z = 0;
+  for (const p of r) {
+    x += p[0];
+    y += p[1];
+    z += p[2];
+  }
+  const n = r.length || 1;
+  return [x / n, y / n, z / n];
+}
+
+/**
+ * Returns the ring stack wound so that `strip()` emits outward normals,
+ * reversing each ring if the measured orientation says the stack is inverted.
+ * Never mutates the caller's arrays — ring point lists are frequently shared.
+ */
+export function orientRings(rings: V3[][], closed = true): V3[][] {
+  if (rings.length < 2) return rings;
+  let acc = 0;
+  for (let k = 0; k < rings.length - 1; k++) {
+    const A = rings[k];
+    const B = rings[k + 1];
+    if (A.length < 2 || A.length !== B.length) continue;
+    const ca = ringCentroid(A);
+    const cb = ringCentroid(B);
+    const dx = cb[0] - ca[0];
+    const dy = cb[1] - ca[1];
+    const dz = cb[2] - ca[2];
+    const n = A.length;
+    const last = closed ? n : n - 1;
+    for (let i = 0; i < last; i++) {
+      const j = (i + 1) % n;
+      const tx = A[j][0] - A[i][0];
+      const ty = A[j][1] - A[i][1];
+      const tz = A[j][2] - A[i][2];
+      // The direction strip() will orient this quad's normal along.
+      const cx = dy * tz - dz * ty;
+      const cy = dz * tx - dx * tz;
+      const cz = dx * ty - dy * tx;
+      // Outward radial at the quad's mid-edge.
+      const mx = (A[i][0] + A[j][0]) * 0.5 - ca[0];
+      const my = (A[i][1] + A[j][1]) * 0.5 - ca[1];
+      const mz = (A[i][2] + A[j][2]) * 0.5 - ca[2];
+      acc += cx * mx + cy * my + cz * mz;
+    }
+  }
+  if (acc >= 0) return rings;
+  return rings.map((r) => r.slice().reverse());
 }
 
 export interface PrismOpts {
@@ -628,6 +701,14 @@ export function sweep(
  * normal, the two sheets are joined around all four borders, and the result is
  * a closed solid. Closed matters more than it sounds: the renderer's outline
  * pass draws back faces, and an open sheet's outline turns inside out.
+ *
+ * `flip` chooses which side of the authored surface the thickness is added to,
+ * for a patch whose grid indexing runs the other way round — a mirrored cheek
+ * lappet, the second of a pair of ears. It flips the offset direction **and**
+ * the winding of every face. Flipping only the offset (which is what this did
+ * before) moves the back sheet in front of the front sheet and turns the solid
+ * inside out, which is invisible in a wireframe and unmissable the moment
+ * anything is lit — every helmeted unit had one inverted cheek plate.
  */
 export function shell(
   grid: V3[][],
@@ -636,7 +717,8 @@ export function shell(
 ): THREE.BufferGeometry {
   const R = grid.length;
   const C = grid[0].length;
-  const sign = o.flip ? -1 : 1;
+  const flip = !!o.flip;
+  const sign = flip ? -1 : 1;
 
   // Vertex normals from the patch's own tangents, averaged across the shared
   // edges so the offset sheet does not self-intersect at a crease.
@@ -674,19 +756,24 @@ export function shell(
   );
 
   const b = new MeshBuilder();
+  // Reversing a quad's vertex loop reverses its normal. Every face in the solid
+  // has to turn together, or the borders disagree with the sheets they join.
+  const q = (a: V3, bb: V3, c: V3, d: V3) =>
+    flip ? b.quad(a, d, c, bb) : b.quad(a, bb, c, d);
+
   for (let r = 0; r < R - 1; r++) {
     for (let c = 0; c < C - 1; c++) {
-      b.quad(grid[r][c], grid[r + 1][c], grid[r + 1][c + 1], grid[r][c + 1]);
-      b.quad(inner[r][c], inner[r][c + 1], inner[r + 1][c + 1], inner[r + 1][c]);
+      q(grid[r][c], grid[r + 1][c], grid[r + 1][c + 1], grid[r][c + 1]);
+      q(inner[r][c], inner[r][c + 1], inner[r + 1][c + 1], inner[r + 1][c]);
     }
   }
   for (let c = 0; c < C - 1; c++) {
-    b.quad(grid[0][c], grid[0][c + 1], inner[0][c + 1], inner[0][c]);
-    b.quad(grid[R - 1][c + 1], grid[R - 1][c], inner[R - 1][c], inner[R - 1][c + 1]);
+    q(grid[0][c], grid[0][c + 1], inner[0][c + 1], inner[0][c]);
+    q(grid[R - 1][c + 1], grid[R - 1][c], inner[R - 1][c], inner[R - 1][c + 1]);
   }
   for (let r = 0; r < R - 1; r++) {
-    b.quad(grid[r][C - 1], grid[r + 1][C - 1], inner[r + 1][C - 1], inner[r][C - 1]);
-    b.quad(grid[r + 1][0], grid[r][0], inner[r][0], inner[r + 1][0]);
+    q(grid[r][C - 1], grid[r + 1][C - 1], inner[r + 1][C - 1], inner[r][C - 1]);
+    q(grid[r + 1][0], grid[r][0], inner[r][0], inner[r + 1][0]);
   }
   return b.build(o.name ?? 'shell');
 }
