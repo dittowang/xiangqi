@@ -1,0 +1,27 @@
+{
+  "name": "xiangqi-gongbi",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "3D Chinese chess (xiangqi) rendered as 工筆重彩 gongbi heavy-colour painting. Zero external assets.",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview --port 4173",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "capture": "tsx tools/capture/cli.ts"
+  },
+  "dependencies": {
+    "three": "^0.185.1"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.62.1",
+    "@types/three": "^0.185.0",
+    "tsx": "^4.20.3",
+    "typescript": "~5.9.3",
+    "vite": "^7.1.7",
+    "vitest": "^3.2.4"
+  }
+}

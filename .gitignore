@@ -1,0 +1,13 @@
+node_modules/
+dist/
+.vite/
+*.log
+npm-debug.log*
+.DS_Store
+.idea/
+.vscode/
+# Capture harness output — regenerated on demand, never committed.
+captures/
+test-results/
+playwright-report/
+.tsbuildinfo
