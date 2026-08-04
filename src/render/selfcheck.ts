@@ -331,6 +331,29 @@ function checkShaders(): void {
   const spawned = lib.materialCount - before;
   ok(spawned <= 17, 'animated glow is quantised in the cache key', `spawned ${spawned}`);
 
+  // Frame-global uniforms MUST be shared by reference across every material, or
+  // `update()` becomes O(materials) per frame and a resize touches hundreds of
+  // objects. Identity, not equality — an accidental structuredClone or spread
+  // of the VALUE would still compare equal and would silently stop propagating.
+  const m1 = lib.get({ cls: 'cloth', pigment: 'indigo' }) as THREE.ShaderMaterial;
+  const m2 = lib.get({ cls: 'iron', pigment: 'stone' }) as THREE.ShaderMaterial;
+  for (const name of ['uViewportPx', 'uKeyDir', 'uCsmMatrix0', 'uSilhouette', 'uSilkGain']) {
+    ok(
+      m1.uniforms[name] === m2.uniforms[name],
+      `shared uniform '${name}' is one object across materials`,
+    );
+  }
+  // Per-material uniforms must NOT be shared, or every soldier would take the
+  // last one's pigment.
+  for (const name of ['uRampRow', 'uRim', 'uSilkWash']) {
+    ok(m1.uniforms[name] !== m2.uniforms[name], `per-material uniform '${name}' is distinct`);
+  }
+  // The prepass twin is shared, not per material: it has no per-material input.
+  ok(
+    gongbiInfo(m1)!.prepass === gongbiInfo(m2)!.prepass,
+    'surface materials share one prepass twin',
+  );
+
   console.log(
     `  ${surfaces} surface variants, ${hulls} hull variants, ${seenPrepass.size} prepass variants audited`,
   );
@@ -519,25 +542,38 @@ function checkTextures(): void {
     ok(mean > 8 && mean < 248, `${kind}: field is not clipped flat`, `mean ${mean.toFixed(1)}`);
     ok(data[3] === 255, `${kind}: alpha is opaque`);
 
-    // TILING. Compare the discontinuity across the wrap seam against the
-    // typical neighbour-to-neighbour difference inside the field. A
-    // non-periodic generator shows up here as a seam several times sharper
+    // TILING, on BOTH axes. Compare the discontinuity across each wrap seam
+    // against the typical neighbour-to-neighbour difference inside the field.
+    // A non-periodic generator shows up here as a seam several times sharper
     // than the interior, and nowhere else until someone wraps it on a mesh.
-    let seam = 0;
-    let interior = 0;
-    for (let y = 0; y < size; y++) {
-      seam += Math.abs(data[(y * size + size - 1) * 4] - data[y * size * 4]);
-      const x = (y * 7919) % (size - 1);
-      interior += Math.abs(data[(y * size + x) * 4] - data[(y * size + x + 1) * 4]);
+    //
+    // Testing X alone is not enough: an anisotropic field (timber fibre, cloth
+    // slubs) can tile perfectly across the grain and fail along it, because the
+    // two axes run at different frequencies and it is easy to give them the
+    // same lattice period by accident.
+    for (const axis of ['x', 'y'] as const) {
+      let seam = 0;
+      let interior = 0;
+      for (let i = 0; i < size; i++) {
+        if (axis === 'x') {
+          seam += Math.abs(data[(i * size + size - 1) * 4] - data[i * size * 4]);
+          const j = (i * 7919) % (size - 1);
+          interior += Math.abs(data[(i * size + j) * 4] - data[(i * size + j + 1) * 4]);
+        } else {
+          seam += Math.abs(data[((size - 1) * size + i) * 4] - data[i * 4]);
+          const j = (i * 7919) % (size - 1);
+          interior += Math.abs(data[(j * size + i) * 4] - data[((j + 1) * size + i) * 4]);
+        }
+      }
+      seam /= size;
+      interior /= size;
+      const ratio = interior > 0.01 ? seam / interior : seam;
+      ok(
+        ratio < 3.0,
+        `${kind}: tiles across the ${axis} wrap seam`,
+        `seam step ${seam.toFixed(2)} vs interior ${interior.toFixed(2)} (ratio ${ratio.toFixed(2)})`,
+      );
     }
-    seam /= size;
-    interior /= size;
-    const ratio = interior > 0.01 ? seam / interior : seam;
-    ok(
-      ratio < 3.0,
-      `${kind}: tiles across the wrap seam`,
-      `seam step ${seam.toFixed(2)} vs interior ${interior.toFixed(2)} (ratio ${ratio.toFixed(2)})`,
-    );
 
     note(`${kind}: ${size}x${size} generated in ${ms} ms, mean ${mean.toFixed(1)}, range ${min}..${max}`);
   }
@@ -582,13 +618,21 @@ function checkOutlineMaths(): void {
   }
   ok(corners === 8, 'a box welds to 8 distinct corner positions', `${corners}`);
   ok(welded, 'split vertices at a corner share one smoothed normal');
-  // On a cube each corner normal must be the (1,1,1)/sqrt(3) diagonal.
-  const anyCorner = [...byCorner.values()][0][0];
-  ok(
-    Math.abs(Math.abs(anyCorner.x) - 0.5773502) < 1e-4,
-    'cube corner normal is the body diagonal',
-    `${anyCorner.x.toFixed(5)}`,
-  );
+
+  // Tessellation independence, the whole reason for angle weighting: every
+  // corner of a cube must come out at exactly the body diagonal, whichever way
+  // each face happened to be split into triangles. Area weighting gives
+  // (0.816, 0.408, 0.408) here and pushes the hull sideways.
+  for (const list of byCorner.values()) {
+    const n = list[0];
+    ok(
+      Math.abs(Math.abs(n.x) - 0.5773503) < 1e-5 &&
+        Math.abs(Math.abs(n.y) - 0.5773503) < 1e-5 &&
+        Math.abs(Math.abs(n.z) - 0.5773503) < 1e-5,
+      'cube corner normal is the body diagonal',
+      `(${n.x.toFixed(5)}, ${n.y.toFixed(5)}, ${n.z.toFixed(5)})`,
+    );
+  }
 
   // The screen-width derivation, checked against a real projection matrix:
   // push a point by the offset the shader computes and confirm it lands the
@@ -686,13 +730,22 @@ function checkCsm(): void {
   }
 
   // Texel snapping: translating the camera by a fraction of a texel must move
-  // the cascade centre by either zero or a whole texel, never a fraction.
+  // the cascade centre in WHOLE texels along the light's own X and Y axes, or
+  // not at all. The light-space Z is deliberately NOT snapped — it is the ortho
+  // depth axis and quantising it would only cost precision — so the test has to
+  // be done in the light basis, not on the raw world displacement.
   const cam = new THREE.PerspectiveCamera(38, 16 / 9, 0.1, 400);
   cam.position.set(0, 9, 15.5);
   cam.lookAt(0, 0.35, 0);
   cam.updateMatrixWorld(true);
   csm.update(cam);
-  const first = csm.cascades[0].camera.position.clone();
+
+  const up = Math.abs(csm.direction.y) > 0.98 ? new THREE.Vector3(0, 0, 1) : new THREE.Vector3(0, 1, 0);
+  const toLight = new THREE.Matrix4()
+    .lookAt(csm.direction, new THREE.Vector3(), up)
+    .invert();
+
+  const first = csm.cascades[0].camera.position.clone().applyMatrix4(toLight);
   const texel = csm.cascades[0].texelWorld;
 
   let fractional = 0;
@@ -700,11 +753,10 @@ function checkCsm(): void {
     cam.position.x = (k * texel) / 5;
     cam.updateMatrixWorld(true);
     csm.update(cam);
-    const d = csm.cascades[0].camera.position.clone().sub(first);
-    // Project the movement onto the light's own texel grid axes; any component
-    // should be a whole number of texels.
-    const stepsX = d.length() / texel;
-    if (Math.abs(stepsX - Math.round(stepsX)) > 1e-3) fractional++;
+    const d = csm.cascades[0].camera.position.clone().applyMatrix4(toLight).sub(first);
+    const sx = d.x / texel;
+    const sy = d.y / texel;
+    if (Math.abs(sx - Math.round(sx)) > 1e-3 || Math.abs(sy - Math.round(sy)) > 1e-3) fractional++;
   }
   ok(
     fractional === 0,

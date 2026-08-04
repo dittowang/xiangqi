@@ -454,9 +454,15 @@ export class GongbiPipeline implements RenderPipeline {
     this.materials.setQuality(q);
     this.linesPass.material.uniforms.uSobelEnabled.value =
       q.sobel && this.floatTargets && this.debugMode !== DEBUG_OUTLINE_ONLY ? 1 : 0;
-    // MSAA changes require a fresh framebuffer; three rebuilds it when `samples`
-    // changes, so this is a resize-equivalent, not a per-frame knob.
-    if (this.sceneRT.samples !== q.msaa) this.sceneRT.samples = q.msaa;
+    // MSAA lives in the framebuffer, not in a uniform: three reads `samples`
+    // when it builds the target, so the sample count only takes effect after
+    // the GL objects are torn down. `dispose()` does that and the next render
+    // rebuilds at the new count. This is why the governor is written to change
+    // tier rarely and never during a capture — it is a reallocation, not a knob.
+    if (this.sceneRT.samples !== q.msaa) {
+      this.sceneRT.dispose();
+      this.sceneRT.samples = q.msaa;
+    }
   }
 
   get quality(): QualityTier {
@@ -610,7 +616,11 @@ export class GongbiPipeline implements RenderPipeline {
     const wantShadows =
       this.settings.cascades > 0 && !this.silhouette && this.debugMode !== DEBUG_OUTLINE_ONLY;
     this.materials.setShadowsEnabled(wantShadows);
-    if (wantShadows) this.shadows.render(renderer, scene, camera, this.hulls);
+    if (wantShadows) {
+      this.shadows.render(renderer, scene, camera, this.hulls);
+      // Immediately after the fit, never before it — see syncShadows()'s note.
+      this.materials.syncShadows();
+    }
 
     // --- 2. depth + normal prepass ----------------------------------------
     const wantSobel = this.linesPass.material.uniforms.uSobelEnabled.value === 1 && !this.silhouette;

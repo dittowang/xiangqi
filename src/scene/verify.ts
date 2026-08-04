@@ -211,6 +211,69 @@ check(
 
 // ---------------------------------------------------------------------------
 
+section('winding and normals');
+
+{
+  // The invariant every piece of geometry in this subsystem has to hold: the
+  // stored vertex normal must agree with the direction the triangle's winding
+  // makes it face. Break it and the surface is either back-face culled out of
+  // existence or lit from behind — and both look like "the material is wrong"
+  // rather than "the geometry is inside out", which is a long afternoon.
+  const A = new THREE.Vector3();
+  const B = new THREE.Vector3();
+  const C = new THREE.Vector3();
+  const ab = new THREE.Vector3();
+  const ac = new THREE.Vector3();
+  const face = new THREE.Vector3();
+  const nrm = new THREE.Vector3();
+
+  const audit = (label: string, geo: THREE.BufferGeometry) => {
+    const pos = geo.getAttribute('position');
+    const nAttr = geo.getAttribute('normal');
+    if (!pos || !nAttr) return;
+    let bad = 0;
+    let degenerate = 0;
+    let upFacing = 0;
+    const total = pos.count / 3;
+    for (let i = 0; i < pos.count; i += 3) {
+      A.fromBufferAttribute(pos, i);
+      B.fromBufferAttribute(pos, i + 1);
+      C.fromBufferAttribute(pos, i + 2);
+      ab.subVectors(B, A);
+      ac.subVectors(C, A);
+      face.crossVectors(ab, ac);
+      if (face.lengthSq() < 1e-16) {
+        degenerate++;
+        continue;
+      }
+      face.normalize();
+      nrm.fromBufferAttribute(nAttr, i);
+      if (face.dot(nrm) < 0.02) bad++;
+      if (face.y > 0.5) upFacing++;
+    }
+    report(
+      `${label} winding agrees with normals`,
+      `${total - bad - degenerate}/${total} good, ${bad} inverted, ${degenerate} degenerate, ${Math.round((upFacing / total) * 100)}% face up`,
+      bad === 0,
+    );
+  };
+
+  for (const name of ['deck', 'frame', 'incisions', 'palaceLeaf', 'banking', 'riverBed', 'water']) {
+    const mesh = board.parts[name] as THREE.Mesh | undefined;
+    if (mesh) audit(name.padEnd(11), mesh.geometry);
+  }
+  board.bases.group.traverse((o) => {
+    const m = o as THREE.Mesh;
+    if (m.isMesh && m.geometry) audit(('base ' + m.name.split('/').slice(-2).join('/')).padEnd(11), m.geometry);
+  });
+  board.markers.group.traverse((o) => {
+    const m = o as THREE.Mesh;
+    if (m.isMesh && m.geometry) audit(('mark ' + m.name.split('/').pop()).padEnd(11), m.geometry);
+  });
+}
+
+// ---------------------------------------------------------------------------
+
 section('bounding boxes');
 
 function bbox(o: THREE.Object3D): THREE.Box3 {
@@ -651,6 +714,118 @@ section('backdrop');
   check('the lake is below the terrace', LAKE_Y < OFF_BOARD_Y - 1, `lake ${fmt(LAKE_Y)}, terrace ${fmt(OFF_BOARD_Y)}`);
   check('terrace clears the table corners', TERRACE_RADIUS > Math.hypot(TABLE_HALF_X, TABLE_HALF_Z), `${fmt(TERRACE_RADIUS)} > ${fmt(Math.hypot(TABLE_HALF_X, TABLE_HALF_Z))}`);
   backdrop.dispose();
+}
+
+// ---------------------------------------------------------------------------
+
+section('shaders');
+
+{
+  /**
+   * There is no GL context in node, so the GLSL cannot actually be compiled
+   * here. What *can* be checked without one is the whole class of mistake that
+   * produces a silently black surface rather than an exception:
+   *
+   *   - an `#include <chunk>` that does not name a real ShaderChunk;
+   *   - re-including one of the `*_pars_*` chunks that three already injects
+   *     into every ShaderMaterial prefix, which is a duplicate function
+   *     definition and a link failure;
+   *   - a uniform declared in the GLSL with no matching entry in the uniforms
+   *     object, or the reverse — a typo on either side is invisible until the
+   *     surface renders wrong;
+   *   - a varying read in the fragment shader that the vertex shader never
+   *     writes, or writes at a different type.
+   */
+  const INJECTED_BY_THREE = new Set([
+    'colorspace_pars_fragment',
+    'tonemapping_pars_fragment',
+  ]);
+  const BUILTIN_UNIFORMS = new Set([
+    'modelMatrix',
+    'modelViewMatrix',
+    'projectionMatrix',
+    'viewMatrix',
+    'normalMatrix',
+    'cameraPosition',
+    'isOrthographic',
+  ]);
+
+  const auditShader = (label: string, mat: THREE.ShaderMaterial) => {
+    const problems: string[] = [];
+    const sources = { vertex: mat.vertexShader, fragment: mat.fragmentShader };
+
+    for (const [stage, src] of Object.entries(sources)) {
+      for (const m of src.matchAll(/^[ \t]*#include\s+<(\w+)>/gm)) {
+        const name = m[1];
+        if (!(name in THREE.ShaderChunk)) problems.push(`${stage}: unknown chunk <${name}>`);
+        else if (INJECTED_BY_THREE.has(name)) {
+          problems.push(`${stage}: <${name}> is already in three's prefix — duplicate definition`);
+        }
+      }
+      let depth = 0;
+      for (const ch of src) {
+        if (ch === '{') depth++;
+        else if (ch === '}') depth--;
+        if (depth < 0) break;
+      }
+      if (depth !== 0) problems.push(`${stage}: unbalanced braces (${depth})`);
+    }
+
+    // Uniforms declared in GLSL vs supplied on the material.
+    const declared = new Set<string>();
+    for (const src of Object.values(sources)) {
+      for (const m of src.matchAll(/^\s*uniform\s+\w+\s+(\w+)\s*(?:\[[^\]]*\])?\s*;/gm)) {
+        if (!BUILTIN_UNIFORMS.has(m[1])) declared.add(m[1]);
+      }
+    }
+    const supplied = new Set(Object.keys(mat.uniforms));
+    for (const d of declared) if (!supplied.has(d)) problems.push(`uniform ${d} declared but not supplied`);
+    for (const s of supplied) if (!declared.has(s)) problems.push(`uniform ${s} supplied but never declared`);
+
+    // Varyings: the fragment shader may only read what the vertex shader writes.
+    const varyingsOf = (src: string) => {
+      const out = new Map<string, string>();
+      for (const m of src.matchAll(/^\s*varying\s+(\w+)\s+(\w+)\s*;/gm)) out.set(m[2], m[1]);
+      return out;
+    };
+    const vv = varyingsOf(sources.vertex);
+    const fv = varyingsOf(sources.fragment);
+    for (const [name, type] of fv) {
+      if (!vv.has(name)) problems.push(`varying ${name} read in fragment but never written`);
+      else if (vv.get(name) !== type) problems.push(`varying ${name} is ${vv.get(name)} / ${type}`);
+    }
+    for (const [name] of vv) {
+      if (!fv.has(name)) problems.push(`varying ${name} written but never read`);
+    }
+
+    report(
+      `${label} shader is well formed`,
+      problems.length ? problems.join('; ') : `${declared.size} uniforms, ${vv.size} varyings, all matched`,
+      problems.length === 0,
+    );
+  };
+
+  const waterMat = (board.parts.water as THREE.Mesh).material as THREE.ShaderMaterial;
+  auditShader('river water', waterMat);
+  const bd = new Backdrop({ materials, detail: 'low' });
+  const skyMesh = bd.group.getObjectByName('sky') as THREE.Mesh;
+  auditShader('sky        ', skyMesh.material as THREE.ShaderMaterial);
+
+  // The water shader has to be driven by the shared clock, never a wall clock.
+  const before = waterMat.uniforms.uTime.value as number;
+  board.update(0.25);
+  const after = waterMat.uniforms.uTime.value as number;
+  near('water flow advances by exactly dt', after - before, 0.25, 1e-12);
+  board.update(0);
+  near('and a zero step moves nothing', waterMat.uniforms.uTime.value as number, after, 1e-12);
+
+  // Silhouette mode has to reach the shaders, not just hide meshes.
+  board.setSilhouetteMode(true);
+  check('silhouette mode reaches the water', waterMat.uniforms.uSilhouette.value === 1, 'uSilhouette = 1');
+  check('silhouette mode hides the marks', board.markers.group.visible === false, 'markers hidden');
+  board.setSilhouetteMode(false);
+  check('and it comes back off', waterMat.uniforms.uSilhouette.value === 0, 'uSilhouette = 0');
+  bd.dispose();
 }
 
 // ---------------------------------------------------------------------------

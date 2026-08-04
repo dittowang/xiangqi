@@ -924,8 +924,8 @@ export class GongbiMaterialLibrary implements GongbiMaterials {
       const mood = this.currentMood();
       this.applyMoodLighting(mood);
     }
-
-    if (this.csm) this.pushCsm(this.csm);
+    // NOTE: the shadow uniforms are deliberately NOT pushed here. See
+    // syncShadows().
   }
 
   private applyMoodLighting(mood: LightMood): void {
@@ -1019,6 +1019,23 @@ export class GongbiMaterialLibrary implements GongbiMaterials {
 
   setShadowsEnabled(on: boolean): void {
     this.shared.uCsmEnabled.value = on && this.csm ? 1 : 0;
+  }
+
+  /**
+   * Copy the cascade matrices, splits, texel sizes and biases into the shared
+   * uniforms.
+   *
+   * This MUST be called after `CascadedShadowMaps.render()` and before the main
+   * pass, never from `update()`. The cascades are refitted to the camera inside
+   * `render()`, so pushing from `update()` — which runs first — would hand the
+   * surface shader the PREVIOUS frame's light matrices. The symptom is shadows
+   * that lag the camera by one frame: invisible when still, and a distinct
+   * swimming of every shadow edge whenever the camera moves, which is exactly
+   * the artefact the texel snapping in csm.ts exists to prevent. The pipeline
+   * calls this in the right place; anyone driving the library by hand must too.
+   */
+  syncShadows(): void {
+    if (this.csm) this.pushCsm(this.csm);
   }
 
   private pushCsm(csm: CascadedShadowMaps): void {

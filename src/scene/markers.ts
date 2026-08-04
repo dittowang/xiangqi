@@ -67,6 +67,9 @@ const _pos = new THREE.Vector3();
 const _quat = new THREE.Quaternion();
 const _scl = new THREE.Vector3();
 const _identityQuat = new THREE.Quaternion();
+/** Snapshot buffers for `showLegal`'s carry-over pass. */
+const _prevSq = new Int32Array(LEGAL_CAPACITY);
+const _prevT = new Float32Array(LEGAL_CAPACITY);
 
 // --- geometry --------------------------------------------------------------
 
@@ -216,14 +219,22 @@ export class Markers {
   showLegal(targets: readonly number[]): void {
     const n = Math.min(targets.length, LEGAL_CAPACITY);
     this.legalRetiring = false;
+    // Snapshot before writing: the loop below overwrites slots the carry-over
+    // search still needs to read, and reading a slot it has already clobbered
+    // would hand a mark somebody else's animation progress.
+    const prevCount = this.legalCount;
+    for (let i = 0; i < prevCount; i++) {
+      _prevSq[i] = this.legalSq[i];
+      _prevT[i] = this.legalT[i];
+    }
     for (let i = 0; i < n; i++) {
       const sq = targets[i];
-      // Keep a mark that is already up: re-selecting the same piece should not
-      // restage the whole set.
+      // Keep a mark that is already up: re-selecting a piece whose move set
+      // overlaps the last one should not restage the whole board.
       let carried = -1;
-      for (let j = 0; j < this.legalCount; j++) {
-        if (this.legalSq[j] === sq) {
-          carried = this.legalT[j];
+      for (let j = 0; j < prevCount; j++) {
+        if (_prevSq[j] === sq) {
+          carried = _prevT[j];
           break;
         }
       }

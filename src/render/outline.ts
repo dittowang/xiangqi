@@ -20,10 +20,24 @@
  * normals for shading — we want the hard shading — and only the hull uses the
  * welded ones.
  *
- * The average is weighted by triangle AREA rather than by count. An unweighted
- * average is dominated by whichever face happens to have been triangulated into
- * more slivers, which pulls the hull sideways on any surface with an uneven
- * tessellation and shows up as the stroke thickening on one side of a form.
+ * The average is weighted by the INTERIOR ANGLE each triangle subtends at the
+ * vertex, not by triangle count and not by area. All three give different
+ * answers and only one of them is tessellation-independent:
+ *
+ *   count   — dominated by whichever face happened to be split into more
+ *             triangles. A cube face is two triangles, and a corner belongs to
+ *             one of them on two faces and to two on the third, so a counted
+ *             average leans toward that third face.
+ *   area    — same problem in a subtler form. On a unit cube the weights come
+ *             out 2:1:1 and the corner normal lands at (0.816, 0.408, 0.408)
+ *             instead of the body diagonal. The hull then pushes that corner
+ *             sideways and the stroke is visibly heavier on one face than the
+ *             other two. (This is not hypothetical; selfcheck.ts caught exactly
+ *             this and it is why the weighting changed.)
+ *   angle   — the sum of interior angles around a vertex is a property of the
+ *             SURFACE, not of how it was cut into triangles. Re-triangulating a
+ *             face cannot change it. A cube corner comes out at exactly
+ *             (1,1,1)/sqrt(3), which is the answer that keeps the stroke even.
  */
 
 import * as THREE from 'three';
@@ -61,6 +75,9 @@ const _c = new THREE.Vector3();
 const _ab = new THREE.Vector3();
 const _ac = new THREE.Vector3();
 const _n = new THREE.Vector3();
+const _e0 = new THREE.Vector3();
+const _e1 = new THREE.Vector3();
+const _tri = [0, 0, 0];
 
 function weldKey(x: number, y: number, z: number): string {
   const q = 1 / WELD_EPSILON;
@@ -111,15 +128,33 @@ export function ensureSmoothNormals(geometry: THREE.BufferGeometry): void {
     _c.fromBufferAttribute(pos, i2);
     _ab.subVectors(_b, _a);
     _ac.subVectors(_c, _a);
-    // The cross product's LENGTH is twice the triangle's area, so leaving it
-    // un-normalised is exactly the area weighting we want. Free.
     _n.crossVectors(_ab, _ac);
+    const twiceArea = _n.length();
+    if (twiceArea < 1e-12) continue; // degenerate sliver contributes nothing
+    _n.multiplyScalar(1 / twiceArea);
 
-    for (const vi of [i0, i1, i2]) {
+    _tri[0] = i0;
+    _tri[1] = i1;
+    _tri[2] = i2;
+    for (let k = 0; k < 3; k++) {
+      const vi = _tri[k];
+      _e0.fromBufferAttribute(pos, _tri[(k + 1) % 3]).sub(
+        k === 0 ? _a : k === 1 ? _b : _c,
+      );
+      _e1.fromBufferAttribute(pos, _tri[(k + 2) % 3]).sub(
+        k === 0 ? _a : k === 1 ? _b : _c,
+      );
+      const l0 = _e0.length();
+      const l1 = _e1.length();
+      if (l0 < 1e-12 || l1 < 1e-12) continue;
+      // Interior angle at this vertex. acos is clamped because floating point
+      // will hand you 1.0000001 on a degenerate triangle and NaN the normal.
+      const cosA = Math.max(-1, Math.min(1, _e0.dot(_e1) / (l0 * l1)));
+      const w = Math.acos(cosA);
       const b = bucketOf[vi] * 3;
-      acc[b] += _n.x;
-      acc[b + 1] += _n.y;
-      acc[b + 2] += _n.z;
+      acc[b] += _n.x * w;
+      acc[b + 1] += _n.y * w;
+      acc[b + 2] += _n.z * w;
     }
   }
 

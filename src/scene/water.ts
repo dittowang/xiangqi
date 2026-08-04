@@ -24,7 +24,7 @@
  */
 
 import * as THREE from 'three';
-import { PIGMENTS, hexToRgb, srgbToLinear, type PigmentName } from '@core/palette.ts';
+import { MOODS, PIGMENTS, hexToRgb, srgbToLinear, type PigmentName } from '@core/palette.ts';
 import { seedFor } from '@core/rng.ts';
 
 /** Linear-space `THREE.Vector3` for one band of a pigment. */
@@ -96,6 +96,14 @@ void main() {
 
 const FRAG = /* glsl */ `
 precision highp float;
+
+// NOTE on the two #includes at the bottom of main(): three's WebGLProgram
+// already injects colorspace_pars_fragment + linearToOutputTexel() (and
+// tonemapping_pars_fragment + toneMapping(), when tone mapping is on) into the
+// prefix of every non-raw ShaderMaterial. So the *_fragment chunks are all this
+// shader needs — pulling the *_pars_* chunks in as well would redefine those
+// functions and fail to compile. Colour is therefore worked in linear space here
+// and transformed on the way out, exactly like a built-in material.
 
 uniform float uTime;
 uniform vec3  uKeyDir;       // unit vector, surface -> key light
@@ -239,14 +247,31 @@ export interface RiverWater {
   dispose(): void;
 }
 
+/** Linear-space vector for a mood colour, so nothing here invents a value. */
+function moodColourVec(hex: string): THREE.Vector3 {
+  const c = hexToRgb(hex);
+  return new THREE.Vector3(srgbToLinear(c.r), srgbToLinear(c.g), srgbToLinear(c.b));
+}
+
 export function createRiverWater(channel: WaterChannelSpec): RiverWater {
+  // Seeded from the `wide` mood so the first frame is already correct even if
+  // the lighting rig has not pushed anything yet. Every one of these is
+  // overwritten by `setLight` on the rig's first update.
+  const wide = MOODS.wide;
+  const ce = Math.cos(wide.keyElevation);
   const uniforms = {
     uTime: { value: 0 },
-    uKeyDir: { value: new THREE.Vector3(-0.38, 0.76, 0.53) },
-    uKeyColour: { value: new THREE.Vector3(1, 0.94, 0.81) },
-    uFillColour: { value: new THREE.Vector3(0.2, 0.3, 0.5) },
-    uKeyIntensity: { value: 2.55 },
-    uFillIntensity: { value: 0.72 },
+    uKeyDir: {
+      value: new THREE.Vector3(
+        ce * Math.sin(wide.keyAzimuth),
+        Math.sin(wide.keyElevation),
+        ce * Math.cos(wide.keyAzimuth),
+      ),
+    },
+    uKeyColour: { value: moodColourVec(wide.keyColour) },
+    uFillColour: { value: moodColourVec(wide.fillColour) },
+    uKeyIntensity: { value: wide.keyIntensity },
+    uFillIntensity: { value: wide.fillIntensity },
     uWater: {
       value: [
         pigmentBandVec('azurite', 0),
@@ -264,8 +289,8 @@ export function createRiverWater(channel: WaterChannelSpec): RiverWater {
       ],
     },
     uLine: { value: pigmentBandVec('ink', 1) },
-    uGradeTint: { value: pigmentBandVec('gamboge', 3) },
-    uGradeAmount: { value: 0.05 },
+    uGradeTint: { value: moodColourVec(wide.gradeTint) },
+    uGradeAmount: { value: wide.gradeAmount },
     uSilhouette: { value: 0 },
     // The river runs across the board, so the current follows +X.
     uWaveDir: { value: new THREE.Vector2(1, 0) },

@@ -123,6 +123,85 @@ export class MeshBuilder {
   }
 }
 
+/**
+ * Emit a quad facing `n`, reversing the winding if it does not already.
+ *
+ * Quads in a swept surface are mirrored in ways that flip which traversal is
+ * front-facing, and enumerating those cases by hand is how a strip of a table
+ * ends up back-face culled out of the frame. Two details matter:
+ *
+ *   - a quad may pinch to a triangle at one end (a profile ribbon that meets the
+ *     surface it is ribboning against), so the orientation test has to use
+ *     whichever of the two triangles actually has area, and
+ *   - a fully degenerate quad is dropped rather than emitted as slivers.
+ *
+ * `n` becomes the normal on all four vertices, which is right for the flat,
+ * hard-edged surfaces this is used for.
+ */
+export function orientedQuad(b: MeshBuilder, p0: P3, p1: P3, p2: P3, p3: P3, n: P3): void {
+  const f1 = rawCross(p0, p1, p2);
+  const f2 = rawCross(p0, p2, p3);
+  const l1 = f1[0] * f1[0] + f1[1] * f1[1] + f1[2] * f1[2];
+  const l2 = f2[0] * f2[0] + f2[1] * f2[1] + f2[2] * f2[2];
+  if (l1 < 1e-20 && l2 < 1e-20) return; // nothing there
+  const ref = l1 >= l2 ? f1 : f2;
+  const agrees = ref[0] * n[0] + ref[1] * n[1] + ref[2] * n[2] > 0;
+  const q = agrees ? [p0, p1, p2, p3] : [p0, p3, p2, p1];
+  // Emit per triangle so a pinched corner contributes nothing at all rather than
+  // a zero-area sliver the rasteriser has to look at.
+  if (Math.max(l1, l2) > 0 && rawArea2(q[0], q[1], q[2]) > 1e-20) {
+    b.tri(q[0], q[1], q[2], n, n, n, planarUV(q[0]), planarUV(q[1]), planarUV(q[2]));
+  }
+  if (rawArea2(q[0], q[2], q[3]) > 1e-20) {
+    b.tri(q[0], q[2], q[3], n, n, n, planarUV(q[0]), planarUV(q[2]), planarUV(q[3]));
+  }
+}
+
+function rawArea2(a: P3, b: P3, c: P3): number {
+  const f = rawCross(a, b, c);
+  return f[0] * f[0] + f[1] * f[1] + f[2] * f[2];
+}
+
+/**
+ * `orientedQuad`, but keeping distinct per-vertex normals so a smooth profile
+ * stays smooth. `ref` is the direction the quad as a whole should face.
+ */
+export function orientedQuadSmooth(
+  b: MeshBuilder,
+  p0: P3,
+  p1: P3,
+  p2: P3,
+  p3: P3,
+  n0: P3,
+  n1: P3,
+  n2: P3,
+  n3: P3,
+  ref: P3,
+): void {
+  const f1 = rawCross(p0, p1, p2);
+  const f2 = rawCross(p0, p2, p3);
+  const l1 = f1[0] * f1[0] + f1[1] * f1[1] + f1[2] * f1[2];
+  const l2 = f2[0] * f2[0] + f2[1] * f2[1] + f2[2] * f2[2];
+  if (l1 < 1e-20 && l2 < 1e-20) return;
+  const f = l1 >= l2 ? f1 : f2;
+  if (f[0] * ref[0] + f[1] * ref[1] + f[2] * ref[2] > 0) {
+    b.quad(p0, p1, p2, p3, n0, n1, n2, n3, planarUV(p0), planarUV(p1), planarUV(p2), planarUV(p3));
+  } else {
+    b.quad(p0, p3, p2, p1, n0, n3, n2, n1, planarUV(p0), planarUV(p3), planarUV(p2), planarUV(p1));
+  }
+}
+
+/** Unnormalised (b−a)×(c−a). Length is twice the triangle's area. */
+function rawCross(a: P3, b: P3, c: P3): P3 {
+  const ux = b[0] - a[0];
+  const uy = b[1] - a[1];
+  const uz = b[2] - a[2];
+  const vx = c[0] - a[0];
+  const vy = c[1] - a[1];
+  const vz = c[2] - a[2];
+  return [uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx];
+}
+
 /** Right-handed face normal of a-b-c. Returns a unit vector, or +Y if degenerate. */
 export function faceNormal(a: P3, b: P3, c: P3): P3 {
   const ux = b[0] - a[0];
@@ -371,18 +450,15 @@ export function mitredFrame(
         const nA: P3 = alongX ? [0, nu0, sign * na0] : [sign * na0, nu0, 0];
         const nB: P3 = alongX ? [0, nu1, sign * na1] : [sign * na1, nu1, 0];
 
-        // Wind so the visible face is front-facing. The four rails are mirrored
-        // in both axes, so which order that is flips per side and per axis —
-        // rather than enumerate the four cases (and get one of them wrong),
-        // build the quad, compare its geometric normal against the one the
-        // profile says it should have, and reverse if they disagree.
-        const geo = faceNormal(p00, p10, p11);
-        const agrees = geo[0] * nA[0] + geo[1] * nA[1] + geo[2] * nA[2] > 0;
-        if (agrees) {
-          b.quad(p00, p10, p11, p01, nA, nB, nB, nA, planarUV(p00), planarUV(p10), planarUV(p11), planarUV(p01));
-        } else {
-          b.quad(p00, p01, p11, p10, nA, nA, nB, nB, planarUV(p00), planarUV(p01), planarUV(p11), planarUV(p10));
-        }
+        // The four rails are mirrored in both axes, so which traversal is
+        // front-facing flips per side and per axis. Let `orientedQuad` settle it
+        // against the normal the profile says this strip should have.
+        const mid: P3 = [
+          (nA[0] + nB[0]) * 0.5,
+          (nA[1] + nB[1]) * 0.5,
+          (nA[2] + nB[2]) * 0.5,
+        ];
+        orientedQuadSmooth(b, p00, p10, p11, p01, nA, nB, nB, nA, mid);
       }
     }
   }
@@ -462,7 +538,8 @@ export function disc(
     const p0: P3 = [cx + Math.cos(a0) * radius, y, cz + Math.sin(a0) * radius];
     const p1: P3 = [cx + Math.cos(a1) * radius, y, cz + Math.sin(a1) * radius];
     const c: P3 = [cx, y, cz];
-    b.tri(c, p0, p1, up, up, up, planarUV(c), planarUV(p0), planarUV(p1));
+    // c -> p1 -> p0, so the fan winds to a +Y face.
+    b.tri(c, p1, p0, up, up, up, planarUV(c), planarUV(p1), planarUV(p0));
   }
 }
 

@@ -344,6 +344,8 @@ export class Director implements CameraDirector {
   private readonly all: Spring1D[];
 
   private mode: CameraMode = 'development';
+  /** The mode to fall back to once an event push releases. Never `capture`/`check`. */
+  private phaseMode: CameraMode = 'development';
   /** Where the camera comes back to. Phase framings and the player both edit it. */
   private readonly rest: CameraPose = {
     target: [0, 0.35, 0],
@@ -447,6 +449,7 @@ export class Director implements CameraDirector {
       this.configure(SPRING.push);
       return;
     }
+    this.phaseMode = mode;
     const f = MODE_FRAMINGS[mode];
     this.rest.target[0] = f.target[0];
     this.rest.target[1] = f.target[1];
@@ -605,11 +608,17 @@ export class Director implements CameraDirector {
     }
   }
 
-  /** Come back out of a push. Slower than the push went in, by design. */
+  /**
+   * Come back out of a push. Slower than the push went in, by design.
+   *
+   * The mode returns to whatever phase framing was in force before the event, so
+   * a capture that fires during the terminal set piece hands the slow arc back
+   * rather than leaving the camera parked in `capture` forever.
+   */
   release(seconds?: number): void {
     this.resolvePush();
     if (this.mode === 'capture' || this.mode === 'check') {
-      this.mode = this.userDriving ? 'free' : this.mode;
+      this.mode = this.userDriving ? 'free' : this.phaseMode;
     }
     if (seconds !== undefined) this.configureSeconds(seconds);
     else this.configure(SPRING.return);

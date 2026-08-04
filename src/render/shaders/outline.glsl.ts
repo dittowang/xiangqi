@@ -85,7 +85,6 @@ ${GLSL_OUTLINE_PARS}
 
 attribute vec3 aSmoothNormal;
 
-varying float vViewDepth;
 varying float vCamDist;
 
 void main() {
@@ -126,7 +125,9 @@ void main() {
 
   mvPosition.xyz += viewNormal * offset;
 
-  vViewDepth = -mvPosition.z;
+  // Distance from the camera, measured AFTER the push. The push is a fraction
+  // of a world unit, so it makes no difference to the fade and it saves
+  // carrying a second interpolant.
   vCamDist = length( mvPosition.xyz );
 
   gl_Position = projectionMatrix * mvPosition;
@@ -140,7 +141,6 @@ void main() {
  * rather than a guessed grey.
  */
 export const GLSL_OUTLINE_FRAG = /* glsl */ `
-varying float vViewDepth;
 varying float vCamDist;
 
 void main() {

@@ -182,6 +182,46 @@ function mateForMover(pos: Position, plies: number): number {
   return best;
 }
 
+/**
+ * Every move that starts a forced mate in exactly `plies`. Used to check that
+ * the search picked *a* correct mating move, not merely that it reported the
+ * right distance — several moves can share the same distance and only some of
+ * them are the ones a solver would accept.
+ */
+export function movesThatForceMateIn(pos: Position, plies: number): Move[] {
+  const list = new MoveList();
+  generateLegalMoves(pos, list);
+  const out: Move[] = [];
+  for (const m of list.toArray()) {
+    if (!pos.makeMove(m)) {
+      pos.unmakeMove();
+      continue;
+    }
+    const replies = new MoveList();
+    generateLegalMoves(pos, replies);
+    let worst: number;
+    if (replies.count === 0) {
+      worst = 1;
+    } else {
+      worst = -Infinity;
+      for (const r of replies.toArray()) {
+        if (!pos.makeMove(r)) {
+          pos.unmakeMove();
+          continue;
+        }
+        const sub = forcedMateIn(pos, plies - 2);
+        pos.unmakeMove();
+        const v = sub === Infinity ? Infinity : sub + 2;
+        if (v > worst) worst = v;
+        if (worst === Infinity) break;
+      }
+    }
+    pos.unmakeMove();
+    if (worst === plies) out.push(m);
+  }
+  return out;
+}
+
 /** Number of legal moves — a cheap fixture sanity check. */
 export function countLegal(pos: Position): number {
   const list = new MoveList();

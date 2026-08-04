@@ -34,7 +34,7 @@
 
 import * as THREE from 'three';
 import type { GongbiMaterials } from '@core/contracts.ts';
-import { PIGMENTS, SCENE, mixHex } from '@core/palette.ts';
+import { MOODS, PIGMENTS, SCENE, mixHex } from '@core/palette.ts';
 import { seedFor, type Rng } from '@core/rng.ts';
 import { Noise } from '@core/noise.ts';
 import { OFF_BOARD_Y } from './board.ts';
@@ -235,6 +235,8 @@ void main() {
 
 const SKY_FRAG = /* glsl */ `
 precision mediump float;
+// Only the *_fragment chunks: three injects the *_pars_* ones into every
+// ShaderMaterial prefix already. See the note in water.ts.
 uniform vec3 uHorizon;
 uniform vec3 uMid;
 uniform vec3 uHigh;
@@ -482,8 +484,10 @@ export class Backdrop {
           uHorizon: { value: srgb(SKY_HORIZON) },
           uMid: { value: srgb(SKY_MID) },
           uHigh: { value: srgb(SKY_HIGH) },
-          uGradeTint: { value: new THREE.Color(1, 1, 1) },
-          uGradeAmount: { value: 0 },
+          // Seeded from the opening mood; the lighting rig overwrites both on
+          // its first update. Nothing in this file invents a colour.
+          uGradeTint: { value: srgb(MOODS.wide.gradeTint) },
+          uGradeAmount: { value: MOODS.wide.gradeAmount },
           uSilhouette: { value: 0 },
         },
         vertexShader: SKY_VERT,

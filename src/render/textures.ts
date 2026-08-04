@@ -69,6 +69,7 @@ import {
  */
 const SIZE = {
   silkGround: 512,
+  clothWeave: 512,
   timberGrain: 512,
   stoneGrit: 256,
   lacquerCrackle: 512,
@@ -103,10 +104,19 @@ export const TOOTH_ANISOTROPY = 4;
 // Period-aware lattice noise
 // ---------------------------------------------------------------------------
 
-/** FNV-1a over two wrapped cell coordinates plus a stream seed -> [0,1). */
-function cellHash(cx: number, cy: number, period: number, seed: number): number {
-  const x = ((cx % period) + period) % period;
-  const y = ((cy % period) + period) % period;
+/**
+ * FNV-1a over two independently wrapped cell coordinates plus a stream seed.
+ *
+ * The x and y periods are separate because several of these fields are
+ * deliberately anisotropic — timber fibre runs at 140 cycles across the grain
+ * and 6 along it — and a single shared period would silently break tiling on
+ * whichever axis did not match it. Every frequency in this file is an INTEGER
+ * NUMBER OF CYCLES ACROSS THE TEXTURE and is passed as its own period, which is
+ * the only arrangement in which the wrap is exact.
+ */
+function cellHash(cx: number, cy: number, px: number, py: number, seed: number): number {
+  const x = ((cx % px) + px) % px;
+  const y = ((cy % py) + py) % py;
   let h = (0x811c9dc5 ^ seed) >>> 0;
   h = Math.imul(h ^ (x & 0xffff), 0x01000193);
   h = Math.imul(h ^ (x >>> 16), 0x01000193);
@@ -116,34 +126,41 @@ function cellHash(cx: number, cy: number, period: number, seed: number): number 
   return (h >>> 0) / 4294967296;
 }
 
-/** Quintic value noise on a lattice of `period` cells. Matches core/noise.ts's
+/** Quintic value noise on a lattice of px x py cells. Matches core/noise.ts's
  *  smootherstep so a CPU-baked field and a shader-evaluated one agree in
  *  character even though they do not agree in detail. */
-function pValue(x: number, y: number, period: number, seed: number): number {
+function pValue(x: number, y: number, px: number, py: number, seed: number): number {
   const xi = Math.floor(x);
   const yi = Math.floor(y);
   const xf = x - xi;
   const yf = y - yi;
   const u = xf * xf * xf * (xf * (xf * 6 - 15) + 10);
   const v = yf * yf * yf * (yf * (yf * 6 - 15) + 10);
-  const n00 = cellHash(xi, yi, period, seed);
-  const n10 = cellHash(xi + 1, yi, period, seed);
-  const n01 = cellHash(xi, yi + 1, period, seed);
-  const n11 = cellHash(xi + 1, yi + 1, period, seed);
+  const n00 = cellHash(xi, yi, px, py, seed);
+  const n10 = cellHash(xi + 1, yi, px, py, seed);
+  const n01 = cellHash(xi, yi + 1, px, py, seed);
+  const n11 = cellHash(xi + 1, yi + 1, px, py, seed);
   const a = n00 + (n10 - n00) * u;
   const b = n01 + (n11 - n01) * u;
   return a + (b - a) * v;
 }
 
-/** fbm over pValue. Each octave doubles both frequency and lattice period, so
- *  the aggregate tiles at the base period. Returns [0,1]. */
-function pFbm(x: number, y: number, period: number, octaves: number, seed: number): number {
+/** fbm over pValue. Each octave doubles frequency AND lattice period on both
+ *  axes, so the aggregate tiles wherever the base does. Returns [0,1]. */
+function pFbm(
+  x: number,
+  y: number,
+  px: number,
+  py: number,
+  octaves: number,
+  seed: number,
+): number {
   let amp = 0.5;
   let freq = 1;
   let sum = 0;
   let norm = 0;
   for (let o = 0; o < octaves; o++) {
-    sum += amp * (pValue(x * freq, y * freq, period * freq, seed + o * 7919) * 2 - 1);
+    sum += amp * (pValue(x * freq, y * freq, px * freq, py * freq, seed + o * 7919) * 2 - 1);
     norm += amp;
     amp *= 0.5;
     freq *= 2;
@@ -158,8 +175,15 @@ interface Cellular {
 }
 const _cell: Cellular = { f1: 0, f2: 0, id: 0 };
 
-/** Worley with f1, f2 and a flat per-cell id, on a lattice of `period` cells. */
-function pWorley(x: number, y: number, period: number, seed: number, jitter: number): Cellular {
+/** Worley with f1, f2 and a flat per-cell id, on a px x py lattice. */
+function pWorley(
+  x: number,
+  y: number,
+  px: number,
+  py: number,
+  seed: number,
+  jitter: number,
+): Cellular {
   const xi = Math.floor(x);
   const yi = Math.floor(y);
   let f1 = 1e9;
@@ -169,17 +193,19 @@ function pWorley(x: number, y: number, period: number, seed: number, jitter: num
     for (let dx = -1; dx <= 1; dx++) {
       const cx = xi + dx;
       const cy = yi + dy;
-      const jx = cellHash(cx, cy, period, seed);
-      const jy = cellHash(cx, cy, period, seed ^ 0x5bf03635);
-      const px = cx + 0.5 + (jx - 0.5) * jitter;
-      const py = cy + 0.5 + (jy - 0.5) * jitter;
-      const ddx = px - x;
-      const ddy = py - y;
+      const jx = cellHash(cx, cy, px, py, seed);
+      const jy = cellHash(cx, cy, px, py, seed ^ 0x5bf03635);
+      // Feature positions stay in UNWRAPPED cell coordinates so distances near
+      // the seam are measured against the neighbour that is actually there.
+      const fx = cx + 0.5 + (jx - 0.5) * jitter;
+      const fy = cy + 0.5 + (jy - 0.5) * jitter;
+      const ddx = fx - x;
+      const ddy = fy - y;
       const d = Math.sqrt(ddx * ddx + ddy * ddy);
       if (d < f1) {
         f2 = f1;
         f1 = d;
-        id = cellHash(cx, cy, period, seed ^ 0x27d4eb2f);
+        id = cellHash(cx, cy, px, py, seed ^ 0x27d4eb2f);
       } else if (d < f2) {
         f2 = d;
       }
@@ -203,6 +229,7 @@ const smooth = (e0: number, e1: number, x: number) => {
 
 export type TextureKind =
   | 'silkGround'
+  | 'clothWeave'
   | 'timberGrain'
   | 'stoneGrit'
   | 'lacquerCrackle'
@@ -211,6 +238,7 @@ export type TextureKind =
 
 export const TEXTURE_KINDS: readonly TextureKind[] = [
   'silkGround',
+  'clothWeave',
   'timberGrain',
   'stoneGrit',
   'lacquerCrackle',
@@ -218,17 +246,27 @@ export const TEXTURE_KINDS: readonly TextureKind[] = [
   'granulation',
 ];
 
-/** Which tooth each material class wears. A class with no cellular structure
- *  of its own borrows the field whose *shape of break* matches it. */
+/**
+ * Which tooth each material class wears. A class with no cellular structure of
+ * its own borrows the field whose *shape of break* matches it.
+ *
+ * Note that cloth and silk take `clothWeave`, NOT `silkGround`. They look like
+ * the same field and they are generated from the same weave, but silkGround is
+ * a COLOUR map: its red channel is the red component of a 藤黃 yellow, which is
+ * high and nearly flat (it measures a range of 56/255 against clothWeave's 200).
+ * Using it as a tooth would give cloth a fifth of the granulation the art
+ * direction asked for, and the symptom — "the band edges on the robes look too
+ * clean" — points nowhere near the cause.
+ */
 export const CLASS_TOOTH: Record<MaterialClass, TextureKind> = {
   lacquer: 'lacquerCrackle',
-  cloth: 'silkGround',
+  cloth: 'clothWeave',
   leather: 'granulation',
   gold: 'goldLeaf',
   ivory: 'granulation',
   timber: 'timberGrain',
   stone: 'stoneGrit',
-  silk: 'silkGround',
+  silk: 'clothWeave',
   flesh: 'granulation',
   hair: 'timberGrain',
   iron: 'stoneGrit',
@@ -265,20 +303,23 @@ export function fieldSilkGround(size: number): Uint8ClampedArray {
 
   for (let y = 0; y < size; y++) {
     for (let x = 0; x < size; x++) {
+      const u = x / size;
+      const v = y / size;
       // Threads bow. A ruled weave reads as graph paper at any density.
-      const wob =
-        (pValue(x * 0.02, y * 0.02, Math.ceil(size * 0.02), seed ^ 0x11) - 0.5) * 1.6;
+      // 10 cycles across the sheet, in PIXELS of displacement.
+      const wob = (pValue(u * 10, v * 10, 10, 10, seed ^ 0x11) - 0.5) * 1.6;
       const warp = 0.5 - 0.5 * Math.cos((x + wob) * tk);
       const weft = 0.5 - 0.5 * Math.cos((y - wob) * tk);
-      const over = (Math.floor((x / size) * threads) + Math.floor((y / size) * threads)) % 2;
+      const over = (Math.floor(u * threads) + Math.floor(v * threads)) % 2;
       const tooth = over === 0 ? warp * 0.72 + weft * 0.28 : weft * 0.72 + warp * 0.28;
 
-      // Slubs: rare thick threads, stretched hard along their own direction.
-      const slub = pFbm(x * (threads / size) * 0.9, y * (threads / size) * 0.06, threads, 2, seed ^ 0x22);
+      // Slubs: rare thick threads, stretched hard along their own direction —
+      // 58 cycles across the warp, 4 along it.
+      const slub = pFbm(u * 58, v * 4, 58, 4, 2, seed ^ 0x22);
 
       // Age: broad uneven browning, plus a rarer foxing speckle.
-      const age = pFbm(x / size * 3.5, y / size * 3.5, 4, 4, seed ^ 0x33);
-      const foxing = smooth(0.86, 1.0, pFbm(x / size * 26, y / size * 26, 26, 3, seed ^ 0x44));
+      const age = pFbm(u * 4, v * 4, 4, 4, 4, seed ^ 0x33);
+      const foxing = smooth(0.86, 1.0, pFbm(u * 26, v * 26, 26, 26, 3, seed ^ 0x44));
 
       const t = clamp01(tooth * 0.72 + slub * 0.28);
       // Weave crowns catch light, valleys hold the wash.
@@ -295,6 +336,45 @@ export function fieldSilkGround(size: number): Uint8ClampedArray {
       b -= foxing * 0.03;
 
       writePixel(data, (y * size + x) * 4, r, g, b);
+    }
+  }
+  return data;
+}
+
+/**
+ * Cloth weave tooth — the greyscale twin of the silk ground.
+ *
+ * Same construction as `fieldSilkGround` (plain weave, bowed threads, slubs)
+ * but written as a full-range tooth field rather than as pigment, so the
+ * granulation term in gongbi.ts gets the contrast it was tuned for. Wound one
+ * register coarser than the silk ground: robes are a heavier cloth than the
+ * mounting silk the board sits on, and a heavier cloth breaks its band edges in
+ * bigger steps.
+ */
+export function fieldClothWeave(size: number): Uint8ClampedArray {
+  const data = new Uint8ClampedArray(size * size * 4);
+  const rng = seedFor('render', 'texture', 'clothWeave');
+  const seed = Math.floor(rng.next() * 0xffffffff) >>> 0;
+
+  const threads = 48;
+  const tk = (Math.PI * 2 * threads) / size;
+
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const u = x / size;
+      const v = y / size;
+      const wob = (pValue(u * 8, v * 8, 8, 8, seed ^ 0x31) - 0.5) * 2.1;
+      const warp = 0.5 - 0.5 * Math.cos((x + wob) * tk);
+      const weft = 0.5 - 0.5 * Math.cos((y - wob) * tk);
+      const over = (Math.floor(u * threads) + Math.floor(v * threads)) % 2;
+      const weave = over === 0 ? warp * 0.74 + weft * 0.26 : weft * 0.74 + warp * 0.26;
+
+      // Slubs along the warp, and the broad unevenness of a hand-fulled cloth.
+      const slub = pFbm(u * 44, v * 4, 44, 4, 2, seed ^ 0x32);
+      const full = pFbm(u * 6, v * 6, 6, 6, 4, seed ^ 0x33);
+
+      const primary = clamp01(weave * 0.66 + (slub - 0.5) * 0.24 + (full - 0.5) * 0.34 + 0.18);
+      writePixel(data, (y * size + x) * 4, primary, full, over === 0 ? 0.25 : 0.75);
     }
   }
   return data;
@@ -319,18 +399,20 @@ export function fieldTimberGrain(size: number): Uint8ClampedArray {
       const v = y / size;
 
       // Grain runs along +Y. Warping the ring coordinate by a stretched fbm is
-      // what produces the wander and the occasional knot-adjacent swirl.
-      const warp = (pFbm(u * 3.0, v * 0.5, 3, 4, seed) - 0.5) * 0.42;
+      // what produces the wander and the occasional knot-adjacent swirl. Two
+      // cycles along the grain is the slowest a tiling field can go: one cycle
+      // would interpolate a lattice cell back to itself and come out constant.
+      const warp = (pFbm(u * 3, v * 2, 3, 2, 4, seed) - 0.5) * 0.42;
       const rings = (u + warp) * TIMBER_RINGS;
       const ringPhase = rings - Math.floor(rings);
       // Sharpened ring: dark thin latewood at the boundary.
       const ring = Math.pow(1 - Math.abs(ringPhase * 2 - 1), TIMBER_RING_SHARPNESS);
 
-      // Fibre: very high frequency along the grain, almost none across it.
-      const fibre = pFbm(u * 140, v * 6, 140, 2, seed ^ 0x9e);
+      // Fibre: very high frequency across the grain, almost none along it.
+      const fibre = pFbm(u * 140, v * 6, 140, 6, 2, seed ^ 0x9e);
 
       // Vessels / pores: short dark dashes lying along the grain.
-      const pore = smooth(0.78, 0.95, pFbm(u * 70, v * 9, 70, 2, seed ^ 0x5a));
+      const pore = smooth(0.78, 0.95, pFbm(u * 70, v * 10, 70, 10, 2, seed ^ 0x5a));
 
       const primary = clamp01(1 - ring * 0.72 - pore * 0.35 + (fibre - 0.5) * 0.22);
       const coarse = clamp01(0.5 + warp * 1.2);
@@ -351,12 +433,12 @@ export function fieldStoneGrit(size: number): Uint8ClampedArray {
     for (let x = 0; x < size; x++) {
       const u = (x / size) * n;
       const v = (y / size) * n;
-      const c = pWorley(u, v, n, seed, 1.0);
+      const c = pWorley(u, v, n, n, seed, 1.0);
       // f2 - f1 peaks at the boundary between grains: the interstitial line.
       const edge = clamp01((c.f2 - c.f1) * 1.6);
       const grain = 1 - edge; // bright at the boundary, flat inside a grain
-      const inclusion = smooth(0.84, 1.0, pFbm((x / size) * 40, (y / size) * 40, 40, 3, seed ^ 0x77));
-      const chisel = pFbm((x / size) * 9, (y / size) * 9, 9, 3, seed ^ 0xa1);
+      const inclusion = smooth(0.84, 1.0, pFbm((x / size) * 40, (y / size) * 40, 40, 40, 3, seed ^ 0x77));
+      const chisel = pFbm((x / size) * 9, (y / size) * 9, 9, 9, 3, seed ^ 0xa1);
 
       const primary = clamp01(0.42 + grain * 0.4 + inclusion * 0.25 + (chisel - 0.5) * 0.18);
       writePixel(data, (y * size + x) * 4, primary, chisel, c.id);
@@ -390,9 +472,9 @@ export function fieldLacquerCrackle(size: number): Uint8ClampedArray {
       const v = (y / size) * n;
       // Warping the domain before the worley makes the cracks wander instead of
       // meeting at clean Voronoi vertices. Straight Voronoi reads as a diagram.
-      const wx = (pFbm((x / size) * 6, (y / size) * 6, 6, 3, seed ^ 0xb1) - 0.5) * 0.9;
-      const wy = (pFbm((x / size) * 6 + 5.5, (y / size) * 6 + 5.5, 6, 3, seed ^ 0xb2) - 0.5) * 0.9;
-      const c = pWorley(u + wx, v + wy, n, seed, 0.85);
+      const wx = (pFbm((x / size) * 6, (y / size) * 6, 6, 6, 3, seed ^ 0xb1) - 0.5) * 0.9;
+      const wy = (pFbm((x / size) * 6, (y / size) * 6, 6, 6, 3, seed ^ 0xb2) - 0.5) * 0.9;
+      const c = pWorley(u + wx, v + wy, n, n, seed, 0.85);
 
       // Crack = the thin ridge where f2 - f1 goes to zero.
       const crack = 1 - smooth(0.0, 0.09, c.f2 - c.f1);
@@ -424,27 +506,46 @@ export function fieldGoldLeaf(size: number): Uint8ClampedArray {
   const seed = Math.floor(rng.next() * 0xffffffff) >>> 0;
   const n = CELLS.leaf;
 
+  /**
+   * Sheet boundaries are jittered PER LINE, not per cell.
+   *
+   * The obvious construction — jitter each cell's centre and measure the
+   * distance to its own edges — is discontinuous: two neighbouring cells
+   * disagree about where the boundary between them is, by the difference of
+   * their two jitters, so every seam in the texture has a step in it. It also
+   * fails to tile, because the wrap column always lands on a boundary and
+   * therefore always lands on the step. Jittering the LINE makes both cells
+   * read the same number, and since the hash wraps at `n`, line n sits exactly
+   * one period from line 0. (selfcheck.ts's seam-continuity test is what
+   * surfaced this; the per-cell version showed a 6x discontinuity.)
+   */
+  const lineAt = (i: number, axisSeed: number): number =>
+    i + (cellHash(i, 0, n, 1, axisSeed) - 0.5) * 0.18;
+
   for (let y = 0; y < size; y++) {
     for (let x = 0; x < size; x++) {
       const u = (x / size) * n;
       const v = (y / size) * n;
-      // Sheets are square-ish and slightly rotated relative to each other, so a
-      // small jitter on an axis-aligned grid is closer than a worley.
       const sx = Math.floor(u);
       const sy = Math.floor(v);
-      const jx = (cellHash(sx, sy, n, seed) - 0.5) * 0.16;
-      const jy = (cellHash(sx, sy, n, seed ^ 0x1234) - 0.5) * 0.16;
-      const fu = u - sx - 0.5 + jx;
-      const fv = v - sy - 0.5 + jy;
-      // Distance to the nearest sheet edge, in cell units.
-      const edge = 0.5 - Math.max(Math.abs(fu), Math.abs(fv));
+
+      // Distance to the nearest vertical and horizontal sheet boundary.
+      const du = Math.min(
+        Math.abs(u - lineAt(sx, seed ^ 0x11)),
+        Math.abs(u - lineAt(sx + 1, seed ^ 0x11)),
+      );
+      const dv = Math.min(
+        Math.abs(v - lineAt(sy, seed ^ 0x22)),
+        Math.abs(v - lineAt(sy + 1, seed ^ 0x22)),
+      );
+      const edge = Math.min(du, dv);
       const seam = 1 - smooth(0.0, 0.03, edge);
-      const sheetValue = cellHash(sx, sy, n, seed ^ 0xabcd);
+      const sheetValue = cellHash(sx, sy, n, n, seed ^ 0xabcd);
 
       // Hammered tooth: the burnisher's marks, fine and directional.
-      const burnish = pFbm((x / size) * 190, (y / size) * 150, 190, 2, seed ^ 0xc3);
+      const burnish = pFbm((x / size) * 190, (y / size) * 152, 190, 152, 2, seed ^ 0xc3);
       // Pinholes: rare, small, hard-edged.
-      const pin = smooth(0.93, 0.985, pFbm((x / size) * 55, (y / size) * 55, 55, 3, seed ^ 0xd4));
+      const pin = smooth(0.93, 0.985, pFbm((x / size) * 55, (y / size) * 55, 55, 55, 3, seed ^ 0xd4));
 
       const primary = clamp01(
         0.62 + (burnish - 0.5) * 0.3 + (sheetValue - 0.5) * 0.14 - seam * 0.3 - pin * 0.55,
@@ -477,7 +578,7 @@ export function fieldGranulation(size: number): Uint8ClampedArray {
       const grainValue = (g.id & 0xff) / 255;
       const packed = clamp01(1 - g.f1 * 1.1);
       // Where the wash pooled and dried: broad, low contrast.
-      const pool = pFbm((x / size) * 7, (y / size) * 7, 7, 4, seed ^ 0xe5);
+      const pool = pFbm((x / size) * 7, (y / size) * 7, 7, 7, 4, seed ^ 0xe5);
 
       const primary = clamp01(0.34 + packed * 0.32 + grainValue * 0.16 + (pool - 0.5) * 0.36);
       writePixel(data, (y * size + x) * 4, primary, pool, grainValue);
@@ -488,6 +589,7 @@ export function fieldGranulation(size: number): Uint8ClampedArray {
 
 const GENERATORS: Record<TextureKind, (size: number) => Uint8ClampedArray> = {
   silkGround: fieldSilkGround,
+  clothWeave: fieldClothWeave,
   timberGrain: fieldTimberGrain,
   stoneGrit: fieldStoneGrit,
   lacquerCrackle: fieldLacquerCrackle,
@@ -500,8 +602,8 @@ export function textureSize(kind: TextureKind): number {
 }
 
 /** Generate a kind's raw pixels. DOM-free; this is what the self-check runs. */
-export function generateField(kind: TextureKind, size = SIZE[kind]): Uint8ClampedArray {
-  return GENERATORS[kind](size);
+export function generateField(kind: TextureKind, size?: number): Uint8ClampedArray {
+  return GENERATORS[kind](size ?? SIZE[kind]);
 }
 
 // ---------------------------------------------------------------------------

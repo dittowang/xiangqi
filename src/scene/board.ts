@@ -48,6 +48,7 @@ import { seedFor, type Rng } from '@core/rng.ts';
 import {
   MeshBuilder,
   mitredFrame,
+  orientedQuad,
   sampleProfile,
   sweepAlongPath,
   type P3,
@@ -409,7 +410,8 @@ function buildPalaceLeaf(b: MeshBuilder, rng: Rng): void {
         const B: P3 = [x0 + px * w, silkSag(x0, z0) + y, z0 + pz * w];
         const C: P3 = [x1 + px * w, silkSag(x1, z1) + y, z1 + pz * w];
         const D: P3 = [x1 - px * w, silkSag(x1, z1) + y, z1 - pz * w];
-        b.quad(A, B, C, D, up, up, up, up, [A[0], A[2]], [B[0], B[2]], [C[0], C[2]], [D[0], D[2]]);
+        // A -> D -> C -> B: the leaf faces up out of the trench.
+        b.quad(A, D, C, B, up, up, up, up, [A[0], A[2]], [D[0], D[2]], [C[0], C[2]], [B[0], B[2]]);
       }
       t += patch;
     }
@@ -460,31 +462,34 @@ function buildRiver(rng: Rng, detail: number): RiverBuild {
   const xs: number[] = [];
   const lifts: number[] = [];
   const sub = Math.max(1, Math.round(3 * detail));
+  // The sample list must stay strictly increasing: a course short enough for its
+  // joint to overrun its own start would fold the sweep back on itself and
+  // invert a strip of the bank.
+  const push = (px: number, lift: number) => {
+    if (xs.length > 0 && px <= xs[xs.length - 1] + 1e-7) return;
+    xs.push(px);
+    lifts.push(lift);
+  };
+  /** Never cut a course shorter than a few joint widths. */
+  const MIN_COURSE = STONE_JOINT * 4;
   let x = -SILK_HALF_X;
   let courseLift = rng.range(-STONE_LIFT, STONE_LIFT);
+  xs.push(x);
+  lifts.push(courseLift);
   while (x < SILK_HALF_X - 1e-6) {
-    const stone = Math.min(STONE_LENGTH * rng.range(0.72, 1.3), SILK_HALF_X - x);
+    let stone = STONE_LENGTH * rng.range(0.72, 1.3);
+    // Absorb the remainder rather than leaving a sliver against the frame.
+    if (SILK_HALF_X - (x + stone) < MIN_COURSE) stone = SILK_HALF_X - x;
     const end = x + stone;
-    for (let k = 0; k < sub; k++) {
-      xs.push(x + (stone * k) / sub);
-      lifts.push(courseLift);
-    }
-    // The joint: two samples close together, dropped, so the seam is a real
-    // notch that catches shadow instead of a texture line.
-    const jEnd = Math.min(end, SILK_HALF_X);
-    const jStart = Math.max(x, jEnd - STONE_JOINT);
-    xs.push(jStart);
-    lifts.push(courseLift);
-    xs.push((jStart + jEnd) * 0.5);
-    lifts.push(courseLift - STONE_JOINT_DROP);
-    xs.push(jEnd);
+    const jStart = end - STONE_JOINT;
+    for (let k = 1; k < sub; k++) push(x + ((jStart - x) * k) / sub, courseLift);
+    push(jStart, courseLift);
+    // The joint itself: a dropped sample, so the seam is a real notch that
+    // catches shadow instead of a texture line.
+    push((jStart + end) * 0.5, courseLift - STONE_JOINT_DROP);
     courseLift = rng.range(-STONE_LIFT, STONE_LIFT);
-    lifts.push(courseLift);
+    push(end, courseLift);
     x = end;
-  }
-  if (xs[xs.length - 1] < SILK_HALF_X) {
-    xs.push(SILK_HALF_X);
-    lifts.push(courseLift);
   }
 
   const yAt = (i: number, s: number, zSign: number): P3 => {
@@ -511,23 +516,46 @@ function buildRiver(rng: Rng, detail: number): RiverBuild {
     }
   }
 
-  // End walls: the channel is cut into the tabletop and stops at the frame.
-  for (const endSign of [1, -1]) {
-    const ex = endSign * SILK_HALF_X;
-    const n: P3 = [-endSign, 0, 0];
+  // End walls: the channel is cut into the tabletop and stops at the frame, so
+  // the frame plane shows the cut's whole cross-section.
+  //
+  // The subtlety is that the banking cap stands *proud* of the silk. So the
+  // profile is below the deck across the bed and the cut wall, and above it
+  // across the cap — and the wall segment crosses the deck plane partway along.
+  // Ribboning naively between the profile and the deck would fold that segment
+  // into a bowtie, so the profile is resampled with a vertex inserted at every
+  // crossing first, and each resulting strip then sits wholly on one side.
+  {
+    const capPts: [number, number][] = [];
     for (let s = 0; s + 1 < RIVER_SECTION.length; s++) {
-      for (const zSign of [1, -1]) {
-        const a0 = zSign * RIVER_SECTION[s].u;
-        const a1 = zSign * RIVER_SECTION[s + 1].u;
-        const sag0 = silkSag(ex, a0);
-        const sag1 = silkSag(ex, a1);
-        const lo0: P3 = [ex, RIVER_SECTION[s].y + sag0, a0];
-        const lo1: P3 = [ex, RIVER_SECTION[s + 1].y + sag1, a1];
-        const hi0: P3 = [ex, sag0, a0];
-        const hi1: P3 = [ex, sag1, a1];
-        const flip = endSign * zSign > 0;
-        if (flip) bankB.quad(lo0, hi0, hi1, lo1, n, n, n, n, [a0, lo0[1]], [a0, 0], [a1, 0], [a1, lo1[1]]);
-        else bankB.quad(lo0, lo1, hi1, hi0, n, n, n, n, [a0, lo0[1]], [a1, lo1[1]], [a1, 0], [a0, 0]);
+      const p0 = RIVER_SECTION[s];
+      const p1 = RIVER_SECTION[s + 1];
+      capPts.push([p0.u, p0.y]);
+      if (p0.y < 0 !== p1.y < 0 && p0.y !== 0 && p1.y !== 0) {
+        const t = -p0.y / (p1.y - p0.y);
+        capPts.push([p0.u + t * (p1.u - p0.u), 0]);
+      }
+    }
+    const last = RIVER_SECTION[RIVER_SECTION.length - 1];
+    capPts.push([last.u, last.y]);
+
+    for (const endSign of [1, -1]) {
+      const ex = endSign * SILK_HALF_X;
+      const n: P3 = [-endSign, 0, 0];
+      for (let i = 0; i + 1 < capPts.length; i++) {
+        for (const zSign of [1, -1]) {
+          const a0 = zSign * capPts[i][0];
+          const a1 = zSign * capPts[i + 1][0];
+          const sag0 = silkSag(ex, a0);
+          const sag1 = silkSag(ex, a1);
+          const lo0: P3 = [ex, capPts[i][1] + sag0, a0];
+          const lo1: P3 = [ex, capPts[i + 1][1] + sag1, a1];
+          const hi0: P3 = [ex, sag0, a0];
+          const hi1: P3 = [ex, sag1, a1];
+          if (Math.abs(capPts[i][1]) < 1e-9 && Math.abs(capPts[i + 1][1]) < 1e-9) continue;
+          // Walk the profile, then back along the deck: a proper ribbon.
+          orientedQuad(bankB, lo0, lo1, hi1, hi0, n);
+        }
       }
     }
   }
