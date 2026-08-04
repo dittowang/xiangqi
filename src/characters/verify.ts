@@ -926,6 +926,55 @@ function verifyUnits(): void {
     }
   }
 
+  // Mount bones must actually drive geometry. A horse whose legs are welded to
+  // the body typechecks, builds, measures correctly and is completely broken;
+  // the only way to know is to move a bone and watch a vertex.
+  console.log('\n  mount bones drive their geometry');
+  console.log('  ' + rule(72));
+  for (const u of units) {
+    const names = Object.keys(u.mountBones);
+    if (names.length === 0) continue;
+    const probe = names.find((n) => /leg|wheel|trunk|beam/.test(n)) ?? names[0];
+    const idx = u.skeleton.bones.findIndex((b) => b.name === probe);
+    check(idx >= 0, `${u.meta.key}: mount bone ${probe} is not in the skeleton`);
+    if (idx < 0) continue;
+    let moved = 0;
+    let best = 0;
+    for (const mesh of u.skinned) {
+      const si = mesh.geometry.getAttribute('skinIndex') as THREE.BufferAttribute;
+      const pos = mesh.geometry.getAttribute('position') as THREE.BufferAttribute;
+      const picks: number[] = [];
+      for (let i = 0; i < si.count && picks.length < 40; i++) {
+        if (si.getComponent(i, 0) === idx) picks.push(i);
+      }
+      if (picks.length === 0) continue;
+      const rest = picks.map((i) => new THREE.Vector3().fromBufferAttribute(pos, i));
+      const bone = u.mountBones[probe];
+      bone.rotation.x += 0.5;
+      u.root.updateMatrixWorld(true);
+      u.skeleton.update();
+      mesh.updateMatrixWorld(true);
+      for (let k = 0; k < picks.length; k++) {
+        const v = new THREE.Vector3().fromBufferAttribute(pos, picks[k]);
+        mesh.applyBoneTransform(picks[k], v);
+        best = Math.max(best, v.distanceTo(rest[k]));
+      }
+      bone.rotation.x -= 0.5;
+      u.root.updateMatrixWorld(true);
+      u.skeleton.update();
+      moved += picks.length;
+    }
+    console.log(
+      '  ' +
+        pad(`${u.meta.side === Side.Red ? 'Han' : 'Chu'} ${u.meta.key}`, 16) +
+        pad(probe, 24) +
+        pad(`${moved} verts`, 12, true) +
+        pad(`max ${best.toFixed(4)}`, 14, true),
+    );
+    check(moved > 0, `${u.meta.key}: no vertex is bound to mount bone ${probe}`);
+    check(best > 1e-4, `${u.meta.key}: rotating ${probe} moved nothing`);
+  }
+
   const before = factory.stats();
   for (const u of units) u.dispose();
   const after = factory.stats();

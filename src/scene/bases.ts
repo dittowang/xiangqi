@@ -30,7 +30,7 @@
 
 import * as THREE from 'three';
 import type { GongbiMaterials } from '@core/contracts.ts';
-import { PieceType, Side } from '@core/types.ts';
+import { GLYPH, PieceType, Side } from '@core/types.ts';
 import { fileOf, rankOf, worldX, worldZ } from '@core/coords.ts';
 import { ARMY } from '@core/palette.ts';
 import {
@@ -66,9 +66,28 @@ export interface SealOutline {
    * in existence already follows.
    */
   holes?: boolean[];
+  /**
+   * When present, the contours are already in em units, with the em box centred
+   * on the origin and `em` units across.
+   *
+   * This is what lets a four-character inscription look like set type. Fitting
+   * each glyph to its own ink box would scale 界 (narrow, 0.55 em wide) up until
+   * it matched 漢 (0.97 em wide), and the line would read as four independently
+   * sized stamps. Fitting to a shared em box keeps every character's true
+   * relative size and its side bearings.
+   */
+  em?: number;
 }
 
-export type SealProvider = (side: Side, type: PieceType) => SealOutline | null | undefined;
+/**
+ * Glyph outlines, keyed by character.
+ *
+ * `@ui/seal.ts` owns the type engine; the scene is not allowed to import it
+ * (the module graph runs ui → render, never scene → ui), so it arrives here by
+ * injection. The integration layer wires it in one line — see
+ * `sealOutlineFromShapes`.
+ */
+export type SealSource = (ch: string) => SealOutline | null | undefined;
 
 /**
  * Tolerantly convert whatever `@ui/seal.ts` returns from `getSealGlyph()` into a
@@ -115,6 +134,108 @@ export function adaptGlyphPath(raw: unknown): SealOutline | null {
   return holes ? { contours, holes } : { contours };
 }
 
+/** Strip a repeated closing vertex and any zero-length edge. */
+function tidyRing(flat: number[]): number[] {
+  const out: number[] = [];
+  for (let i = 0; i < flat.length; i += 2) {
+    const n = out.length;
+    if (n >= 2 && Math.abs(out[n - 2] - flat[i]) < 1e-9 && Math.abs(out[n - 1] - flat[i + 1]) < 1e-9) {
+      continue;
+    }
+    out.push(flat[i], flat[i + 1]);
+  }
+  // The first and last may now coincide too.
+  const n = out.length;
+  if (n >= 4 && Math.abs(out[0] - out[n - 2]) < 1e-9 && Math.abs(out[1] - out[n - 1]) < 1e-9) {
+    out.length = n - 2;
+  }
+  return out;
+}
+
+/**
+ * Adapter for `@ui/seal.ts`'s `glyphToShapes()`. This is the one line the
+ * integration layer writes:
+ *
+ * ```ts
+ * seal: (ch) => sealOutlineFromShapes(glyphToShapes(ch, { size: 1, origin: 'center' }), 1),
+ * ```
+ *
+ * `THREE.Shape` already carries the solid/hole split explicitly, so the flags
+ * are set from it rather than inferred — one less thing to get wrong on a
+ * character like 砲, which has six counters spread over three separate regions.
+ */
+export function sealOutlineFromShapes(
+  shapes: readonly THREE.Shape[] | null | undefined,
+  em?: number,
+): SealOutline | null {
+  if (!shapes || shapes.length === 0) return null;
+  const contours: number[][] = [];
+  const holes: boolean[] = [];
+  for (const shape of shapes) {
+    // divisions = 1: these are polyline shapes, so this returns exactly the
+    // authored vertices rather than resampling them.
+    const pts = shape.extractPoints(1);
+    const push = (list: THREE.Vector2[], isHole: boolean) => {
+      const flat: number[] = [];
+      for (const p of list) flat.push(p.x, p.y);
+      const tidy = tidyRing(flat);
+      if (tidy.length >= 6) {
+        contours.push(tidy);
+        holes.push(isHole);
+      }
+    };
+    push(pts.shape, false);
+    for (const h of pts.holes) push(h, true);
+  }
+  if (contours.length === 0) return null;
+  return em !== undefined ? { contours, holes, em } : { contours, holes };
+}
+
+/**
+ * Adapter for `@ui/seal.ts`'s `glyphToContours()`, which is the cheaper call —
+ * it skips building `THREE.Shape`/`Path` objects we immediately flatten again.
+ */
+export function sealOutlineFromContours(
+  input: readonly { outer: ArrayLike<number>; holes: readonly ArrayLike<number>[] }[] | null | undefined,
+  em?: number,
+): SealOutline | null {
+  if (!input || input.length === 0) return null;
+  const contours: number[][] = [];
+  const holes: boolean[] = [];
+  const push = (ring: ArrayLike<number>, isHole: boolean) => {
+    const flat: number[] = [];
+    for (let i = 0; i < ring.length; i++) flat.push(ring[i]);
+    const tidy = tidyRing(flat);
+    if (tidy.length >= 6) {
+      contours.push(tidy);
+      holes.push(isHole);
+    }
+  };
+  for (const c of input) {
+    push(c.outer, false);
+    for (const h of c.holes) push(h, true);
+  }
+  if (contours.length === 0) return null;
+  return em !== undefined ? { contours, holes, em } : { contours, holes };
+}
+
+/** Ink bounds of an outline, in its own units. */
+export function glyphInkBox(outline: SealOutline): { x0: number; y0: number; x1: number; y1: number } {
+  let x0 = Infinity;
+  let y0 = Infinity;
+  let x1 = -Infinity;
+  let y1 = -Infinity;
+  for (const c of outline.contours) {
+    for (let i = 0; i < c.length; i += 2) {
+      if (c[i] < x0) x0 = c[i];
+      if (c[i] > x1) x1 = c[i];
+      if (c[i + 1] < y0) y0 = c[i + 1];
+      if (c[i + 1] > y1) y1 = c[i + 1];
+    }
+  }
+  return { x0, y0, x1, y1 };
+}
+
 // ---------------------------------------------------------------------------
 // Incision
 // ---------------------------------------------------------------------------
@@ -124,17 +245,43 @@ export interface GlyphPlacement {
   /** Centre of the glyph box, world. */
   cx: number;
   cz: number;
-  /** Height of the face being cut into. */
+  /** Height of the face being cut into. Ignored when `heightAt` is supplied. */
   y: number;
   /** Depth of the cut, world units. */
   depth: number;
-  /** Fit the glyph's larger dimension into this many world units. */
+  /**
+   * Size of the box the glyph is fitted into, world units. With `fitMode: 'em'`
+   * this is the em size; with `'ink'` it is the longer side of the ink box.
+   */
   fit: number;
   /**
    * Yaw of the glyph's "up" direction, radians. 0 puts glyph-up along world −Z,
    * i.e. the character reads from a camera sitting over +Z (Red's seat).
    */
   yaw: number;
+  /** Default `'em'` when the outline carries one, `'ink'` otherwise. */
+  fitMode?: 'em' | 'ink';
+  /**
+   * Height of the surface being cut into, at a world point.
+   *
+   * The board's silk sags by a couple of millimetres, so an inscription laid at
+   * one flat height would part company with the deck along its edge. With this
+   * supplied, the remaining face, the floor of the cut and both ends of every
+   * wall all follow the surface, and the character is welded to the silk.
+   */
+  heightAt?: (x: number, z: number) => number;
+}
+
+/** Where the pieces of an incision go. */
+export interface InciseTargets {
+  /** The surface with the strokes removed, plus any counter islands. */
+  face: MeshBuilder;
+  /**
+   * The sunken floor and the walls. Defaults to `face`. Splitting them lets the
+   * board put the face in the silk's geometry and the cut in the ink-coloured
+   * incision geometry, so a carved character costs no extra draw call at all.
+   */
+  cut?: MeshBuilder;
 }
 
 interface PreparedContour {
@@ -146,27 +293,35 @@ interface PreparedContour {
 }
 
 /** Normalise: fit to the glyph box, classify holes, fix orientations. */
-function prepare(outline: SealOutline, fit: number): PreparedContour[] {
-  const raw = outline.contours.filter((c) => c.length >= 6);
+function prepare(outline: SealOutline, fit: number, mode: 'em' | 'ink'): PreparedContour[] {
+  // Filter the contours and their hole flags together — dropping a degenerate
+  // ring without dropping its flag would shift every classification after it.
+  const raw: number[][] = [];
+  const rawHoles: (boolean | undefined)[] = [];
+  for (let i = 0; i < outline.contours.length; i++) {
+    if (outline.contours[i].length < 6) continue;
+    raw.push(outline.contours[i]);
+    rawHoles.push(outline.holes ? outline.holes[i] : undefined);
+  }
   if (raw.length === 0) return [];
 
-  let minX = Infinity;
-  let maxX = -Infinity;
-  let minY = Infinity;
-  let maxY = -Infinity;
-  for (const c of raw) {
-    for (let i = 0; i < c.length; i += 2) {
-      if (c[i] < minX) minX = c[i];
-      if (c[i] > maxX) maxX = c[i];
-      if (c[i + 1] < minY) minY = c[i + 1];
-      if (c[i + 1] > maxY) maxY = c[i + 1];
-    }
+  let s: number;
+  let ox: number;
+  let oy: number;
+  if (mode === 'em' && outline.em) {
+    // The em box is already centred on the origin; only the scale changes, so
+    // side bearings and the character's true proportions survive.
+    s = fit / outline.em;
+    ox = 0;
+    oy = 0;
+  } else {
+    const box = glyphInkBox(outline);
+    const w = Math.max(box.x1 - box.x0, 1e-6);
+    const h = Math.max(box.y1 - box.y0, 1e-6);
+    s = fit / Math.max(w, h);
+    ox = (box.x0 + box.x1) * 0.5;
+    oy = (box.y0 + box.y1) * 0.5;
   }
-  const w = Math.max(maxX - minX, 1e-6);
-  const h = Math.max(maxY - minY, 1e-6);
-  const s = fit / Math.max(w, h);
-  const ox = (minX + maxX) * 0.5;
-  const oy = (minY + maxY) * 0.5;
 
   const scaled = raw.map((c) => {
     const out = new Array<number>(c.length);
@@ -179,11 +334,10 @@ function prepare(outline: SealOutline, fit: number): PreparedContour[] {
 
   // Hole classification. Explicit flags win; otherwise a contour is a hole when
   // it is enclosed by an odd number of the others.
-  const explicit = outline.holes;
   const prepared: PreparedContour[] = scaled.map((flat, i) => {
     let hole: boolean;
-    if (explicit && typeof explicit[i] === 'boolean') {
-      hole = explicit[i];
+    if (typeof rawHoles[i] === 'boolean') {
+      hole = rawHoles[i] as boolean;
     } else {
       let depth = 0;
       for (let j = 0; j < scaled.length; j++) {
@@ -242,33 +396,39 @@ function reverseContour(flat: number[]): void {
  * outline is normalised into, so pass it *after* deciding `fit`.
  */
 export function inciseOutline(
-  b: MeshBuilder,
+  targets: InciseTargets | MeshBuilder,
   outline: SealOutline | null,
   faceContour: readonly number[],
   place: GlyphPlacement,
 ): void {
+  const faceB = targets instanceof MeshBuilder ? targets : targets.face;
+  const cutB = targets instanceof MeshBuilder ? targets : (targets.cut ?? targets.face);
+
   // Glyph-local (gx, gy) -> world (x, z). `up` is glyph +y, `right` is glyph +x.
   const ux = Math.sin(place.yaw);
   const uz = -Math.cos(place.yaw);
   const rx = Math.cos(place.yaw);
   const rz = Math.sin(place.yaw);
-  const toWorld = (gx: number, gy: number, y: number): P3 => [
-    place.cx + gx * rx + gy * ux,
-    y,
-    place.cz + gx * rz + gy * uz,
-  ];
+  const worldXOf = (gx: number, gy: number) => place.cx + gx * rx + gy * ux;
+  const worldZOf = (gx: number, gy: number) => place.cz + gx * rz + gy * uz;
+  /** Surface height at a glyph-local point, plus an offset. */
+  const surfaceY = (x: number, z: number) => (place.heightAt ? place.heightAt(x, z) : place.y);
+  const toWorld = (gx: number, gy: number, dy: number): P3 => {
+    const x = worldXOf(gx, gy);
+    const z = worldZOf(gx, gy);
+    return [x, surfaceY(x, z) + dy, z];
+  };
 
-  const prepared = outline ? prepare(outline, place.fit) : [];
+  const mode = place.fitMode ?? (outline?.em ? 'em' : 'ink');
+  const prepared = outline ? prepare(outline, place.fit, mode) : [];
   const solids = prepared.filter((p) => !p.hole);
   const face = Array.from(faceContour);
   if (signedArea(face) < 0) reverseContour(face);
 
   const up: P3 = [0, 1, 0];
-  const yTop = place.y;
-  const yFloor = place.y - place.depth;
 
-  /** Triangulate one shape and emit it flat at `y`, forced to face +Y. */
-  const emitFlat = (contour: number[], holes: number[][], y: number) => {
+  /** Triangulate one shape and emit it at `dy` below the surface, facing +Y. */
+  const emitFlat = (b: MeshBuilder, contour: number[], holes: number[][], dy: number) => {
     const c2 = toVector2s(contour);
     const h2 = holes.map(toVector2s);
     let tris: number[][];
@@ -282,9 +442,9 @@ export function inciseOutline(
       const a = all[t[0]];
       const bb = all[t[1]];
       const cc = all[t[2]];
-      let A = toWorld(a.x, a.y, y);
-      let B = toWorld(bb.x, bb.y, y);
-      const C = toWorld(cc.x, cc.y, y);
+      let A = toWorld(a.x, a.y, dy);
+      let B = toWorld(bb.x, bb.y, dy);
+      const C = toWorld(cc.x, cc.y, dy);
       // The glyph->world map is a reflection, so triangle orientation can land
       // either way. Normalise to up-facing rather than trusting the triangulator.
       if (faceNormal(A, B, C)[1] < 0) {
@@ -298,18 +458,19 @@ export function inciseOutline(
 
   // 1. The face itself, with every stroke removed.
   emitFlat(
+    faceB,
     face,
     solids.map((s) => s.flat),
-    yTop,
+    0,
   );
 
   // 2. Counters stay at face level — the enclosed island inside a 口 is material,
-  //    not void.
+  //    not void. 車 has four of them and 砲 has six, so this is not a corner case.
   for (const p of prepared) {
     if (!p.hole) continue;
     const island = p.flat.slice();
     if (signedArea(island) < 0) reverseContour(island);
-    emitFlat(island, [], yTop);
+    emitFlat(faceB, island, [], 0);
   }
 
   // 3. The floor of the cut, one shape per stroke with its counters punched out.
@@ -323,7 +484,7 @@ export function inciseOutline(
         if (signedArea(c) < 0) reverseContour(c); // triangulateShape wants CCW holes
         return c;
       });
-    emitFlat(p.flat, counters, yFloor);
+    emitFlat(cutB, p.flat, counters, -place.depth);
   }
 
   // 4. Walls. Solids run CCW and counters CW, so "left of travel" is the wall's
@@ -345,16 +506,16 @@ export function inciseOutline(
       const inGy = dx / dl;
       const nWorld: P3 = [inGx * rx + inGy * ux, 0, inGx * rz + inGy * uz];
 
-      const A = toWorld(gx0, gy0, yTop);
-      const B = toWorld(gx1, gy1, yTop);
-      const A2 = toWorld(gx0, gy0, yFloor);
-      const B2 = toWorld(gx1, gy1, yFloor);
+      const A = toWorld(gx0, gy0, 0);
+      const B = toWorld(gx1, gy1, 0);
+      const A2 = toWorld(gx0, gy0, -place.depth);
+      const B2 = toWorld(gx1, gy1, -place.depth);
       const test = faceNormal(A, A2, B2);
       const aligned = test[0] * nWorld[0] + test[2] * nWorld[2] > 0;
       if (aligned) {
-        b.quad(A, A2, B2, B, nWorld, nWorld, nWorld, nWorld, planarUV(A), planarUV(A2), planarUV(B2), planarUV(B));
+        cutB.quad(A, A2, B2, B, nWorld, nWorld, nWorld, nWorld, planarUV(A), planarUV(A2), planarUV(B2), planarUV(B));
       } else {
-        b.quad(A, B, B2, A2, nWorld, nWorld, nWorld, nWorld, planarUV(A), planarUV(B), planarUV(B2), planarUV(A2));
+        cutB.quad(A, B, B2, A2, nWorld, nWorld, nWorld, nWorld, planarUV(A), planarUV(B), planarUV(B2), planarUV(A2));
       }
     }
   }
@@ -372,8 +533,13 @@ export const BASE_RADIUS = 0.345;
 export const BASE_TOP_Y = 0.046;
 /** Depth of the glyph incision. */
 export const BASE_GLYPH_DEPTH = 0.0085;
-/** Glyph box: the character fits inside this square, centred on the base. */
-export const BASE_GLYPH_FIT = 0.34;
+/**
+ * Em size of the character on a plinth. The tallest glyph in the roster inks
+ * about 0.99 em, so this puts the worst case at 0.337 across — comfortably
+ * inside the 0.26-radius top face, and the same size for all fourteen so an
+ * army's pieces read as one set of type.
+ */
+export const BASE_GLYPH_EM = 0.34;
 
 /**
  * Side wall of the plinth, from the edge of the top face down to the board.
@@ -417,13 +583,17 @@ function faceDisc(radius: number, segments: number): number[] {
 export function buildBaseGeometry(
   side: Side,
   type: PieceType,
-  seal: SealProvider | undefined,
+  seal: SealSource | undefined,
   ownerFacing: boolean,
 ): THREE.BufferGeometry {
   const b = new MeshBuilder();
   latheProfile(b, BASE_SIDE_PROFILE, BASE_RADIAL_SEGMENTS, 0, 0, 0);
 
-  const outline = seal ? (seal(side, type) ?? null) : null;
+  // Red and Black use different characters for the same piece — 俥 against 車 —
+  // and that asymmetry is part of the board's language, so the character comes
+  // from the palette of glyphs in core/types.ts rather than from the piece type.
+  const ch = GLYPH[side][type];
+  const outline = seal && ch ? (seal(ch) ?? null) : null;
   // A traditional set orients each army's characters toward its own player.
   // Red sits at +Z, Black at −Z.
   const yaw = ownerFacing && side === Side.Black ? Math.PI : 0;
@@ -434,11 +604,11 @@ export function buildBaseGeometry(
       cz: 0,
       y: BASE_TOP_Y,
       depth: BASE_GLYPH_DEPTH,
-      fit: BASE_GLYPH_FIT,
+      fit: BASE_GLYPH_EM,
       yaw,
     });
   } else {
-    // No glyph provider yet: a plain unmarked plinth, as instructed.
+    // No glyph source: a plain unmarked plinth, as instructed.
     disc(b, BASE_FACE_RADIUS, BASE_TOP_Y, BASE_RADIAL_SEGMENTS);
   }
 
@@ -486,7 +656,7 @@ const _axisY = new THREE.Vector3(0, 1, 0);
 export interface PieceBasesOptions {
   materials: GongbiMaterials;
   /** Seal-script outlines. Absent means every base is blank. */
-  seal?: SealProvider;
+  seal?: SealSource;
   /** Board surface height, so bases follow the silk's sag. */
   groundAt: (x: number, z: number) => number;
   /** Orient each army's glyphs toward its own seat. Default true. */

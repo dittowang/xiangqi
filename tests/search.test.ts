@@ -231,6 +231,24 @@ describe('difficulty profiles', () => {
     console.log(`[easy] ${seen.size} distinct choices, worst loss ${worstLoss}cp: ${[...seen].join(' ')}`);
   }, 60_000);
 
+  it('easy never takes a move that drops a whole chariot', () => {
+    // The horizon-blunder position: taking the soldier on e5 loses a chariot,
+    // roughly 800cp below the best move. The loss cap must exclude it every
+    // single time, no matter how the noise falls.
+    const pos = positionOf(
+      {
+        e0: 'K', d0: 'A', f0: 'A', c0: 'B', g0: 'B', e3: 'R',
+        e9: 'k', d9: 'a', f9: 'a', c9: 'b', g9: 'b', e5: 'p', a5: 'r',
+      },
+      'w',
+    );
+    const searcher = new Searcher(16);
+    for (let i = 0; i < 40; i++) {
+      const r = findBestMove(searcher, pos, 'easy', { maxDepth: 3, pickSeed: i });
+      expect(moveToIccs(r.move), `slip ${i}`).not.toBe('e3e5');
+    }
+  }, 60_000);
+
   it('easy still finds a mate in one rather than slipping', () => {
     const pos = positionOf({ e9: 'k', a8: 'R', i8: 'R', d0: 'K' }, 'w');
     const searcher = new Searcher(16);

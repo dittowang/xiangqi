@@ -159,6 +159,22 @@ describe('phase taper', () => {
     expect(endgame.safety).toBeLessThan(opening.safety);
     expect(endgame.pst).toBeLessThan(opening.pst);
   });
+
+  /**
+   * `compute()` inlines the weights to stay allocation-free, so this checks
+   * that the inlined copy still agrees with the published `weightsFor` — the
+   * one place the two could silently drift apart.
+   */
+  it('the published weights are the ones the evaluation actually applies', () => {
+    const pos = positionOf({ e0: 'K', d9: 'k', a4: 'R' }, 'w');
+    const b = breakdown(pos);
+    const w = weightsFor(b.phase);
+    // Three pieces contribute to the PST term, all read straight off the
+    // authored tables: the Red chariot on (file 0, rank 5) is +8, the Red
+    // general on its home point is +6, and Black's general on the mirrored
+    // d-point is -2.
+    expect(b.pst).toBe(Math.round((8 + 6 - 2) * w.pst));
+  });
 });
 
 describe('general safety', () => {

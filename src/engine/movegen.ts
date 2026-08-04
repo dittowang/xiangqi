@@ -298,6 +298,112 @@ function genSliderCaptures(pos: Position, list: MoveList, board: Int8Array, side
 }
 
 // ---------------------------------------------------------------------------
+// Weighted mobility
+// ---------------------------------------------------------------------------
+
+/**
+ * Weighted count of `side`'s pseudo-legal moves, indexed by moving piece type.
+ *
+ * This is the same geometry as `generateMoves`, deliberately duplicated rather
+ * than layered on top of it. The evaluation calls it twice at every leaf, and
+ * measurement showed the move encoding and the move-list writes — which a
+ * counter does not need — costing about a third of the evaluation's time. It
+ * lives here, immediately beside the generators, so the two are edited together.
+ */
+export function weightedMobility(pos: Position, side: Side, weight: readonly number[]): number {
+  const board = pos.board;
+  const sideBits = (side as number) << 3;
+  let total = 0;
+
+  // --- general, advisor, soldier: fixed target tables, no blockers
+  for (const [type, table, stride, count] of [
+    [PieceType.General, GENERAL_TO, GENERAL_STRIDE, generalCount],
+    [PieceType.Advisor, ADVISOR_TO, ADVISOR_STRIDE, advisorCount],
+    [PieceType.Soldier, SOLDIER_TO, SOLDIER_STRIDE, soldierCount],
+  ] as [PieceType, Int8Array, number, CountFn][]) {
+    const w = weight[type];
+    if (w === 0) continue;
+    const code = makePiece(side, type);
+    const n = pos.countOf(code);
+    for (let p = 0; p < n; p++) {
+      const from = pos.squareOf(code, p);
+      const targets = count(side, from);
+      for (let i = 0; i < targets; i++) {
+        const occupant = board[table[sideIdx(side, from, stride, i)]];
+        if (occupant === EMPTY || (occupant & 8) !== sideBits) total += w;
+      }
+    }
+  }
+
+  // --- elephant: eye must be clear
+  {
+    const w = weight[PieceType.Elephant];
+    const code = makePiece(side, PieceType.Elephant);
+    const n = pos.countOf(code);
+    for (let p = 0; p < n && w !== 0; p++) {
+      const from = pos.squareOf(code, p);
+      const targets = elephantCount(side, from);
+      for (let i = 0; i < targets; i++) {
+        const idx = sideIdx(side, from, ELEPHANT_STRIDE, i);
+        if (board[ELEPHANT_EYE[idx]] !== EMPTY) continue;
+        const occupant = board[ELEPHANT_TO[idx]];
+        if (occupant === EMPTY || (occupant & 8) !== sideBits) total += w;
+      }
+    }
+  }
+
+  // --- horse: leg must be clear
+  {
+    const w = weight[PieceType.Horse];
+    const code = makePiece(side, PieceType.Horse);
+    const n = pos.countOf(code);
+    for (let p = 0; p < n && w !== 0; p++) {
+      const from = pos.squareOf(code, p);
+      const targets = HORSE_N[from];
+      for (let i = 0; i < targets; i++) {
+        const idx = from * HORSE_STRIDE + i;
+        if (board[HORSE_LEG[idx]] !== EMPTY) continue;
+        const occupant = board[HORSE_TO[idx]];
+        if (occupant === EMPTY || (occupant & 8) !== sideBits) total += w;
+      }
+    }
+  }
+
+  // --- chariot and cannon: walk the rays, counting rather than emitting
+  for (const type of [PieceType.Chariot, PieceType.Cannon]) {
+    const w = weight[type];
+    if (w === 0) continue;
+    const isCannon = type === PieceType.Cannon;
+    const code = makePiece(side, type);
+    const n = pos.countOf(code);
+    for (let p = 0; p < n; p++) {
+      const from = pos.squareOf(code, p);
+      for (let dir = 0; dir < 4; dir++) {
+        const base = (from * 4 + dir) * RAY_STRIDE;
+        const len = RAY_LEN[from * 4 + dir];
+        let i = 0;
+        while (i < len && board[RAY_SQ[base + i]] === EMPTY) i++;
+        total += w * i; // the empty stretch: quiet slides for both piece types
+        if (i >= len) continue;
+
+        if (!isCannon) {
+          if ((board[RAY_SQ[base + i]] & 8) !== sideBits) total += w;
+          continue;
+        }
+        for (i++; i < len; i++) {
+          const occupant = board[RAY_SQ[base + i]];
+          if (occupant === EMPTY) continue;
+          if ((occupant & 8) !== sideBits) total += w;
+          break;
+        }
+      }
+    }
+  }
+
+  return total;
+}
+
+// ---------------------------------------------------------------------------
 // Legal generation
 // ---------------------------------------------------------------------------
 

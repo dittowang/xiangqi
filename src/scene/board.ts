@@ -117,12 +117,27 @@ const FRAME_SAG_FALLOFF = 0.16;
 
 // --- river -----------------------------------------------------------------
 
+/**
+ * The river's cross-section, and the one real trade in this file.
+ *
+ * The band between rank 4 and rank 5 is exactly one square wide, and two things
+ * want it: a sunken channel, and 楚河漢界. A board without a legible inscription
+ * is not recognisably a xiangqi board — it is the single most identifiable mark
+ * on the object — so the channel gets the smaller share. It is 0.155 wide and
+ * 0.12 deep, which makes it *more* of a channel from a low camera rather than
+ * less: the cut walls stand at 72.6° instead of the 56° a wide, shallow trough
+ * would give, so they catch the key on one side and go black on the other from
+ * any angle the camera can reach. What it loses is plan-view width from the
+ * `top` pose, where it now reads as a rill rather than a river.
+ *
+ * The 0.345 of silk that buys back on each bank is what carries the inscription.
+ */
 export const RIVER_DEPTH = 0.12;
-const RIVER_FLOOR_HALF = 0.21;
-const RIVER_CUT_HALF = 0.3;
-const BANK_CAP_HALF = 0.42;
-export const BANK_HALF = 0.465;
-export const BANK_RISE = 0.016;
+const RIVER_FLOOR_HALF = 0.052;
+const RIVER_CUT_HALF = 0.094;
+const BANK_CAP_HALF = 0.118;
+export const BANK_HALF = 0.14;
+export const BANK_RISE = 0.014;
 export const WATER_Y = -0.048;
 
 /**
@@ -141,10 +156,10 @@ export const RIVER_SECTION: readonly ProfilePoint[] = [
 const BANK_LIFT_WEIGHT = [0, 0, 1, 1, 0];
 
 /** Nominal length of one banking stone along the river, before jitter. */
-const STONE_LENGTH = 0.58;
-const STONE_JOINT = 0.014;
-const STONE_JOINT_DROP = 0.0042;
-const STONE_LIFT = 0.0035;
+const STONE_LENGTH = 0.44;
+const STONE_JOINT = 0.012;
+const STONE_JOINT_DROP = 0.0036;
+const STONE_LIFT = 0.003;
 
 /** Half-width of the water plane: where the water line meets the cut wall. */
 export const WATER_HALF = (() => {
@@ -184,6 +199,111 @@ const SOLDIER_FILES = [0, 2, 4, 6, 8];
 /** Files that carry a cannon point, at ranks 2 and 7. */
 const CANNON_FILES = [1, 7];
 
+// --- 楚河漢界 ---------------------------------------------------------------
+
+/**
+ * The inscription band on each bank: from just clear of the stone banking out to
+ * just clear of the rank line. The rank line's groove is 0.018 wide at its widest
+ * and bows by up to 0.0055, so the far limit stops short of 0.5 by both.
+ */
+const INSCRIPTION_Z0 = BANK_HALF + 0.006;
+const INSCRIPTION_Z1 = 0.47;
+/** Ink height of the tallest of the four characters, world units. */
+const INSCRIPTION_INK = 0.3;
+/** Centre-to-centre spacing within a pair, and the width of one glyph's panel. */
+const INSCRIPTION_PITCH = 0.4;
+/** Where each pair sits horizontally: 楚河 to Red's left, 漢界 to Red's right. */
+const INSCRIPTION_PAIR_X = 2.25;
+/** Depth of the cut. Deeper than a piece base's — it is read from further away. */
+const INSCRIPTION_DEPTH = 0.0105;
+/** Heavier than the authored seal weight: a board inscription is cut bold. */
+const INSCRIPTION_WEIGHT = 1.0;
+
+/** One character of the inscription, with the deck panel it is cut into. */
+interface InscriptionChar {
+  ch: string;
+  outline: SealOutline;
+  cx: number;
+  cz: number;
+  yaw: number;
+  /** Em size in world units, shared by all four so they read as one line. */
+  em: number;
+  panel: DeckPanel;
+}
+
+/** A rectangle the silk deck leaves empty, filled by an incised panel instead. */
+interface DeckPanel {
+  x0: number;
+  x1: number;
+  z0: number;
+  z1: number;
+}
+
+/**
+ * Plan 楚河漢界.
+ *
+ * 楚 is Chu, which is Black, at −Z; 漢 is Han, which is Red, at +Z. Each pair is
+ * carved into its own player's bank and reads toward that player's seat, which
+ * is how a real set does it and why the board looks upside-down to whoever is
+ * sitting on the wrong side of it.
+ *
+ * All four share one em size, computed so the *tallest* of them inks
+ * `INSCRIPTION_INK`. Sizing each glyph to its own ink box instead would inflate
+ * the narrow 界 to match the wide 漢 and the line would stop reading as type.
+ */
+function planInscription(seal: SealSource | undefined): InscriptionChar[] {
+  if (!seal) return [];
+  // [character, bank sign, distance from the pair's centre]. Within a pair the
+  // first character sits nearer the middle of the board, so each reads
+  // left-to-right from its own seat.
+  const layout: [string, number, number][] = [
+    ['楚', -1, -0.5],
+    ['河', -1, +0.5],
+    ['漢', +1, -0.5],
+    ['界', +1, +0.5],
+  ];
+
+  const fetched: { ch: string; bank: number; slot: number; outline: SealOutline }[] = [];
+  for (const [ch, bank, slot] of layout) {
+    const outline = seal(ch);
+    if (outline && outline.contours.length > 0) fetched.push({ ch, bank, slot, outline });
+  }
+  if (fetched.length === 0) return [];
+
+  // One em size for the whole line, set by whichever character inks tallest.
+  let tallest = 0;
+  for (const f of fetched) {
+    const box = glyphInkBox(f.outline);
+    const em = f.outline.em ?? Math.max(box.x1 - box.x0, box.y1 - box.y0);
+    tallest = Math.max(tallest, (box.y1 - box.y0) / Math.max(em, 1e-6));
+  }
+  const em = INSCRIPTION_INK / Math.max(tallest, 1e-6);
+
+  const cz = (INSCRIPTION_Z0 + INSCRIPTION_Z1) * 0.5;
+  const halfPanelZ = (INSCRIPTION_Z1 - INSCRIPTION_Z0) * 0.5;
+
+  return fetched.map((f) => {
+    // Black's bank mirrors in x as well as reading direction, so both pairs put
+    // their first character nearer the centre line.
+    const cx = f.bank * INSCRIPTION_PAIR_X - f.bank * f.slot * INSCRIPTION_PITCH;
+    return {
+      ch: f.ch,
+      outline: f.outline,
+      cx,
+      cz: f.bank * cz,
+      // yaw 0 reads from +Z (Red); π reads from −Z (Black).
+      yaw: f.bank < 0 ? Math.PI : 0,
+      em,
+      panel: {
+        x0: cx - INSCRIPTION_PITCH * 0.5,
+        x1: cx + INSCRIPTION_PITCH * 0.5,
+        z0: f.bank * cz - halfPanelZ,
+        z1: f.bank * cz + halfPanelZ,
+      },
+    };
+  });
+}
+
 // ===========================================================================
 // The silk's sag
 // ===========================================================================
@@ -220,22 +340,67 @@ function silkNormal(x: number, z: number): P3 {
 type Detail = 'low' | 'medium' | 'high';
 const DETAIL_SCALE: Record<Detail, number> = { low: 0.45, medium: 0.72, high: 1 };
 
-/** The silk deck, split around the river channel. */
-function buildDeck(b: MeshBuilder, detail: number): void {
+/**
+ * Cell edges from `lo` to `hi` that pass exactly through every anchor, with the
+ * gaps between anchors subdivided into pieces close to `step`.
+ *
+ * This is what lets the deck leave an exactly-shaped hole for an inscription
+ * panel: the panel's edges become anchors, so the deck's own grid lands on them
+ * and the panel tiles the hole seamlessly instead of overlapping it.
+ */
+function gridEdges(lo: number, hi: number, step: number, anchors: readonly number[]): number[] {
+  const inner = anchors
+    .filter((a) => a > lo + 1e-6 && a < hi - 1e-6)
+    .sort((a, b) => a - b)
+    .filter((a, i, arr) => i === 0 || a - arr[i - 1] > 1e-6);
+  const stops = [lo, ...inner, hi];
+  const out: number[] = [lo];
+  for (let i = 0; i + 1 < stops.length; i++) {
+    const a = stops[i];
+    const c = stops[i + 1];
+    const n = Math.max(1, Math.round((c - a) / step));
+    for (let k = 1; k <= n; k++) out.push(a + ((c - a) * k) / n);
+  }
+  return out;
+}
+
+/**
+ * The silk deck: two sheets either side of the river channel, with a rectangle
+ * left empty under each character of 楚河漢界.
+ */
+function buildDeck(b: MeshBuilder, detail: number, panels: readonly DeckPanel[]): void {
   const step = 0.26 / Math.max(detail, 0.2);
   const bands: [number, number][] = [
     [BANK_HALF, SILK_HALF_Z],
     [-SILK_HALF_Z, -BANK_HALF],
   ];
-  const nx = Math.max(2, Math.round((SILK_HALF_X * 2) / step));
+
+  const zAnchors: number[] = [];
+  const xAnchors: number[] = [];
+  for (const p of panels) {
+    zAnchors.push(p.z0, p.z1);
+    xAnchors.push(p.x0, p.x1);
+  }
+
   for (const [z0, z1] of bands) {
-    const nz = Math.max(2, Math.round((z1 - z0) / step));
-    for (let i = 0; i < nx; i++) {
-      const xa = -SILK_HALF_X + ((i + 0) / nx) * SILK_HALF_X * 2;
-      const xb = -SILK_HALF_X + ((i + 1) / nx) * SILK_HALF_X * 2;
-      for (let j = 0; j < nz; j++) {
-        const za = z0 + ((j + 0) / nz) * (z1 - z0);
-        const zb = z0 + ((j + 1) / nz) * (z1 - z0);
+    const zEdges = gridEdges(z0, z1, step, zAnchors);
+    for (let j = 0; j + 1 < zEdges.length; j++) {
+      const za = zEdges[j];
+      const zb = zEdges[j + 1];
+      const zMid = (za + zb) * 0.5;
+      // Only the row that actually contains panels pays for the extra x cuts.
+      const rowPanels = panels.filter((p) => zMid > p.z0 && zMid < p.z1);
+      const xEdges = gridEdges(
+        -SILK_HALF_X,
+        SILK_HALF_X,
+        step,
+        rowPanels.length ? xAnchors : [],
+      );
+      for (let i = 0; i + 1 < xEdges.length; i++) {
+        const xa = xEdges[i];
+        const xb = xEdges[i + 1];
+        const xMid = (xa + xb) * 0.5;
+        if (rowPanels.some((p) => xMid > p.x0 && xMid < p.x1)) continue; // the hole
         const A: P3 = [xa, silkSag(xa, za), za];
         const B: P3 = [xa, silkSag(xa, zb), zb];
         const C: P3 = [xb, silkSag(xb, zb), zb];
@@ -609,13 +774,11 @@ function buildUnderside(b: MeshBuilder): void {
 export interface BoardOptions {
   /** Ramp materials, injected. The scene never reaches into @render. */
   materials: GongbiMaterials;
-  /** Seal-script glyphs for the piece bases. Absent = blank bases. */
-  seal?: SealProvider;
   /**
-   * Outlines for the four river characters 楚 河 漢 界, keyed by character.
-   * Absent = plain stone banking. See the note on `buildRiverInscription`.
+   * Seal-script outlines, keyed by character. Feeds both the piece bases and
+   * 楚河漢界. Absent means blank plinths and a bare river band.
    */
-  riverText?: (ch: string) => SealOutline | null | undefined;
+  seal?: SealSource;
   detail?: Detail;
   /** Orient each army's base glyphs toward its own seat. Default true. */
   ownerFacingGlyphs?: boolean;
@@ -665,10 +828,44 @@ export class Board implements BoardScene {
       return mesh;
     };
 
+    // 楚河漢界 is planned first: the deck has to leave a hole for each character
+    // so the incised panel can tile into it seamlessly.
+    const inscription = planInscription(opts.seal);
+    this.inscription = inscription.map((c) => ({ ch: c.ch, cx: c.cx, cz: c.cz, em: c.em }));
+
     // --- deck and frame ---------------------------------------------------
+    // The deck geometry carries the inscription's *face* — the silk left behind
+    // once the strokes are cut out of it — because it is the same silk and the
+    // same material, and merging it costs no draw call.
     {
       const b = new MeshBuilder();
-      buildDeck(b, detail);
+      buildDeck(
+        b,
+        detail,
+        inscription.map((c) => c.panel),
+      );
+      this.inscriptionCut = new MeshBuilder();
+      for (const c of inscription) {
+        const w = c.panel.x1 - c.panel.x0;
+        const h = c.panel.z1 - c.panel.z0;
+        inciseOutline(
+          { face: b, cut: this.inscriptionCut },
+          c.outline,
+          // The panel exactly fills the hole the deck left, in glyph-local space.
+          [-w / 2, -h / 2, w / 2, -h / 2, w / 2, h / 2, -w / 2, h / 2],
+          {
+            cx: c.cx,
+            cz: c.cz,
+            y: 0,
+            depth: INSCRIPTION_DEPTH,
+            fit: c.em,
+            yaw: c.yaw,
+            fitMode: 'em',
+            // Follow the silk's sag, so the panel welds to the deck around it.
+            heightAt: silkSag,
+          },
+        );
+      }
       add(b.build('deck'), M.get({ cls: 'silk', pigment: SCENE.silkGround }), 'deck', false, true);
     }
     {
@@ -688,11 +885,16 @@ export class Board implements BoardScene {
     }
 
     // --- every incised line, in one geometry and therefore one draw call ---
+    // The grid, the palace trenches, the 炮位/兵位 brackets and the sunken part
+    // of 楚河漢界 are all the same thing — silk cut with a stylus — so they are
+    // the same geometry and the same material.
     {
       const b = new MeshBuilder();
       buildGrid(b, seedFor('scene', 'board', 'grid'));
       buildPalaceTrenches(b, seedFor('scene', 'board', 'palace'));
       buildPositionMarkers(b, seedFor('scene', 'board', 'brackets'));
+      this.inscriptionTriangles = this.inscriptionCut.triangles;
+      b.append(this.inscriptionCut);
       add(
         b.build('incisions'),
         M.get({ cls: 'silk', pigment: SCENE.gridLine }),

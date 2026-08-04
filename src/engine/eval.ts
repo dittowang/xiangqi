@@ -24,9 +24,9 @@
 
 import { clamp, lerp } from '@core/types.ts';
 import { PieceType, Side, makePiece, opposite } from '@core/types.ts';
-import { hasCrossedRiver, inPalace, rankOf } from '@core/coords.ts';
+import { inPalace, rankOf } from '@core/coords.ts';
 import { EMPTY } from '@core/types.ts';
-import { MoveList, generateMoves } from './movegen.ts';
+import { weightedMobility } from './movegen.ts';
 import type { Position } from './position.ts';
 import {
   HORSE_ATK_FROM,
@@ -39,6 +39,13 @@ import {
   RAY_SQ,
   mirrorSquare,
 } from './tables.ts';
+
+/**
+ * Precomputed rank flip. `mirrorSquare` is a cross-module call and the material
+ * loop runs it for every Black piece at every leaf; a 90-byte table is free.
+ */
+const MIRROR = new Int8Array(N_SQ);
+for (let s = 0; s < N_SQ; s++) MIRROR[s] = mirrorSquare(s);
 
 // ---------------------------------------------------------------------------
 // 1. Material
@@ -294,26 +301,36 @@ export interface EvalWeights {
   soldierAdvance: number;
 }
 
+/**
+ * Term weights at the two ends of the taper, `[endgame, opening]`.
+ *
+ *   pst      1.00 -> 0.80  placement matters most while the board is full
+ *   mobility 0.90 -> 1.20  mobility matters most once there is room to use it
+ *   safety   1.20 -> 0.70  safety matters most while there is still an attack
+ *   soldier  1.00 -> 1.45  soldiers decide endgames
+ *
+ * `compute()` reads these directly rather than calling `weightsFor`, so that a
+ * leaf evaluation never allocates the result object — the constants live here
+ * so the two cannot drift apart.
+ */
+const W_PST = [0.8, 1.0] as const;
+const W_MOBILITY = [1.2, 0.9] as const;
+const W_SAFETY = [0.7, 1.2] as const;
+const W_SOLDIER = [1.45, 1.0] as const;
+
 export function weightsFor(phase: number): EvalWeights {
   return {
     phase,
-    // Placement matters most while the board is full.
-    pst: lerp(0.8, 1.0, phase),
-    // Mobility matters most once there is room to use it.
-    mobility: lerp(1.2, 0.9, phase),
-    // Safety matters most while there is something left to attack with.
-    safety: lerp(0.7, 1.2, phase),
-    // Soldiers decide endgames.
-    soldierAdvance: lerp(1.45, 1.0, phase),
+    pst: lerp(W_PST[0], W_PST[1], phase),
+    mobility: lerp(W_MOBILITY[0], W_MOBILITY[1], phase),
+    safety: lerp(W_SAFETY[0], W_SAFETY[1], phase),
+    soldierAdvance: lerp(W_SOLDIER[0], W_SOLDIER[1], phase),
   };
 }
 
 // ---------------------------------------------------------------------------
 // The evaluation itself
 // ---------------------------------------------------------------------------
-
-/** Scratch move list — module level so `evaluate` never allocates. */
-const mobilityScratch = new MoveList();
 
 /** Per-term breakdown, for tests and for the review-mode tooltip. */
 export interface EvalBreakdown {
@@ -358,38 +375,59 @@ export function breakdown(pos: Position): EvalBreakdown {
   return { ...scratch };
 }
 
+/** Tapered material values for this evaluation, recomputed once per call. */
+const taperedMaterial = new Float64Array(8);
+
 function compute(pos: Position): number {
   const phase = clamp(phaseOf(pos) / PHASE_MAX, 0, 1);
-  // The weights are pure functions of the phase, and computing them inline
-  // keeps this whole function allocation-free.
-  const wPst = lerp(0.8, 1.0, phase);
-  const wMobility = lerp(1.2, 0.9, phase);
-  const wSafety = lerp(0.7, 1.2, phase);
-  const wSoldier = lerp(1.45, 1.0, phase);
+  // Same numbers `weightsFor` returns, read straight out of the shared
+  // constants so a leaf evaluation never allocates the result object.
+  const wPst = lerp(W_PST[0], W_PST[1], phase);
+  const wMobility = lerp(W_MOBILITY[0], W_MOBILITY[1], phase);
+  const wSafety = lerp(W_SAFETY[0], W_SAFETY[1], phase);
+  const wSoldier = lerp(W_SOLDIER[0], W_SOLDIER[1], phase);
+
+  // Taper the eight piece values once rather than once per piece on the board.
+  for (let t = 0; t < 8; t++) {
+    taperedMaterial[t] = lerp(MATERIAL_ENDGAME[t], MATERIAL_OPENING[t], phase);
+  }
+  const crossedBonus = SOLDIER_CROSSED * wSoldier;
+  const deepBonus = SOLDIER_DEEP * wSoldier;
 
   let material = 0;
   let pst = 0;
 
-  for (let s = 0; s < N_SQ; s++) {
-    const code = pos.board[s];
-    if (code === EMPTY) continue;
-    const side: Side = (code >> 3) as Side;
-    const type = (code & 7) as PieceType;
-    const sign = side === Side.Red ? 1 : -1;
-
-    let value = lerp(MATERIAL_ENDGAME[type], MATERIAL_OPENING[type], phase);
-    if (type === PieceType.Soldier && hasCrossedRiver(s, side)) {
-      const r = rankOf(s);
-      const deep = side === Side.Red ? r <= 2 : r >= 7;
-      value += (SOLDIER_CROSSED + (deep ? SOLDIER_DEEP : 0)) * wSoldier;
-    }
-    material += sign * value;
-
+  // Walk the piece lists, not the 90 squares: about thirty iterations instead
+  // of ninety, and no emptiness test in the inner loop.
+  for (let code = 1; code < 16; code++) {
+    const type = code & 7;
+    if (type === PieceType.None) continue;
+    const n = pos.countOf(code);
+    if (n === 0) continue;
+    const red = (code >> 3) === (Side.Red as number);
+    const sign = red ? 1 : -1;
+    const base = taperedMaterial[type];
     const t = PST[type];
-    if (t) pst += sign * t[side === Side.Red ? s : mirrorSquare(s)];
+
+    for (let i = 0; i < n; i++) {
+      const s = pos.squareOf(code, i);
+      let value = base;
+      if (type === PieceType.Soldier) {
+        const r = (s / 9) | 0;
+        // Red advances toward rank 0, Black toward rank 9.
+        if (red ? r <= 4 : r >= 5) {
+          value += crossedBonus;
+          if (red ? r <= 2 : r >= 7) value += deepBonus;
+        }
+      }
+      material += sign * value;
+      if (t) pst += sign * t[red ? s : MIRROR[s]];
+    }
   }
 
-  const mobility = mobilityOf(pos, Side.Red) - mobilityOf(pos, Side.Black);
+  const mobility =
+    weightedMobility(pos, Side.Red, MOBILITY_WEIGHT) -
+    weightedMobility(pos, Side.Black, MOBILITY_WEIGHT);
   const safety = generalSafety(pos, Side.Red) - generalSafety(pos, Side.Black);
   const tempo = pos.side === Side.Red ? TEMPO : -TEMPO;
 
@@ -431,26 +469,11 @@ function phaseOf(pos: Position): number {
 }
 
 /**
- * Weighted pseudo-legal move count.
- *
- * Pseudo-legal, not legal: filtering through make/unmake here would roughly
- * triple the cost of an evaluation, and the difference is a handful of moves by
- * pinned pieces. The bias is symmetric and tiny, and it buys about 40% more
- * nodes per second, which is worth far more than the accuracy.
+ * Mobility is measured on *pseudo-legal* moves, not legal ones. Filtering
+ * through make/unmake here would roughly triple the cost of an evaluation, and
+ * the difference is a handful of moves by pinned pieces. The bias is symmetric
+ * and tiny; the speed is not.
  */
-function mobilityOf(pos: Position, side: Side): number {
-  const saved = pos.side;
-  pos.side = side;
-  generateMoves(pos, mobilityScratch);
-  pos.side = saved;
-
-  let total = 0;
-  for (let i = 0; i < mobilityScratch.count; i++) {
-    const from = mobilityScratch.moves[i] & 0x7f;
-    total += MOBILITY_WEIGHT[pos.board[from] & 7];
-  }
-  return total;
-}
 
 /** Negative numbers only: how exposed `side`'s general is. */
 function generalSafety(pos: Position, side: Side): number {

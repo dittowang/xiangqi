@@ -95,7 +95,7 @@ export const fallbackUnit: UnitBuilder = (ctx) => {
     mergeInto(
       g,
       cloth.sleeves(
-        { r0: m.upperArmR * 1.9, r1: m.upperArmR * 4.4, folds: 7, length: 0.92 },
+        { r0: m.upperArmR * 1.9, r1: m.upperArmR * 3.4, folds: 7, length: 0.92 },
         { shoulder: v3(B.upperArmL), elbow: v3(B.foreArmL), wrist: v3(B.handL) },
         { shoulder: v3(B.upperArmR), elbow: v3(B.foreArmR), wrist: v3(B.handR) },
       ),
@@ -236,7 +236,7 @@ function buildMount(ctx: UnitBuildContext, g: PartGroup): MountResult {
       // rim. It lifts his head clear of every other piece on the board, which
       // is the point — the check pulse under him must never be occluded.
       const top = h * 0.24;
-      const r = h * 0.42;
+      const r = h * 0.5;
       const dais = prim.hardLathe(
         [
           [r * 1.16, 0],
@@ -265,8 +265,8 @@ function buildMount(ctx: UnitBuildContext, g: PartGroup): MountResult {
     }
 
     case 'horse': {
-      const withers = h * 1.11;
-      const length = h * 1.5;
+      const withers = h * 1.0;
+      const length = h * 1.72;
       const horse = mountParts.horse({
         withers,
         length,
@@ -293,8 +293,8 @@ function buildMount(ctx: UnitBuildContext, g: PartGroup): MountResult {
     }
 
     case 'elephant': {
-      const shoulder = h * 1.78;
-      const length = h * 2.12;
+      const shoulder = h * 1.62;
+      const length = h * 1.85;
       const eleph = mountParts.elephant({
         shoulder,
         length,
@@ -332,9 +332,9 @@ function buildMount(ctx: UnitBuildContext, g: PartGroup): MountResult {
         carWidth: h * 0.92,
         carDepth: h * 0.66,
         railHeight: h * 0.5,
-        poleLength: h * 1.5,
-        canopyRadius: h * 0.82,
-        canopyHeight: h * 1.42,
+        poleLength: h * 1.78,
+        canopyRadius: h * 0.9,
+        canopyHeight: h * 1.12,
         spokes: 26,
         timberPigment: 'leather',
         lacquerPigment: 'lacquer',
@@ -348,12 +348,12 @@ function buildMount(ctx: UnitBuildContext, g: PartGroup): MountResult {
 
     case 'trebuchet': {
       const treb = vehicle.trebuchet({
-        pivotHeight: h * 0.88,
-        armLength: h * 1.16,
-        buttLength: h * 0.44,
-        spread: h * 0.5,
-        sledLength: h * 1.42,
-        armAngle: 0.66,
+        pivotHeight: h * 0.72,
+        armLength: h * 1.3,
+        buttLength: h * 0.46,
+        spread: h * 0.56,
+        sledLength: h * 1.95,
+        armAngle: 0.48,
         timberPigment: 'leather',
         metalPigment: 'metal',
         clothPigment: 'accent',
@@ -535,35 +535,42 @@ function armFigure(
   const gripR = g.points.gripR ?? B.handR;
   const gripL = g.points.gripL ?? B.handL;
 
-  putWeapon(g, d.primary, v3(gripR), 'handR', h, m);
+  // The primary weapon publishes `haftTip`: the animator drives a two-handed
+  // grip and the capture beats' contact point from it, so a unit that carries a
+  // polearm and does not publish the tip cannot be animated striking with it.
+  const tipR = putWeapon(g, d.primary, v3(gripR), 'handR', h, m);
+  if (tipR) g.attach.push({ name: 'haftTip', bone: 'handR', position: [tipR.x, tipR.y, tipR.z] });
   putWeapon(g, d.offhand, v3(gripL), 'handL', h, m);
 
   if (d.hip !== 'none') {
+    const at: V3 = [
+      B.pelvis.x - m.hipWidth * 0.62,
+      B.pelvis.y + m.torsoLen * 0.02,
+      B.pelvis.z + m.hipDepth * 0.1,
+    ];
     mergeInto(
       g,
       weapons.scabbard({
-        grip: [
-          B.pelvis.x - m.hipWidth * 0.62,
-          B.pelvis.y + m.torsoLen * 0.02,
-          B.pelvis.z + m.hipDepth * 0.1,
-        ],
+        grip: at,
         rot: [0.24, 0, 0.34],
         bone: 'pelvis',
         length: h * (d.hip === 'sword' ? 0.34 : 0.28),
         width: h * 0.035,
       }),
     );
+    g.attach.push({ name: 'hip', bone: 'pelvis', position: at });
   }
 
   if (d.back === 'quiver') {
+    const at: V3 = [
+      B.spine02.x + m.chestWidth * 0.34,
+      B.spine02.y - m.torsoLen * 0.34,
+      B.spine02.z + m.chestDepth * 0.62,
+    ];
     mergeInto(
       g,
       weapons.quiver({
-        grip: [
-          B.spine02.x + m.chestWidth * 0.34,
-          B.spine02.y - m.torsoLen * 0.34,
-          B.spine02.z + m.chestDepth * 0.62,
-        ],
+        grip: at,
         rot: [-0.3, 0, -0.26],
         bone: 'spine02',
         length: h * 0.3,
@@ -571,18 +578,21 @@ function armFigure(
         arrows: 6,
       }),
     );
+    g.attach.push({ name: 'back', bone: 'spine02', position: at });
   }
 
   if (d.back === 'standard') {
+    const at: V3 = [
+      B.spine02.x - m.chestWidth * 0.42,
+      B.spine02.y - m.torsoLen * 0.2,
+      B.spine02.z + m.chestDepth * 0.7,
+    ];
+    g.attach.push({ name: 'back', bone: 'spine02', position: at });
     mergeInto(
       g,
       standardParts.standard({
         shape: ctx.side === 0 ? 'hanSquare' : 'chuSwallowtail',
-        base: [
-          B.spine02.x - m.chestWidth * 0.42,
-          B.spine02.y - m.torsoLen * 0.2,
-          B.spine02.z + m.chestDepth * 0.7,
-        ],
+        base: at,
         poleLength: h * 0.72,
         poleR: h * 0.014,
         bannerHeight: h * 0.3,
@@ -600,6 +610,17 @@ function armFigure(
   }
 }
 
+/**
+ * Where along a polearm the hand closes, so the butt lands just above the
+ * board rather than through it. A haft driven underground is invisible in a
+ * viewport and unmissable in a shadow pass, and it inflates the measured
+ * silhouette height of every unit that carries one.
+ */
+function groundedGrip(grip: V3, length: number, preferred: number): number {
+  const maxBelow = Math.max(0.05 * length, grip[1] - length * 0.02);
+  return Math.min(preferred, maxBelow / length);
+}
+
 function putWeapon(
   g: PartGroup,
   kind: WeaponKind,
@@ -607,47 +628,81 @@ function putWeapon(
   bone: BoneName,
   h: number,
   m: RigMetrics,
-): void {
+): THREE.Vector3 | null {
   const metal: 'metal' = 'metal';
+  const before = g.points.tip;
   switch (kind) {
     case 'none':
     case 'reins':
-      return;
+      return null;
     case 'ge':
-      mergeInto(g, weapons.ge({ grip, bone, length: h * 1.24, gripAt: 0.42, shaftR: h * 0.014, metalPigment: metal }));
-      return;
+      // Gripped high on the haft: a 戈 taller than its bearer would make the
+      // conscript out-top the advisor, and height is a separation axis.
+      mergeInto(
+        g,
+        weapons.ge({
+          grip,
+          bone,
+          length: h * 1.12,
+          gripAt: groundedGrip(grip, h * 1.12, 0.45),
+          shaftR: h * 0.014,
+          metalPigment: metal,
+        }),
+      );
+      return tipOf(g, before);
     case 'ji':
-      mergeInto(g, weapons.ji({ grip, bone, length: h * 1.32, gripAt: 0.42, shaftR: h * 0.014, metalPigment: metal }));
-      return;
+      mergeInto(
+        g,
+        weapons.ji({
+          grip,
+          bone,
+          length: h * 1.32,
+          gripAt: groundedGrip(grip, h * 1.32, 0.42),
+          shaftR: h * 0.014,
+          metalPigment: metal,
+        }),
+      );
+      return tipOf(g, before);
     case 'spear':
       mergeInto(
         g,
         weapons.spear({
           grip,
           bone,
-          rot: [0.42, 0, 0],
+          rot: [0.92, 0, 0],
           length: h * 1.9,
           gripAt: 0.36,
           shaftR: h * 0.017,
           metalPigment: metal,
         }),
       );
-      return;
+      return tipOf(g, before);
     case 'sword':
       mergeInto(g, weapons.sword({ grip, bone, length: h * 0.46, halfWidth: h * 0.021, metalPigment: metal }));
-      return;
+      return tipOf(g, before);
     case 'dao':
       mergeInto(g, weapons.dao({ grip, bone, length: h * 0.4, halfWidth: h * 0.019, metalPigment: metal }));
-      return;
+      return tipOf(g, before);
     case 'bow':
       mergeInto(g, weapons.bow({ grip, bone, length: h * 0.86, depth: h * 0.15, metalPigment: metal }));
-      return;
+      return tipOf(g, before);
     case 'shield':
       mergeInto(g, weapons.shield({ grip, bone, height: h * 0.52, width: h * 0.28, metalPigment: metal }));
-      return;
+      return tipOf(g, before);
     case 'axe':
-      mergeInto(g, weapons.axe({ grip, bone, length: h * 0.94, headWidth: h * 0.2, shaftR: h * 0.016, metalPigment: metal }));
-      return;
+      mergeInto(
+        g,
+        weapons.axe({
+          grip,
+          bone,
+          length: h * 0.94,
+          gripAt: groundedGrip(grip, h * 0.94, 0.42),
+          headWidth: h * 0.2,
+          shaftR: h * 0.016,
+          metalPigment: metal,
+        }),
+      );
+      return tipOf(g, before);
     case 'goad':
       // The mahout's hook: a short axe with a small head.
       mergeInto(
@@ -662,12 +717,27 @@ function putWeapon(
           metalPigment: metal,
         }),
       );
-      return;
+      return tipOf(g, before);
     case 'baton':
-      mergeInto(g, weapons.baton({ grip, bone, length: h * 1.05, gripAt: 0.34, shaftR: h * 0.018, metalPigment: metal }));
-      return;
+      mergeInto(
+        g,
+        weapons.baton({
+          grip,
+          bone,
+          length: h * 1.05,
+          gripAt: groundedGrip(grip, h * 1.05, 0.34),
+          shaftR: h * 0.018,
+          metalPigment: metal,
+        }),
+      );
+      return tipOf(g, before);
   }
-  void m;
+}
+
+/** The `tip` a weapon just published, if it published a new one. */
+function tipOf(g: PartGroup, before: THREE.Vector3 | undefined): THREE.Vector3 | null {
+  const now = g.points.tip;
+  return now && now !== before ? now : null;
 }
 
 // ---------------------------------------------------------------------------

@@ -9,11 +9,17 @@
  * three *orthogonal* separation axes, so that failing to read one still leaves
  * two working:
  *
- *   1. HEIGHT      — total silhouette height in world units. Monotone with
- *                    piece value: 1.16 for a conscript, 2.46 for an elephant.
- *   2. ASPECT      — width ÷ height of the profile silhouette, plus a coarse
- *                    `widthClass`. Foot units are vertical strokes, the vehicle
- *                    and beast units are horizontal ones.
+ *   1. HEIGHT      — total silhouette height in world units, *including* crest
+ *                    and mount and anything the figure carries. Monotone with
+ *                    piece value: 1.19 for a conscript, 2.76 for an elephant.
+ *   2. ASPECT      — the larger horizontal extent ÷ height. Foot units are
+ *                    vertical strokes (0.44 .. 0.62), the beast and vehicle
+ *                    units horizontal ones (1.00 .. 1.70). `widthClass` is a
+ *                    coarse band on the *absolute* footprint in world units,
+ *                    not on the ratio: narrow < 0.9, medium 0.9 .. 1.6,
+ *                    wide > 1.6. Absolute width is what decides whether a piece
+ *                    crowds its neighbours on the board, so that is what the
+ *                    class tracks.
  *   3. CROWN       — the headgear tag. Every unit in an army wears a different
  *                    thing on its head, and the difference survives being
  *                    reduced to a black shape on white.
@@ -22,6 +28,13 @@
  * never share both aspect class and crown tag.** Here every crown tag is unique
  * within an army, so the rule holds with margin; `verify.ts` asserts it rather
  * than trusting this comment.
+ *
+ * The `designHeight`/`designAspect` numbers below are targets, not predictions:
+ * they were set from what the current builders actually measure (run
+ * `npx tsx src/characters/verify.ts --units` for the measured table), and the
+ * factory warns when a build drifts more than 30% from them. A unit author who
+ * changes a figure's proportions enough to move these numbers must move the
+ * numbers too — silently drifting is how a silhouette table becomes decorative.
  *
  * Reference: Han pictorial stone relief (漢畫像石) for figures that read from
  * outline alone; Dunhuang Mogao murals for proportion and drapery; Han and Chu
@@ -33,11 +46,11 @@
  * *human figure's* standing height in rig units, before scale. For a foot unit
  * they multiply out to the figure's world height directly. For a mounted unit
  * the mount carries the mass, so `height` is deliberately small — a rider at
- * scale 1.22 with height 0.97 stands 1.18 world units tall, only slightly more
- * than a 1.05 conscript, while the horse underneath him is authored in the same
- * rig units and lifts the whole silhouette to 2.02. Getting this backwards
- * produces a cavalryman twice the size of a footman, which is what a naive
- * reading of the scale range would give you.
+ * scale 1.22 with height 0.97 stands about 1.18 world units tall, only slightly
+ * more than the conscript's 1.01, while the horse underneath him is authored in
+ * the same rig units and lifts the whole silhouette to 2.03. Getting this
+ * backwards produces a cavalryman twice the size of a footman, which is what a
+ * naive reading of the scale range would give you.
  */
 
 import type { MountKind, UnitMeta, UnitProportions } from '@core/contracts.ts';
@@ -170,8 +183,8 @@ const BASE: Record<UnitKey, BaseSpec> = {
       robe: 0.22,
       cloak: false,
     },
-    designHeight: 1.16,
-    designAspect: 0.42,
+    designHeight: 1.19,
+    designAspect: 0.44,
     widthClass: 'narrow',
     budget: 9000,
     dispersal: null,
@@ -208,8 +221,8 @@ const BASE: Record<UnitKey, BaseSpec> = {
       robe: 0.92,
       cloak: false,
     },
-    designHeight: 1.36,
-    designAspect: 0.52,
+    designHeight: 1.27,
+    designAspect: 0.60,
     widthClass: 'narrow',
     budget: 11000,
     dispersal: null,
@@ -247,8 +260,8 @@ const BASE: Record<UnitKey, BaseSpec> = {
       robe: 0.6,
       cloak: true,
     },
-    designHeight: 1.92,
-    designAspect: 0.66,
+    designHeight: 2.36,
+    designAspect: 0.62,
     widthClass: 'medium',
     budget: 16000,
     dispersal: 'gold', // authority leaving the board, not just an army colour
@@ -286,8 +299,8 @@ const BASE: Record<UnitKey, BaseSpec> = {
       robe: 0.34,
       cloak: false,
     },
-    designHeight: 1.58,
-    designAspect: 1.62,
+    designHeight: 1.52,
+    designAspect: 1.70,
     widthClass: 'wide',
     budget: 24000,
     dispersal: null,
@@ -323,8 +336,8 @@ const BASE: Record<UnitKey, BaseSpec> = {
       robe: 0.3,
       cloak: false,
     },
-    designHeight: 2.02,
-    designAspect: 1.22,
+    designHeight: 2.03,
+    designAspect: 1.54,
     widthClass: 'wide',
     budget: 20000,
     dispersal: null,
@@ -361,8 +374,8 @@ const BASE: Record<UnitKey, BaseSpec> = {
       robe: 0.4,
       cloak: false,
     },
-    designHeight: 2.46,
-    designAspect: 0.95,
+    designHeight: 2.76,
+    designAspect: 1.00,
     widthClass: 'wide',
     budget: 26000,
     dispersal: null,
@@ -400,8 +413,8 @@ const BASE: Record<UnitKey, BaseSpec> = {
       robe: 0.36,
       cloak: false,
     },
-    designHeight: 2.18,
-    designAspect: 1.38,
+    designHeight: 2.51,
+    designAspect: 1.41,
     widthClass: 'wide',
     budget: 32000,
     dispersal: null,

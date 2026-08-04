@@ -83,11 +83,21 @@ export function worldToSquare(x: number, z: number, tolerance = 0.62): number {
 }
 
 /**
- * Which way a unit of `side` faces when idle: Red looks toward -Z (up the
- * board at the enemy), Black looks toward +Z. Returned as a Y rotation.
+ * Which way a unit of `side` faces when idle, as a Y rotation applied to a
+ * unit root.
+ *
+ * Units are authored facing -Z (see contracts.ts). Red's back rank is r = 9 at
+ * +Z, nearest the default camera, and Red attacks up the board toward Black at
+ * -Z — so Red needs no rotation at all, and Black turns to face back down the
+ * board at +Z.
+ *
+ * This returned Red and Black the wrong way round until the character author
+ * measured it against the authoring convention. Both facts have to be read
+ * together to see the error, which is exactly why they are now written down
+ * here next to each other.
  */
 export function facingY(side: Side): number {
-  return side === Side.Red ? Math.PI : 0;
+  return side === Side.Red ? 0 : Math.PI;
 }
 
 // ---------------------------------------------------------------------------

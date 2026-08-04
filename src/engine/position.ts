@@ -170,30 +170,6 @@ export class Position {
     this.keyStackHi[0] = this.keyHi;
   }
 
-  /**
-   * Copy board state *and* the repetition-relevant history. The worker needs
-   * this so a perpetual-check judgement made mid-search agrees with the one the
-   * main thread would make.
-   */
-  copyWithHistory(other: Position): void {
-    this.copyFrom(other);
-    const n = other.ply;
-    for (let i = 0; i < n; i++) {
-      this.hMove[i] = other.hMove[i];
-      this.hCaptured[i] = other.hCaptured[i];
-      this.hHalfmove[i] = other.hHalfmove[i];
-      this.hKeyLo[i] = other.hKeyLo[i];
-      this.hKeyHi[i] = other.hKeyHi[i];
-      this.hCheckBefore[i] = other.hCheckBefore[i];
-      this.hCheckAfter[i] = other.hCheckAfter[i];
-      this.keyStackLo[i] = other.keyStackLo[i];
-      this.keyStackHi[i] = other.keyStackHi[i];
-    }
-    this.keyStackLo[n] = other.keyStackLo[n];
-    this.keyStackHi[n] = other.keyStackHi[n];
-    this.ply = n;
-  }
-
   // =======================================================================
   // Piece bookkeeping
   // =======================================================================
