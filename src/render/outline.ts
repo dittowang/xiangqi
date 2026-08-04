@@ -43,7 +43,7 @@
 import * as THREE from 'three';
 import type { GongbiMaterials, MaterialRequest } from '@core/contracts.ts';
 import { OUTLINES, type OutlineProfileName } from '@core/palette.ts';
-import { gongbiInfo } from './gongbi.ts';
+import { gongbiInfo, MIN_STROKE_CSS_PX } from './gongbi.ts';
 
 // ---------------------------------------------------------------------------
 // Tuning
@@ -326,6 +326,11 @@ export function removeOutlines(root: THREE.Object3D): void {
 export function hullSuppressRadiusPx(
   viewportHeightPx: number,
   profile: OutlineProfileName = 'contour',
+  dpr = 1,
 ): number {
-  return (OUTLINES[profile].widthPx * viewportHeightPx) / 1080 + 1;
+  // Identical expression to the hull vertex program, floor included. If the two
+  // ever disagree the Sobel yields over the wrong width and the seam smear the
+  // whole suppression system exists to prevent comes back.
+  const scaled = (OUTLINES[profile].widthPx * viewportHeightPx) / 1080;
+  return Math.max(scaled, MIN_STROKE_CSS_PX * dpr) + 1;
 }

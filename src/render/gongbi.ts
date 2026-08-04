@@ -180,6 +180,34 @@ const TOOTH_VALUE = 0.13;
  */
 const PIGMENT_AGE = 0.12;
 
+/**
+ * How far into its own undertone band a fully shadowed surface is allowed to
+ * fall, as a fraction of that band's luminance. 1.0 pins shadow exactly at the
+ * undertone; below 1 leaves room for contact shadow to read as deeper without
+ * leaving the pigment.
+ */
+const SHADOW_FLOOR = 0.86;
+
+/**
+ * Fraction of the silk wash a fully LIT passage still receives. The ground is
+ * not a shadow effect — it is the material the picture is painted on, and it
+ * shows everywhere, just far more in the washes.
+ */
+const SILK_LIT_FLOOR = 0.34;
+
+/**
+ * N·L wrap. 1.0 is a raw clamped Lambert; 0.5 is full half-Lambert. Tuned
+ * against the measured band histogram — see the long note in the shade
+ * function. Runtime-tunable through `pipeline.tune({ ndlWrap })`.
+ */
+const NDL_WRAP = 0.62;
+
+/**
+ * Minimum stroke width in CSS pixels, converted to device pixels every frame.
+ * Below about this the contour stops reading as a drawn line at all.
+ */
+export const MIN_STROKE_CSS_PX = 1.35;
+
 const GRANULATION: Record<MaterialClass, number> = {
   // Lacquer and gold are laid wet and burnished: almost no tooth shows.
   lacquer: 0.030,
@@ -264,6 +292,8 @@ uniform int uDebugMode;
 `;
 
 const GLSL_LIGHT_PARS = /* glsl */ `
+uniform float uNdlWrap;
+uniform float uSilkLitFloor;
 uniform vec3 uKeyDir;
 uniform vec3 uKeyColour;
 uniform float uKeyIntensity;
@@ -403,7 +433,27 @@ vec3 xqGongbiShade(
   vec3 N, vec3 V, vec3 worldPos, float viewDepth
 ) {
   // --- where on the ramp -------------------------------------------------
-  float ndlRaw = max( dot( N, uKeyDir ), 0.0 );
+  //
+  // WRAPPED N·L, and the reason is measured, not stylistic.
+  //
+  // With a raw clamped Lambert term the distribution is BIMODAL: a surface is
+  // either roughly facing the single key (dot ~= 0.75, because the key sits at
+  // 49 degrees and most surfaces in this scene are up-facing or vertical) or it
+  // is turned away and clamps to 0. Counting band occupancy off the rampBands
+  // debug view across a real frame gave band0 17.3%, band1 4.2%, band2 78.4%,
+  // band3 0.2% — 95.7% of the frame in two bands. A four-band ramp using two
+  // bands is a two-tone shader, and it is why every per-class RampSpec setting
+  // looked ignored: 'accent' only touches the top band, and the top band was
+  // never selected.
+  //
+  // The wrap remaps dot from [-1,1] into [1-2w, 1] so a form turning away from
+  // the light passes through the mid bands instead of falling off a cliff into
+  // band 0. This is the one place the ramp's input axis is allowed to be
+  // rescaled, it is a named uniform rather than a buried constant, and the
+  // histogram it produces is measured — see the note in ramp.glsl.ts about why
+  // silently remapping this axis would otherwise be unforgivable.
+  float ndlDot = dot( N, uKeyDir );
+  float ndlRaw = clamp( ndlDot * uNdlWrap + ( 1.0 - uNdlWrap ), 0.0, 1.0 );
   float shadow = xqCsmShadow( worldPos, N, viewDepth, uCsmBlend );
 
   float ndl = ndlRaw * mix( uShadowDepth, 1.0, shadow );
@@ -415,7 +465,19 @@ vec3 xqGongbiShade(
     return xqCsmDebugTint( viewDepth ) * mix( 0.30, 1.0, shadow );
   }
 
-  vec3 col = xqRampRow( rowV, ndl );
+  // The band edge resolved against the PIXEL GRID, not left one texel wide.
+  //
+  // A NEAREST fetch puts the whole transition inside a single texel of N·L,
+  // which on screen is a one-pixel step that crawls and shimmers the moment the
+  // camera moves — 'edgeSoftness' is authored in N·L units and has no idea how
+  // many pixels that is. Averaging three taps across one pixel's worth of N·L
+  // makes the edge exactly one pixel wide wherever it lands, at any distance
+  // and any angle, while leaving a band's interior bit-identical: on a flat
+  // field fwidth is zero and all three taps agree.
+  float ndlW = fwidth( ndl ) * 0.5;
+  vec3 col = ( xqRampRow( rowV, ndl - ndlW )
+             + xqRampRow( rowV, ndl )
+             + xqRampRow( rowV, ndl + ndlW ) ) / 3.0;
   float band = xqRampBandRow( rowV, ndl, steps );  // 0 = deepest, 1 = top band
   float shade = 1.0 - band;
 
@@ -446,11 +508,30 @@ vec3 xqGongbiShade(
   col = xqWakeColour( col, wake, rim, dot( N, V ), ndlRaw,
                       ${RIM_EDGE.toFixed(3)}, ${RIM_GATE.toFixed(3)} );
 
-  // --- 罩染: the ground shows through the shadow washes -------------------
-  col = xqSilkWashAt( col, gl_FragCoord.xy, shade, 1.0 - noSilk, silkTint, silkWash );
+  // --- 罩染: the ground shows through --------------------------------------
+  //
+  // Driving the wash by 'shade' alone meant a LIT surface received none at all,
+  // and the board is lit almost everywhere: a 30-pixel scan across empty silk
+  // measured #D19F32 +/- 1, i.e. the ground was mathematically absent. But the
+  // silk is the ground the whole image is painted on — it is not a shadow
+  // effect, it is what the picture is ON. So lit passages keep a floor of it
+  // and the shadows still take the full wash.
+  col = xqSilkWashAt( col, gl_FragCoord.xy, mix( uSilkLitFloor, 1.0, shade ),
+                      1.0 - noSilk, silkTint, silkWash );
 
   // --- check pulse / impact flash only -----------------------------------
   col += glowColour * glow;
+
+  // A gongbi shadow is a 罩染 wash toward the pigment's OWN darkest band, never
+  // a multiply toward black. The key/fill/bounce tints are multiplicative, so
+  // stacked in deep shadow they were driving the board below its own undertone:
+  // lit silk measured #D19F32 (gamboge band 2) against shadowed #46310F, which
+  // is darker than gamboge band 0 (#523810) and lands on a different pigment
+  // entirely. Flooring on luminance rather than per-channel keeps the hue.
+  vec3 undertone = xqRampRow( rowV, 0.0 );
+  float floorY = xqLuma( undertone ) * ${SHADOW_FLOOR.toFixed(3)};
+  float y = xqLuma( col );
+  if ( y < floorY ) col *= floorY / max( y, 1e-4 );
 
   col *= uExposure;
   return mix( col, vec3( 0.0 ), uSilhouette );
@@ -606,6 +687,7 @@ const GLSL_PREPASS_HULL_VERT = /* glsl */ `
 #endif
 
 uniform vec2 uViewportPx;
+uniform float uMinStrokePx;
 
 attribute vec3 aSmoothNormal;
 
@@ -640,7 +722,7 @@ void main() {
   #else
     float authoredPx = uOutlineWidthPx;
   #endif
-  float widthPx = authoredPx * uViewportPx.y / 1080.0;
+  float widthPx = max( authoredPx * uViewportPx.y / 1080.0, uMinStrokePx );
   float offset = 2.0 * widthPx * depth / ( projectionMatrix[1][1] * uViewportPx.y );
   mvPosition.xyz += viewNormal * offset;
 
@@ -813,6 +895,16 @@ export class GongbiMaterialLibrary implements GongbiMaterials {
   /** Screen-aligned 罩染 wash parameters; see silk.ts. */
   readonly silk: SilkWash;
 
+  /**
+   * The stroke-width floor, shared by every hull material and by nothing else.
+   *
+   * Deliberately NOT in `shared`: that record is spread wholesale into every
+   * surface material, and a uniform no surface shader declares is dead weight
+   * uploaded per draw. selfcheck.ts fails on exactly that, which is how this
+   * ended up scoped correctly rather than conveniently.
+   */
+  readonly strokeFloor: THREE.IUniform = { value: MIN_STROKE_CSS_PX };
+
   constructor(opts: GongbiOptions = {}) {
     this.rampAtlas = buildRampAtlas();
     this.paramTable = buildParamTable({
@@ -844,6 +936,8 @@ export class GongbiMaterialLibrary implements GongbiMaterials {
       uBounceColour: { value: linearColour(mood.bounceColour) },
       uExposure: { value: 1 },
       uShadowDepth: { value: SHADOW_DEPTH },
+      uNdlWrap: { value: NDL_WRAP },
+      uSilkLitFloor: { value: SILK_LIT_FLOOR },
       uCsmBlend: { value: CASCADE_BLEND },
 
       uCsmMap0: { value: null },
@@ -964,6 +1058,7 @@ export class GongbiMaterialLibrary implements GongbiMaterials {
       // uniforms uploaded per draw that no shader stage declares.
       m = this.buildPrepass(GLSL_PREPASS_HULL_VERT, 1, {}, key, {
         uViewportPx: this.shared.uViewportPx,
+        uMinStrokePx: this.strokeFloor,
         uOutlineWidthPx: widthUniform,
       });
       m.side = THREE.BackSide;
@@ -980,6 +1075,7 @@ export class GongbiMaterialLibrary implements GongbiMaterials {
     const spec = RAMPS[n.cls];
     const uniforms: Record<string, THREE.IUniform> = {
       uViewportPx: this.shared.uViewportPx,
+      uMinStrokePx: this.strokeFloor,
       uSilhouette: this.shared.uSilhouette,
       uRampAtlas: this.shared.uRampAtlas,
       uRampRow: { value: rampRowV(n.cls, n.pigment) },
@@ -1106,6 +1202,7 @@ export class GongbiMaterialLibrary implements GongbiMaterials {
 
     const uniforms: Record<string, THREE.IUniform> = {
       uViewportPx: this.shared.uViewportPx,
+      uMinStrokePx: this.strokeFloor,
       uSilhouette: this.shared.uSilhouette,
       uRampAtlas: this.shared.uRampAtlas,
       uParamTable: { value: this.paramTable },
@@ -1154,6 +1251,7 @@ export class GongbiMaterialLibrary implements GongbiMaterials {
         uniforms: {
           uHullMask: { value: 1 },
           uViewportPx: this.shared.uViewportPx,
+          uMinStrokePx: this.strokeFloor,
           uParamTable: { value: this.paramTable },
         },
         defines: { USE_ATLAS_MATERIAL: '1' },
@@ -1292,6 +1390,9 @@ export class GongbiMaterialLibrary implements GongbiMaterials {
     // Screen-aligned patterns are authored in CSS pixels and converted here, so
     // they keep a constant physical size when the governor moves the ratio.
     this.silk.update(size.dpr);
+    // The stroke floor is a physical width on the display, so it converts with
+    // the pixel ratio exactly as the silk weave and the paper grain do.
+    this.strokeFloor.value = MIN_STROKE_CSS_PX * size.dpr;
 
     camera.updateMatrixWorld();
     (this.shared.uViewToWorld.value as THREE.Matrix3).setFromMatrix4(camera.matrixWorld);

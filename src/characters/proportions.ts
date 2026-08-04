@@ -128,6 +128,28 @@ export type WeaponKind =
   | 'reins'
   | 'goad'; // the mahout's hook
 
+/**
+ * Vertical taper: the silhouette's width low down divided by its width high up,
+ * measured at 20-35% and 65-80% of total height.
+ *
+ * This is the fourth separation axis, added after a stills critic could not tell
+ * a 士 advisor from a 將 general in a full-board render. The two shared an
+ * aspect ratio (0.60 against 0.61) and differed only in size, and size alone is
+ * not a cue — a player has no reference for how big a piece "should" be, and
+ * both were the same conical red robe. Height and aspect could not fix it,
+ * because a scaled copy has the same value on both.
+ *
+ * Taper can. It is orthogonal to aspect by construction: aspect is a *box*
+ * ratio and taper is a *shape* ratio, so two figures may have identical bounding
+ * boxes and opposite tapers.
+ *
+ *   > 1.6  a cone — wide skirt, narrow shoulders. The general, and only him.
+ *   ~ 1.0  a column — a conscript, a crew figure.
+ *   < 0.85 top-heavy — wide shoulders over a narrow hem. Court sleeves held
+ *          clear of the body do this, and nothing else in the cast does.
+ */
+export type TaperClass = number;
+
 export interface CrownSpec {
   /** Reported in `UnitMeta.silhouette.crown`. Unique within an army. */
   tag: string;
@@ -158,6 +180,12 @@ export interface UnitDesign {
   robe: number;
   /** Wears a cloak. Adds a large, soft counter-shape to a hard armoured figure. */
   cloak: boolean;
+  /**
+   * Target vertical taper — silhouette width low down ÷ width high up. See
+   * `TaperClass`. This is a contract, not a description: `verify.ts` measures
+   * the built figure and fails when it disagrees by more than 35%.
+   */
+  taper: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -215,6 +243,8 @@ const BASE: Record<UnitKey, BaseSpec> = {
       armour: 0.45,
       robe: 0.22,
       cloak: false,
+      // A column: the skirt is barely wider than the shoulders.
+      taper: 1.05,
     },
     designHeight: 0.63,
     designAspect: 0.48,
@@ -253,6 +283,12 @@ const BASE: Record<UnitKey, BaseSpec> = {
       armour: 0.0,
       robe: 0.92,
       cloak: false,
+      // TOP-HEAVY, and this is the whole point of the unit. The court sleeves
+      // are carried clear of the body and the robe falls straight beneath
+      // them, so the widest part of the figure is at the shoulders and the hem
+      // is narrow. That inverts the general's cone, which is the one
+      // silhouette this piece must never be confused with.
+      taper: 0.78,
     },
     designHeight: 0.69,
     designAspect: 0.60,
@@ -292,6 +328,8 @@ const BASE: Record<UnitKey, BaseSpec> = {
       armour: 1.0,
       robe: 0.6,
       cloak: true,
+      // A cone. Cloak and robe flare to a wide hem over the command platform.
+      taper: 1.9,
     },
     designHeight: 1.26,
     designAspect: 0.61,
@@ -331,6 +369,7 @@ const BASE: Record<UnitKey, BaseSpec> = {
       armour: 0.25,
       robe: 0.34,
       cloak: false,
+      taper: 1.1,
     },
     designHeight: 0.81,
     designAspect: 1.68,
@@ -368,6 +407,8 @@ const BASE: Record<UnitKey, BaseSpec> = {
       armour: 0.7,
       robe: 0.3,
       cloak: false,
+      // The barrel and legs are the wide part; the rider narrows it upward.
+      taper: 1.35,
     },
     designHeight: 0.97,
     designAspect: 1.38,
@@ -406,6 +447,7 @@ const BASE: Record<UnitKey, BaseSpec> = {
       armour: 0.15,
       robe: 0.4,
       cloak: false,
+      taper: 1.45,
     },
     designHeight: 1.05,
     designAspect: 1.12,
@@ -445,6 +487,9 @@ const BASE: Record<UnitKey, BaseSpec> = {
       armour: 0.55,
       robe: 0.36,
       cloak: false,
+      // Wheels below, parasol above: near enough square, and the canopy stops
+      // it going cone-shaped like the general.
+      taper: 0.95,
     },
     designHeight: 0.90,
     designAspect: 1.35,
@@ -524,6 +569,8 @@ export interface UnitSpec {
   silhouette: {
     height: number;
     aspect: number;
+    /** Width low down ÷ width high up. The fourth separation axis. */
+    taper: number;
     crown: string;
     widthClass: 'narrow' | 'medium' | 'wide';
   };
@@ -583,6 +630,7 @@ export function unitSpec(side: Side, type: PieceType, variant = 0): UnitSpec {
     silhouette: {
       height: b.designHeight,
       aspect: b.designAspect,
+      taper: b.design.taper,
       crown: b.design.crown.tag,
       widthClass: b.widthClass,
     },
@@ -622,12 +670,31 @@ export function unitDesign(key: UnitKey): UnitDesign {
 export function silhouetteConflicts(side: Side): string[] {
   const seen = new Map<string, UnitKey>();
   const bad: string[] = [];
+  const army = ARMY[side as 0 | 1].hanzi;
   for (const key of UNIT_KEYS_IN_VALUE_ORDER) {
     const b = BASE[key];
     const sig = `${b.widthClass}|${b.design.crown.tag}`;
     const prev = seen.get(sig);
-    if (prev) bad.push(`${prev} and ${key} share (${sig}) in ${ARMY[side as 0 | 1].hanzi}`);
+    if (prev) bad.push(`${prev} and ${key} share (${sig}) in ${army}`);
     seen.set(sig, key);
+  }
+  // A pair that matches on *both* box ratio and shape ratio is confusable
+  // whatever its size, because size is not a cue a player can use. This is the
+  // check that would have caught 士 against 將 before it reached a render.
+  for (let i = 0; i < UNIT_KEYS_IN_VALUE_ORDER.length; i++) {
+    for (let j = i + 1; j < UNIT_KEYS_IN_VALUE_ORDER.length; j++) {
+      const a = BASE[UNIT_KEYS_IN_VALUE_ORDER[i]];
+      const b = BASE[UNIT_KEYS_IN_VALUE_ORDER[j]];
+      const dAspect = Math.abs(a.designAspect - b.designAspect) / Math.max(a.designAspect, b.designAspect);
+      const dTaper = Math.abs(a.design.taper - b.design.taper) / Math.max(a.design.taper, b.design.taper);
+      if (dAspect < 0.15 && dTaper < 0.25) {
+        bad.push(
+          `${UNIT_KEYS_IN_VALUE_ORDER[i]} and ${UNIT_KEYS_IN_VALUE_ORDER[j]} in ${army} match on both ` +
+            `aspect (${(dAspect * 100).toFixed(0)}% apart) and taper (${(dTaper * 100).toFixed(0)}% apart) ` +
+            `— they differ only in size, and size is not a cue`,
+        );
+      }
+    }
   }
   return bad;
 }

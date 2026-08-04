@@ -574,6 +574,12 @@ const BASE_SIDE_PROFILE: readonly ProfilePoint[] = [
   { u: 0.3, y: 0.04, hard: true },
   { u: 0.316, y: 0.014, hard: true },
   { u: BASE_RADIUS, y: 0.0, hard: true },
+  // A skirt that turns under and meets the silk from below. Without it the
+  // plinth ends on a hard rim flush with the board and reads as a sticker laid
+  // on the silk; with it the last two millimetres face away from the key and
+  // lay down a line of contact shadow the way a solid object standing on a
+  // surface does.
+  { u: BASE_RADIUS + 0.012, y: -0.004, hard: false },
 ];
 
 const BASE_RADIAL_SEGMENTS = 48;
@@ -712,12 +718,14 @@ export class PieceBases {
     this.geometries.push(geo);
     this.triangles += (geo.getAttribute('position')?.count ?? 0) / 3;
 
-    // Han bases are ochre timber, Chu bases black lacquer: the same read as the
-    // armies, one rung quieter so the figures stay the subject.
-    const mat =
-      side === Side.Red
-        ? this.opts.materials.get({ cls: 'timber', pigment: ARMY[0].leather })
-        : this.opts.materials.get({ cls: 'lacquer', pigment: ARMY[1].lacquer });
+    // Both armies stand on the same plinth.
+    //
+    // These used to be ochre for Han and slate for Chu, which put a 1.8:1 value
+    // ratio between two pieces of furniture that carry no information — the
+    // figure on top is what says which army this is. Worse, each lens then
+    // matched the other army's palette closely enough to muddle the read at
+    // distance. One neutral 石色 plinth for all thirty-two.
+    const mat = this.opts.materials.get({ cls: 'stone', pigment: 'stone', variation: -0.1 });
 
     const capacity = Math.max(1, PIECE_COUNT[type]);
     const mesh = new THREE.InstancedMesh(geo, mat, capacity);

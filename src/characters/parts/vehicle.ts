@@ -45,6 +45,17 @@ export interface WheelOpts {
   /** Rim width along the axle. */
   width: number;
   spokes?: number;
+  /**
+   * Hard ceiling on the spoke count, applied after `spokes`.
+   *
+   * A Han chariot wheel really did carry twenty-six to thirty spokes, and at a
+   * hero framing they are worth every triangle. At *play* distance the wheel is
+   * about 55 px across, so thirty spokes is a 1.6 px pitch: it is grey mush
+   * standing still and it strobes the moment the chariot rolls. Sixteen is
+   * about the most that survives, and this clamp is the difference between a
+   * wheel and a moiré pattern. Raise it deliberately for a close-up.
+   */
+  maxSpokes?: number;
   /** Which side the hub's long boss points, +1 or -1 along X. */
   side?: number;
   timberPigment?: PartPigment;
@@ -65,7 +76,7 @@ export function spokedWheel(o: WheelOpts): PartGroup {
   const g = emptyGroup();
   const R = o.radius;
   const w = o.width;
-  const n = o.spokes ?? 26;
+  const n = Math.max(4, Math.min(o.spokes ?? 26, o.maxSpokes ?? 16));
   const side = o.side ?? 1;
   const timber = o.timberPigment ?? TIMBER;
 
@@ -114,13 +125,17 @@ export function spokedWheel(o: WheelOpts): PartGroup {
 
   // Spokes: one tapered prism, instanced around the hub. Authored along +Y at
   // the origin, then rotated into the wheel plane (the YZ plane).
+  // The spoke runs from inside the hub's outer radius (0.15R) to past the
+  // felloe's inner radius (0.86R), so both ends are buried rather than stopping
+  // in mid-air with a visible gap. Fewer spokes means each one carries more of
+  // the read, so they are also slightly heavier than a thirty-spoke wheel's.
   const spoke = prism({
-    rx0: R * 0.035,
-    rz0: R * 0.028,
-    rx1: R * 0.022,
-    rz1: R * 0.02,
-    y0: R * 0.13,
-    y1: R * 0.9,
+    rx0: R * 0.04,
+    rz0: R * 0.032,
+    rx1: R * 0.026,
+    rz1: R * 0.024,
+    y0: R * 0.1,
+    y1: R * 0.93,
     sides: 5,
     squareness: 0.4,
     name: 'spoke',

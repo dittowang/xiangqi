@@ -88,6 +88,22 @@ export const GLSL_OUTLINE_VERT_PARS = /* glsl */ `
 #endif
 /** Device-pixel viewport, shared with every other material. */
 uniform vec2 uViewportPx;
+/**
+ * Floor on the stroke width in DEVICE pixels.
+ *
+ * OutlineProfile widths are authored against a 1080-CSS-px-tall viewport and
+ * scaled by viewportHeight/1080 so the drawing stays composed at any window
+ * size. That is right for composition and wrong for legibility: at a 600-px
+ * viewport the 2.35 px contour becomes 1.31 device pixels, which after
+ * antialiasing is a faint tint rather than a line. Every review capture so far
+ * has been 600-700 px tall, which is why the line work read as absent while
+ * being present and correct — forcing the width to 18 made every contour
+ * appear immediately.
+ *
+ * A drawn line has a minimum: a pen nib does not get thinner than its nib. This
+ * is that nib.
+ */
+uniform float uMinStrokePx;
 `;
 
 export const GLSL_OUTLINE_FRAG_PARS = /* glsl */ `
@@ -166,8 +182,9 @@ void main() {
   // OutlineProfile widths are authored against a 1080-CSS-px-tall viewport and
   // scale with the viewport so the *drawing* stays composed at any window size.
   // Working in device pixels, the dpr cancels: cssW * (Hcss/1080) * dpr
-  // == cssW * Hdevice / 1080.
-  float widthPx = authoredPx * uViewportPx.y / 1080.0;
+  // == cssW * Hdevice / 1080. Floored so the stroke never falls below the width
+  // at which a line stops being a line — see uMinStrokePx.
+  float widthPx = max( authoredPx * uViewportPx.y / 1080.0, uMinStrokePx );
   float offset = 2.0 * widthPx * depth / ( projectionMatrix[1][1] * uViewportPx.y );
 
   mvPosition.xyz += viewNormal * offset;

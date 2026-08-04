@@ -52,14 +52,22 @@ export const QUALITY: Record<QualityTier, QualitySettings> = {
     particleBudget: 1100,
     msaa: 0,
   },
-  // The floor still keeps outlines and the silk wash: they ARE the art
-  // direction. Resolution and shadow fidelity go first, line work goes last.
+  // The floor still keeps outlines, the silk wash AND the Sobel interior lines:
+  // they ARE the art direction. Resolution and shadow fidelity go first; line
+  // work goes last, and that has to include Sobel.
+  //
+  // This shipped as `sobel: false`, which contradicted the comment directly
+  // above it and had a consequence nobody noticed for a long time: the capture
+  // harness runs on SwiftShader, `probe()` maps SwiftShader to `low`, and so
+  // EVERY frame reviewed by every critic was captured with half the line work
+  // switched off. A quality tier that silently removes the thing being judged is
+  // worse than a slow one.
   low: {
     tier: 'low',
     maxPixelRatio: 1.0,
     shadowMapSize: 1024,
     cascades: 1,
-    sobel: false,
+    sobel: true,
     silkWash: true,
     outlines: true,
     particleBudget: 600,

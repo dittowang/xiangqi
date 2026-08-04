@@ -30,7 +30,8 @@ import { silhouetteConflicts, unitSpec, UNIT_KEYS_IN_VALUE_ORDER } from './propo
 import { buildRig } from './rig.ts';
 import { bindSkin, measureJointCollapse, skinStats } from './skinning.ts';
 import { assertFinite, triangleCount } from './parts/prim.ts';
-import { groupTriangles, type Part, type PartGroup } from './parts/types.ts';
+import { groupTriangles, resolvePigment, type Part, type PartGroup } from './parts/types.ts';
+import { PIGMENT_NAMES, RAMPS } from '@core/palette.ts';
 import * as body from './parts/body.ts';
 import * as cloth from './parts/cloth.ts';
 import * as helmetParts from './parts/helmet.ts';
@@ -227,6 +228,70 @@ export function auditGeometry(g: THREE.BufferGeometry): GeometryAudit {
     volume,
     outwardFrac: tris > 0 ? outward / tris : 1,
   };
+}
+
+/**
+ * Vertical taper of a built figure: the widest horizontal extent in the lower
+ * band (20-35% of height) divided by the widest in the upper band (65-80%).
+ *
+ * Aspect is a bounding-box ratio and cannot see shape; two figures can share a
+ * box and be a cone and a column. This is the measurement that tells them
+ * apart, and it is why a scaled-down general reads as a general.
+ */
+export function measureTaper(root: THREE.Object3D, box: THREE.Box3): number {
+  const h = box.max.y - box.min.y;
+  if (h < 1e-6) return 1;
+  let lo = 0;
+  let hi = 0;
+  const v = new THREE.Vector3();
+  root.traverse((o) => {
+    const mesh = o as THREE.Mesh;
+    const g = mesh.geometry as THREE.BufferGeometry | undefined;
+    if (!g || !g.getAttribute) return;
+    const pos = g.getAttribute('position') as THREE.BufferAttribute | undefined;
+    if (!pos) return;
+    // An InstancedMesh's vertices are not where its geometry says they are;
+    // skip it rather than measure a shape that is not on screen.
+    if ((mesh as THREE.InstancedMesh).isInstancedMesh) return;
+    for (let i = 0; i < pos.count; i++) {
+      v.fromBufferAttribute(pos, i).applyMatrix4(mesh.matrixWorld);
+      const t = (v.y - box.min.y) / h;
+      const r = Math.max(Math.abs(v.x - (box.min.x + box.max.x) / 2), Math.abs(v.z - (box.min.z + box.max.z) / 2));
+      if (t >= 0.2 && t <= 0.35) lo = Math.max(lo, r);
+      else if (t >= 0.65 && t <= 0.8) hi = Math.max(hi, r);
+    }
+  });
+  return hi > 1e-6 ? lo / hi : 1;
+}
+
+/**
+ * Width in the lowest sixth of the figure divided by its widest width. A pair
+ * of legs is a narrow base (~0.35); a hem that reaches the ground is ~1.0.
+ */
+export function measureBaseRatio(root: THREE.Object3D, box: THREE.Box3): number {
+  const h = box.max.y - box.min.y;
+  if (h < 1e-6) return 1;
+  let lo = 0;
+  let widest = 0;
+  const v = new THREE.Vector3();
+  const cx = (box.min.x + box.max.x) / 2;
+  const cz = (box.min.z + box.max.z) / 2;
+  root.traverse((o) => {
+    const mesh = o as THREE.Mesh;
+    const g = mesh.geometry as THREE.BufferGeometry | undefined;
+    if (!g || !g.getAttribute) return;
+    if ((mesh as THREE.InstancedMesh).isInstancedMesh) return;
+    const pos = g.getAttribute('position') as THREE.BufferAttribute | undefined;
+    if (!pos) return;
+    for (let i = 0; i < pos.count; i++) {
+      v.fromBufferAttribute(pos, i).applyMatrix4(mesh.matrixWorld);
+      const t = (v.y - box.min.y) / h;
+      const r = Math.max(Math.abs(v.x - cx), Math.abs(v.z - cz));
+      if (r > widest) widest = r;
+      if (t <= 0.16 && r > lo) lo = r;
+    }
+  });
+  return widest > 1e-6 ? lo / widest : 1;
 }
 
 function pad(s: string | number, n: number, right = false): string {
@@ -865,6 +930,36 @@ function verifyParts(): void {
     `${pad('', 34)}${pad(total, 8, true)}  triangles; ` +
       `${closedCount} closed solids audited, ${openCount} open surfaces`,
   );
+
+  // Nothing may invent a colour. Every part's pigment must resolve to a real
+  // band in core/palette.ts for both armies, and every material class must be
+  // one the ramp table knows how to quantise.
+  let checked = 0;
+  for (const c of partCases()) {
+    let r: PartGroup | Part | THREE.BufferGeometry;
+    try {
+      r = c.run();
+    } catch {
+      continue;
+    }
+    if (r instanceof THREE.BufferGeometry) continue;
+    const parts: Part[] = 'geometry' in r ? [r] : [...r.parts, ...r.instanced];
+    for (const p of parts) {
+      for (const side of [Side.Red, Side.Black] as const) {
+        const pig = resolvePigment(p.pigment, side);
+        check(
+          PIGMENT_NAMES.includes(pig),
+          `${c.group}/${c.name}/${p.name ?? '?'}: pigment "${String(p.pigment)}" resolves to "${pig}", which is not a palette band`,
+        );
+      }
+      check(
+        p.cls in RAMPS,
+        `${c.group}/${c.name}/${p.name ?? '?'}: material class "${p.cls}" has no ramp`,
+      );
+      checked++;
+    }
+  }
+  console.log(`  palette conformance: ${checked} parts, every pigment resolves to a band in core/palette.ts`);
 }
 
 // ---------------------------------------------------------------------------
@@ -986,6 +1081,7 @@ function verifySilhouetteTable(): void {
         pad(s.silhouette.crown, 16) +
         pad(s.silhouette.widthClass, 8) +
         pad(s.silhouette.aspect.toFixed(2), 9, true) +
+        pad(s.silhouette.taper.toFixed(2), 8, true) +
         pad(s.silhouette.height.toFixed(2), 9, true) +
         pad(s.budget, 9, true),
     );
@@ -1060,9 +1156,10 @@ function verifyUnits(): void {
       pad('foot', 7, true) +
       pad('reachX', 8, true) +
       pad('reachZ', 8, true) +
-      pad('y0', 7, true) +
       pad('aspect', 8, true) +
+      pad('taper', 7, true) +
       pad('decl', 7, true) +
+      pad('base', 6, true) +
       pad('ms', 5, true),
   );
   console.log(rule(110));
@@ -1072,6 +1169,7 @@ function verifyUnits(): void {
   let windingAudited = 0;
   let footWorst = 0;
   let reachWorst = 0;
+  const measuredShape: { key: UnitKey; side: Side; aspect: number; taper: number }[] = [];
   const units: ReturnType<typeof factory.create>[] = [];
 
   for (const key of UNIT_KEYS_IN_VALUE_ORDER) {
@@ -1102,6 +1200,23 @@ function verifyUnits(): void {
       const reach = Math.max(reachX, reachZ);
       footWorst = Math.max(footWorst, foot);
       reachWorst = Math.max(reachWorst, reach);
+
+      const taper = measureTaper(u.root, bb);
+      const tDrift = Math.abs(taper - spec.silhouette.taper) / Math.max(spec.silhouette.taper, 1e-6);
+      if (tDrift > 0.35) {
+        warnings.push(
+          `${key} (${side === Side.Red ? 'Han' : 'Chu'}): measured taper ${taper.toFixed(2)} against a declared ` +
+            `${spec.silhouette.taper.toFixed(2)} — the silhouette is not the shape the table promises`,
+        );
+      }
+
+      // Does the figure stand on legs or on a hem? Compare how wide it is in
+      // the lowest sixth of its height against how wide it is at its widest.
+      // Two legs are a narrow pair of strokes — about a third of body width;
+      // a skirt that reaches the base disc is the full width, and the piece
+      // reads as a bollard however much leg geometry is hidden inside it.
+      const legFrac = measureBaseRatio(u.root, bb);
+      measuredShape.push({ key, side, aspect, taper });
       check(
         reach < 1.0,
         `${key} (${side === Side.Red ? 'Han' : 'Chu'}): reaches ${reach.toFixed(2)} from its intersection — it covers a neighbour's`,
@@ -1173,9 +1288,10 @@ function verifyUnits(): void {
           pad(foot.toFixed(2), 7, true) +
           pad(reachX.toFixed(2), 8, true) +
           pad(reachZ.toFixed(2), 8, true) +
-          pad(y0.toFixed(3), 7, true) +
           pad(aspect.toFixed(2), 8, true) +
-          pad(spec.silhouette.aspect.toFixed(2), 7, true) +
+          pad(taper.toFixed(2), 7, true) +
+          pad(spec.silhouette.taper.toFixed(2), 7, true) +
+          pad(`${(legFrac * 100) | 0}%`, 6, true) +
           pad(ms, 5, true),
       );
     }
@@ -1309,6 +1425,37 @@ function verifyUnits(): void {
     check(moved > 0, `${u.meta.key}: no vertex is bound to mount bone ${probe}`);
     check(best > 1e-4, `${u.meta.key}: rotating ${probe} moved nothing`);
   }
+
+  // The confusability test, on measured shape rather than declared intent. Two
+  // pieces in the same army that match on both the box ratio and the shape
+  // ratio differ only in size, and a player has no reference for size.
+  console.log('\n  measured silhouette collisions (same army, both axes within tolerance)');
+  console.log('  ' + rule(78));
+  let collisions = 0;
+  for (const side of [Side.Red, Side.Black] as const) {
+    const army = side === Side.Red ? 'Han' : 'Chu';
+    const rows = measuredShape.filter((r) => r.side === side);
+    for (let i = 0; i < rows.length; i++) {
+      for (let j = i + 1; j < rows.length; j++) {
+        const dA = Math.abs(rows[i].aspect - rows[j].aspect) / Math.max(rows[i].aspect, rows[j].aspect);
+        const dT = Math.abs(rows[i].taper - rows[j].taper) / Math.max(rows[i].taper, rows[j].taper);
+        if (dA < 0.15 && dT < 0.25) {
+          collisions++;
+          console.log(
+            '  ' +
+              pad(`${army} ${rows[i].key} / ${rows[j].key}`, 30) +
+              pad(`aspect ${(dA * 100).toFixed(0)}% apart`, 24) +
+              pad(`taper ${(dT * 100).toFixed(0)}% apart`, 24),
+          );
+          warnings.push(
+            `${army}: ${rows[i].key} and ${rows[j].key} are the same shape — aspect ${(dA * 100).toFixed(0)}% ` +
+              `and taper ${(dT * 100).toFixed(0)}% apart. They differ only in size.`,
+          );
+        }
+      }
+    }
+  }
+  if (collisions === 0) console.log('  ' + pad('none', 30));
 
   const before = factory.stats();
   for (const u of units) u.dispose();

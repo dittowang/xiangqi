@@ -170,7 +170,14 @@ export function banner(o: BannerOpts): PartGroup {
     grid.push(row);
   }
 
-  const cloth = shell(grid, (o.thickness ?? 0.01) * H, { name: `banner:${o.shape}` });
+  // Thickness floor. A banner is two sheets a hair apart, and at the cast's
+  // world scale `0.01 * height` came out around 0.002 world units — well inside
+  // one depth-buffer quantum at play distance, which is exactly the 1-2px
+  // alternating z-fight the stills critic measured on the Chu banner. Cloth
+  // this size has to be a visible slab or it cannot be depth-sorted at all.
+  const cloth = shell(grid, Math.max(o.thickness ?? 0.05, 0.03) * H, {
+    name: `banner:${o.shape}`,
+  });
   g.parts.push(
     mkPart(cloth, 'cloth', o.pigment ?? 'accent', bone, {
       name: 'banner',
@@ -180,6 +187,14 @@ export function banner(o: BannerOpts): PartGroup {
   );
 
   g.points.fly = new THREE.Vector3(W, -H * 0.5, 0);
+  // Publish the actual hem, wave and swallowtail notch included, so a fringe
+  // hung off it lands on the cloth instead of on a straight line the cloth
+  // never touches.
+  const hem = grid[rows - 1];
+  for (let c = 0; c < hem.length; c++) {
+    g.points[`hem${c}`] = new THREE.Vector3(hem[c][0], hem[c][1], hem[c][2]);
+  }
+  g.points.hemCount = new THREE.Vector3(hem.length, 0, 0);
   const m = new THREE.Matrix4().compose(
     new THREE.Vector3(...o.at),
     new THREE.Quaternion().setFromEuler(new THREE.Euler(0, o.fly ?? 0, 0, 'XYZ')),
@@ -193,8 +208,14 @@ export function banner(o: BannerOpts): PartGroup {
 // ---------------------------------------------------------------------------
 
 export interface StreamerOpts {
-  /** Anchor, rig space. */
+  /** Anchor, rig space. Ignored when `anchors` is supplied. */
   at: V3;
+  /**
+   * Explicit hang points, one per streamer. Use `banner().points.hem*` so the
+   * fringe follows the cloth's real waved edge; an evenly spread line detaches
+   * from it wherever the wave dips.
+   */
+  anchors?: V3[];
   count: number;
   length: number;
   /** Width of each streamer. */
@@ -216,23 +237,29 @@ export interface StreamerOpts {
 export function streamers(o: StreamerOpts): PartGroup {
   const g = emptyGroup();
   const bone = o.boneHint ?? 'spine02';
-  for (let i = 0; i < o.count; i++) {
-    const u = o.count > 1 ? i / (o.count - 1) - 0.5 : 0;
+  const n = o.anchors ? o.anchors.length : o.count;
+  for (let i = 0; i < n; i++) {
+    const u = n > 1 ? i / (n - 1) - 0.5 : 0;
     const phase = i * 1.7;
+    // Hang from the cloth's own hem when we have it, from an even spread when
+    // we do not.
+    const root: V3 = o.anchors
+      ? o.anchors[i]
+      : [o.at[0] + u * o.spread, o.at[1], o.at[2]];
     const grid: V3[][] = [];
     for (let r = 0; r < 4; r++) {
       const t = r / 3;
-      const y = o.at[1] - o.length * t;
+      const y = root[1] - o.length * t;
       const drift = Math.sin(t * 3.4 + phase) * (o.wave ?? o.width * 1.2) * t;
-      const x = o.at[0] + u * o.spread + drift * 0.4;
-      const z = o.at[2] + Math.cos(t * 2.6 + phase) * (o.wave ?? o.width) * t;
+      const x = root[0] + drift * 0.4;
+      const z = root[2] + Math.cos(t * 2.6 + phase) * (o.wave ?? o.width) * t;
       grid.push([
         [x - o.width * 0.5, y, z],
         [x + o.width * 0.5, y, z],
       ]);
     }
     g.parts.push(
-      mkPart(shell(grid, o.width * 0.12, { name: 'streamer' }), 'cloth', o.pigment ?? 'accent', bone, {
+      mkPart(shell(grid, Math.max(o.width * 0.3, o.length * 0.02), { name: 'streamer' }), 'cloth', o.pigment ?? 'accent', bone, {
         name: 'streamer',
         rigid: true,
         noSilk: true,
@@ -272,11 +299,21 @@ export interface StandardOpts {
  */
 export function standard(o: StandardOpts): PartGroup {
   const bone = o.boneHint ?? 'spine02';
+
+  // ASSEMBLE UPRIGHT, THEN LEAN ONCE.
+  //
+  // This used to build the pole *with* its lean already applied and then hang
+  // the banner vertically from the leaned tip. The staff ran away at the lean
+  // angle while the cloth hung plumb, so the hoist edge separated from the pole
+  // all the way down — a visible gap, worst on the Han general at 0.36 rad.
+  // Nothing about the banner was wrong; it was being attached to a pole that
+  // had already moved. Building the whole standard in the pole's own frame and
+  // applying one transform at the end makes the attachment exact at any lean,
+  // and keeps the fringe and the knot with it.
   const pole = flagpole({
-    base: o.base,
+    base: [0, 0, 0],
     length: o.poleLength,
     r: o.poleR,
-    ...(o.lean !== undefined ? { lean: o.lean } : {}),
     boneHint: bone,
     ...(o.mountBone ? { mountBone: o.mountBone } : {}),
     ...(o.polePigment ? { pigment: o.polePigment } : {}),
@@ -294,9 +331,25 @@ export function standard(o: StandardOpts): PartGroup {
     ...(o.mountBone ? { mountBone: o.mountBone } : {}),
     ...(o.clothPigment ? { pigment: o.clothPigment } : {}),
   });
+
+  // Hang the fringe off the banner's real hem rather than a straight line under
+  // it: the hem waves, and on a swallowtail it is notched, so an evenly spread
+  // fringe leaves finials floating clear of the cloth.
+  const hemCount = flag.points.hemCount ? Math.round(flag.points.hemCount.x) : 0;
+  const wanted = o.streamerCount ?? 5;
+  const anchors: V3[] = [];
+  for (let i = 0; i < wanted && hemCount > 1; i++) {
+    // Sample across the hem, skipping the very ends so a streamer never hangs
+    // off the corner point where the swallowtail notch pinches to nothing.
+    const t = (i + 0.5) / wanted;
+    const c = Math.min(hemCount - 1, Math.round(t * (hemCount - 1)));
+    const p = flag.points[`hem${c}`];
+    if (p) anchors.push([p.x, p.y, p.z]);
+  }
   const fringe = streamers({
     at: [top.x, top.y - o.poleR * 1.5 - o.bannerHeight, top.z],
-    count: o.streamerCount ?? 5,
+    ...(anchors.length > 0 ? { anchors } : {}),
+    count: wanted,
     length: o.bannerHeight * 0.7,
     width: o.bannerWidth * 0.05,
     spread: o.bannerWidth * 0.45,
@@ -313,7 +366,14 @@ export function standard(o: StandardOpts): PartGroup {
     ...(o.mountBone ? { mountBone: o.mountBone } : {}),
     ...(o.metalPigment ? { pigment: o.metalPigment } : {}),
   });
+
   const g = mergeGroups(pole, flag, fringe, knot);
-  g.points.top = top;
+  const lean = o.lean ?? 0;
+  const m = new THREE.Matrix4().compose(
+    new THREE.Vector3(...o.base),
+    new THREE.Quaternion().setFromEuler(new THREE.Euler(lean, 0, 0, 'XYZ')),
+    new THREE.Vector3(1, 1, 1),
+  );
+  transformGroup(g, m);
   return g;
 }

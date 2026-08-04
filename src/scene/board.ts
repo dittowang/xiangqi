@@ -137,10 +137,10 @@ const FRAME_SAG_FALLOFF = 0.16;
  * on the other from any angle the camera can reach.
  */
 export const RIVER_DEPTH = 0.12;
-export const RIVER_FLOOR_HALF = 0.088;
-export const RIVER_CUT_HALF = 0.148;
-export const BANK_CAP_HALF = 0.176;
-export const BANK_HALF = 0.2;
+export const RIVER_FLOOR_HALF = 0.125;
+export const RIVER_CUT_HALF = 0.195;
+export const BANK_CAP_HALF = 0.235;
+export const BANK_HALF = 0.265;
 export const BANK_RISE = 0.014;
 export const WATER_Y = -0.048;
 
@@ -173,14 +173,28 @@ export const WATER_HALF = (() => {
 
 // --- incised line work -----------------------------------------------------
 
-/** Nominal half-width and depth of a grid incision. Varied per line. */
-const GRID_HALF_WIDTH = 0.0162;
-const GRID_DEPTH = 0.0118;
+/**
+ * Nominal half-width and depth of a grid incision. Varied per line.
+ *
+ * These were 0.0162 and they did not render. A V-groove that narrow is about two
+ * device pixels at the resting framing, split between a wall that takes the key
+ * and a wall that goes to shadow — one lighter than the silk, one darker. With
+ * no coverage-based AA the two rasterise stochastically and *cancel*, and the
+ * lattice comes out as a 30–50% duty-cycle dotted trace that goes solid only
+ * where a cast shadow removes the lit wall from the competition. A player who
+ * cannot see the lattice cannot read the board, so the section is now a flat-
+ * bottomed U: the floor is the widest part of it, it is cut in 墨, and its
+ * darkness does not depend on the shading of either wall.
+ */
+const GRID_HALF_WIDTH = 0.028;
+const GRID_DEPTH = 0.0132;
+/** Width of the wall on each side; the rest of the section is flat floor. */
+const GRID_WALL = 0.01;
 /** Pressed silk lifts at the edge of a stylus cut; this is that burr. */
 const GRID_LIP = 0.0016;
 /** Maximum lateral bow of a hand-ruled line, at mid-span. Zero at every
  *  intersection, so the grid still lands exactly on `coords.ts`. */
-const GRID_BOW = 0.0055;
+const GRID_BOW = 0.0022;
 /** Vertices per one-square span. 3 puts a vertex exactly on each intersection. */
 const SEG_PER_SPAN = 3;
 
@@ -189,18 +203,19 @@ export const GRID_HALF_MAX = GRID_HALF_WIDTH * 1.09;
 export const GRID_BOW_MAX = GRID_BOW;
 
 /** Palace diagonal: a flat-bottomed trench that the gold leaf is laid into. */
-const PALACE_HALF_WIDTH = 0.024;
-const PALACE_WALL = 0.007;
-const PALACE_DEPTH = 0.0112;
+const PALACE_HALF_WIDTH = 0.036;
+const PALACE_WALL = 0.009;
+/** Shallow: the leaf has to catch light, not hide in a slot. */
+const PALACE_DEPTH = 0.0068;
 /** Gold leaf is laid in squares; the joins between them are the tooth. */
 const LEAF_PITCH = 0.155;
 const LEAF_GAP = 0.0026;
-const LEAF_RISE = 0.0011;
+const LEAF_RISE = 0.0042;
 
 /** 炮位 / 兵位 brackets. */
 const BRACKET_GAP = 0.088;
-const BRACKET_LEN = 0.215;
-const BRACKET_SCALE = 0.76;
+const BRACKET_LEN = 0.24;
+const BRACKET_SCALE = 0.92;
 
 /** Files that carry a soldier point, at ranks 3 and 6. */
 const SOLDIER_FILES = [0, 2, 4, 6, 8];
@@ -215,11 +230,11 @@ const CANNON_FILES = [1, 7];
  * and bows by up to 0.0055, so the far limit stops short of 0.5 by both.
  */
 const INSCRIPTION_Z0 = BANK_HALF + 0.006;
-const INSCRIPTION_Z1 = 0.472;
+const INSCRIPTION_Z1 = 0.462;
 /** Ink height of the tallest of the four characters, world units. */
-const INSCRIPTION_INK = 0.246;
+const INSCRIPTION_INK = 0.185;
 /** Centre-to-centre spacing within a pair, and the width of one glyph's panel. */
-const INSCRIPTION_PITCH = 0.5;
+const INSCRIPTION_PITCH = 0.4;
 /**
  * Where each pair sits horizontally.
  *
@@ -235,13 +250,17 @@ const INSCRIPTION_PAIR_X = 0;
 /** Depth of the cut. Deeper than a piece base's — it is read from further away. */
 const INSCRIPTION_DEPTH = 0.0105;
 /**
- * Heavier than the authored seal weight: a board inscription is cut bold.
+ * Stroke weight for the inscription, as a multiple of the authored seal weight.
  *
- * 2.0 is the most the forms will take. Past it the strokes of 楚 and 漢 begin to
- * flood into each other and the counters open and close unpredictably; at 2.0
- * they merge only where a bold cut genuinely would, and every counter survives.
+ * This was 2.0, chosen to buy legibility at the resting camera, and it was the
+ * wrong trade. At 2.0 the three strokes of 漢's 氵 flood into one another and
+ * come out as a single connected spine with two branches — the pen is never
+ * lifted — so the radical reads as 扌 and the label stops being a word. 楚 loses
+ * the separation between 林 and 疋 the same way. A character that is bold and
+ * wrong is worse than one that is fine and right, so this stays at the authored
+ * weight and legibility is bought with size and camera distance instead.
  */
-export const INSCRIPTION_WEIGHT = 2.0;
+export const INSCRIPTION_WEIGHT = 1.0;
 
 /** One character of the inscription, with the deck panel it is cut into. */
 interface InscriptionChar {
@@ -494,11 +513,22 @@ function incisedLine(
   sweepAlongPath(b, path, section, 1, true);
 }
 
-/** V-groove cross-section at a given half-width and depth. */
+/**
+ * Chisel cross-section: a proud lip, a steep wall each side and a flat floor
+ * between them. The floor is what the eye reads at distance and the walls are
+ * what give the cut its edge up close.
+ */
 function veeSection(halfWidth: number, depth: number): ProfilePoint[] {
+  const wall = Math.min(GRID_WALL, halfWidth * 0.42);
   return [
     { u: -halfWidth, y: GRID_LIP, hard: true },
-    { u: 0, y: -depth, hard: true },
+    { u: -halfWidth + wall, y: -depth, hard: true },
+    // The floor is split on the centreline so that every path point — and so
+    // every one of the ninety intersections — still owns a vertex exactly on
+    // the line. Losing that is how a widened section quietly stops landing on
+    // `coords.ts`.
+    { u: 0, y: -depth, hard: false },
+    { u: halfWidth - wall, y: -depth, hard: true },
     { u: halfWidth, y: GRID_LIP, hard: true },
   ];
 }
@@ -547,6 +577,7 @@ function buildPalaceTrenches(b: MeshBuilder, rng: Rng): void {
   const sec: ProfilePoint[] = [
     { u: -PALACE_HALF_WIDTH, y: GRID_LIP, hard: true },
     { u: -PALACE_HALF_WIDTH + PALACE_WALL, y: -PALACE_DEPTH, hard: true },
+    { u: 0, y: -PALACE_DEPTH, hard: false },
     { u: PALACE_HALF_WIDTH - PALACE_WALL, y: -PALACE_DEPTH, hard: true },
     { u: PALACE_HALF_WIDTH, y: GRID_LIP, hard: true },
   ];
@@ -591,7 +622,7 @@ function buildPalaceLeaf(b: MeshBuilder, rng: Rng): void {
       const t0 = t + LEAF_GAP * 0.5;
       const t1 = t + patch - LEAF_GAP * 0.5;
       if (t1 > t0) {
-        const w = inner * rng.range(0.84, 1.0);
+        const w = inner * rng.range(0.94, 1.0);
         const y = -PALACE_DEPTH + LEAF_RISE * rng.range(0.35, 1.0);
         const x0 = ax + ux * t0;
         const z0 = az + uz * t0;
@@ -940,7 +971,14 @@ export class Board implements BoardScene {
         M.get({ cls: 'silk', pigment: SCENE.gridLine }),
         'incisions',
         false,
-        true,
+        // Deliberately NOT a shadow receiver. The line work is a 13-thousandth
+        // deep cut, which is roughly one texel of a 2048 cascade covering ±10
+        // world units, so the depth comparison inside the groove flickers from
+        // texel to texel and the lattice renders as a dotted trace. Widening the
+        // cut does not help — the artefact is the sampling rate, not the size.
+        // The deck around the grooves still receives, so a piece's shadow still
+        // crosses the lines; the lines themselves are simply shaded by N·L.
+        false,
       );
     }
     {

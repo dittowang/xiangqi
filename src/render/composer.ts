@@ -125,6 +125,16 @@ const DEPTH_SUPPRESS = 40.0;
 const GRAIN_PERIOD_CSS_PX = 2.4;
 const GRAIN_AMOUNT = 0.020;
 
+/**
+ * Edge-directed AA strength, applied at EVERY quality tier.
+ *
+ * Deliberately not tied to `QualitySettings.msaa`: the floor sets msaa to 0,
+ * and a frame with no antialiasing at all is not a cheaper version of the art
+ * direction, it is a different one. Six extra texture fetches on edge pixels
+ * only is a price the floor can pay.
+ */
+const EDGE_AA = 0.85;
+
 /** Edge darkening. See the note in grade.glsl.ts — this is mounting silk.
  *  Measured at 1.8 points of micro-step across the frame, which is more than a
  *  mounting edge is worth; halved. */
@@ -290,6 +300,8 @@ export function createGradeMaterial(mood: LightMood): THREE.ShaderMaterial {
     uGrainAmount: { value: GRAIN_AMOUNT },
     uGrainPeriodPx: { value: GRAIN_PERIOD_CSS_PX },
     uViewportPx: { value: new THREE.Vector2(1920, 1080) },
+    uTexel: { value: new THREE.Vector2(1 / 1920, 1 / 1080) },
+    uEdgeAA: { value: EDGE_AA },
     uDebugMode: { value: DEBUG_NONE },
   });
 }
@@ -520,7 +532,7 @@ export class GongbiPipeline implements RenderPipeline {
     // the radius the Sobel yields inside must scale with it too, and then be
     // converted from frame pixels into prepass texels.
     this.linesPass.material.uniforms.uHullSuppressPx.value =
-      hullSuppressRadiusPx(this.height) * this.prepassScale;
+      hullSuppressRadiusPx(this.height, 'contour', this.dpr) * this.prepassScale;
 
     (this.gradePass.material.uniforms.uViewportPx.value as THREE.Vector2).set(
       this.width,
@@ -529,6 +541,10 @@ export class GongbiPipeline implements RenderPipeline {
     // The sheet is a physical object: its grain must stay the same size on the
     // display whatever the pixel ratio is doing.
     this.gradePass.material.uniforms.uGrainPeriodPx.value = GRAIN_PERIOD_CSS_PX * this.dpr;
+    (this.gradePass.material.uniforms.uTexel.value as THREE.Vector2).set(
+      1 / this.width,
+      1 / this.height,
+    );
   }
 
   // -- quality --------------------------------------------------------------
@@ -862,6 +878,9 @@ export class GongbiPipeline implements RenderPipeline {
     depthSuppress?: number;
     hullSuppressPx?: number;
     lineTint?: number;
+    edgeAA?: number;
+    ndlWrap?: number;
+    silkLitFloor?: number;
   }): void {
     if (t.grain !== undefined) this.grainAmount = t.grain;
     if (t.vignette !== undefined) this.vignetteAmount = t.vignette;
@@ -883,6 +902,9 @@ export class GongbiPipeline implements RenderPipeline {
       this.linesPass.material.uniforms.uHullSuppressPx.value = t.hullSuppressPx;
     }
     if (t.lineTint !== undefined) this.linesPass.material.uniforms.uLineTint.value = t.lineTint;
+    if (t.edgeAA !== undefined) this.gradePass.material.uniforms.uEdgeAA.value = t.edgeAA;
+    if (t.ndlWrap !== undefined) this.materials.shared.uNdlWrap.value = t.ndlWrap;
+    if (t.silkLitFloor !== undefined) this.materials.shared.uSilkLitFloor.value = t.silkLitFloor;
   }
 
   /** Current tuning, so a capture can record what it was measuring. */
@@ -902,6 +924,9 @@ export class GongbiPipeline implements RenderPipeline {
       // 0 here means the frame has no interior line work at all. Any review
       // that does not check this is reviewing a different renderer.
       sobelEnabled: u.uSobelEnabled.value as number,
+      edgeAA: this.gradePass.material.uniforms.uEdgeAA.value as number,
+      ndlWrap: this.materials.shared.uNdlWrap.value as number,
+      silkLitFloor: this.materials.shared.uSilkLitFloor.value as number,
     };
   }
 

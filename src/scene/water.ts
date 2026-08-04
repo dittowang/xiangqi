@@ -212,12 +212,20 @@ void main() {
 
   vec3 waterCol = step3 < 0.5 ? uWater[0] : (step3 < 1.5 ? uWater[1] : uWater[2]);
   vec3 bedCol   = step3 < 0.5 ? uBed[0]   : (step3 < 1.5 ? uBed[1]   : uBed[2]);
-  vec3 col = mix(waterCol, bedCol, shallow * 0.72);
+  // Blending most of the way to the 石綠 bed over the shallows desaturated the
+  // whole surface toward a grey-blue that measured closer to 玄漆 — the Chu
+  // army's own lacquer — than to 石青. The terrain and one of the two sides
+  // sharing a colour is an identity collision, so the bed now tints the
+  // shallows rather than replacing them.
+  vec3 col = mix(waterCol, bedCol, shallow * 0.34);
 
   // Fill light: a flat lift on the shadow band only, the way a wash is laid in.
   col += uFillColour * uFillIntensity * 0.10 * (1.0 - step3 * 0.5);
-  col *= mix(0.82, 1.0, uKeyIntensity * 0.35);
-  col *= uKeyColour * 0.5 + 0.5;
+  col *= mix(0.9, 1.0, uKeyIntensity * 0.35);
+  // Tint by the key rather than multiplying by it: a warm key multiplied
+  // straight into 石青 pulls the blue toward neutral and costs the pigment the
+  // saturation it is chosen for.
+  col *= mix(vec3(1.0), uKeyColour * 0.5 + 0.5, 0.45);
 
   // ---- 水紋: drawn contour lines -----------------------------------------
   // Contours of the drifting noise field. This is the detail that makes the
