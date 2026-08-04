@@ -15,7 +15,7 @@ import { Board, type BoardOptions } from './board.ts';
 import { Backdrop } from './backdrop.ts';
 import { LightingRig, moodForPhase } from './lighting.ts';
 import { Director, modeForPhase } from './camera.ts';
-import type { SealOutline, SealProvider } from './bases.ts';
+import type { SealSource } from './bases.ts';
 
 export * from './geometry.ts';
 export * from './board.ts';
@@ -30,10 +30,11 @@ export { createFallbackMaterials } from './fallbackMaterials.ts';
 export interface SceneRigOptions {
   /** Ramp materials from @render. Required — the scene never builds its own. */
   materials: GongbiMaterials;
-  /** Seal-script glyphs for the piece bases; see `adaptGlyphPath`. */
-  seal?: SealProvider;
-  /** Outlines for 楚 河 漢 界, keyed by character. */
-  riverText?: (ch: string) => SealOutline | null | undefined;
+  /**
+   * Seal-script outlines, keyed by character. Feeds the piece bases and
+   * 楚河漢界 alike. See `sealOutlineFromShapes` for the one-line wiring.
+   */
+  seal?: SealSource;
   detail?: BoardOptions['detail'];
   aspect?: number;
   /** Attach orbit input to this element. Usually `renderer.domElement`. */
@@ -68,7 +69,6 @@ export function createSceneRig(opts: SceneRigOptions): SceneRig {
   const board = new Board({
     materials: opts.materials,
     seal: opts.seal,
-    riverText: opts.riverText,
     detail: opts.detail,
   });
   const backdrop = new Backdrop({ materials: opts.materials, detail: opts.detail });

@@ -53,9 +53,9 @@ export interface ProfilePoint {
  * builder reusable (it does not clear itself — call `reset()` if you want that).
  */
 export class MeshBuilder {
-  private pos: number[] = [];
-  private nrm: number[] = [];
-  private uvs: number[] = [];
+  protected pos: number[] = [];
+  protected nrm: number[] = [];
+  protected uvs: number[] = [];
 
   /** Triangles accumulated so far. */
   get triangles(): number {
@@ -109,6 +109,13 @@ export class MeshBuilder {
   flatTri(a: P3, b: P3, c: P3): void {
     const n = faceNormal(a, b, c);
     this.tri(a, b, c, n, n, n, planarUV(a), planarUV(b), planarUV(c));
+  }
+
+  /** Absorb every triangle of `other`. Build-time only. */
+  append(other: MeshBuilder): void {
+    for (let i = 0; i < other.pos.length; i++) this.pos.push(other.pos[i]);
+    for (let i = 0; i < other.nrm.length; i++) this.nrm.push(other.nrm[i]);
+    for (let i = 0; i < other.uvs.length; i++) this.uvs.push(other.uvs[i]);
   }
 
   build(name = ''): THREE.BufferGeometry {

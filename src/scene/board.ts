@@ -13,13 +13,13 @@
  *
  * ```
  *   +0.086   top of the timber frame            FRAME_TOP_Y
- *   +0.016   stone banking cap, proud of the silk
+ *   +0.014   stone banking cap, proud of the silk
  *    0.000   the silk deck  (± ~0.002 of sag)   <- coords.ts's y = 0
- *   −0.012   bottom of a grid incision
+ *   −0.012   bottom of a grid incision, and of 楚河漢界
  *   −0.048   the water surface                  WATER_Y
  *   −0.120   the river bed                      RIVER_DEPTH
  *   −0.635   underside of the table             TABLE_BOTTOM_Y
- *   −0.920   the lake the table stands over     OFF_BOARD_Y
+ *   −0.640   the terrace the table stands on     OFF_BOARD_Y
  * ```
  *
  * `heightAt()` is the single authority on all of that, and it is evaluated from
@@ -56,7 +56,7 @@ import {
 } from './geometry.ts';
 import { createRiverWater, type RiverWater } from './water.ts';
 import { Markers } from './markers.ts';
-import { PieceBases, inciseOutline, type SealOutline, type SealProvider } from './bases.ts';
+import { PieceBases, glyphInkBox, inciseOutline, type SealOutline, type SealSource } from './bases.ts';
 
 // ===========================================================================
 // Metrics
@@ -801,9 +801,15 @@ export class Board implements BoardScene {
   /** Named parts, for debug overlays and the verification script. */
   readonly parts: Record<string, THREE.Mesh> = {};
 
+  /** Where each character of 楚河漢界 ended up, for the verification script. */
+  readonly inscription: { ch: string; cx: number; cz: number; em: number }[] = [];
+  /** Triangles the inscription contributed to the incision geometry. */
+  inscriptionTriangles = 0;
+
   private readonly water: RiverWater;
   private readonly geometries: THREE.BufferGeometry[] = [];
   private readonly boundSurfaceAt: (x: number, z: number) => number;
+  private inscriptionCut = new MeshBuilder();
 
   constructor(opts: BoardOptions) {
     this.group.name = 'scene/board';
@@ -918,17 +924,6 @@ export class Board implements BoardScene {
     // --- river ------------------------------------------------------------
     {
       const river = buildRiver(seedFor('scene', 'board', 'river'), detail);
-      const bankB = new MeshBuilder();
-      this.buildRiverInscription(bankB, opts.riverText);
-      if (bankB.triangles > 0) {
-        add(
-          bankB.build('riverText'),
-          M.get({ cls: 'stone', pigment: SCENE.banking, variation: -0.3 }),
-          'riverText',
-          false,
-          true,
-        );
-      }
       add(
         river.banking,
         M.get({ cls: 'stone', pigment: SCENE.banking }),
@@ -965,51 +960,6 @@ export class Board implements BoardScene {
       ownerFacing: opts.ownerFacingGlyphs !== false,
     });
     this.group.add(this.bases.group);
-  }
-
-  /**
-   * 楚河 and 漢界, incised into the stone banking.
-   *
-   * A note on why they are small. On a flat board the river band is a full
-   * square deep and the inscription fills it. A *sunken* channel — which is what
-   * this board is briefed to have — spends that square on water and cut stone,
-   * and the only flat surface left in the band is the 0.12-wide banking cap. So
-   * the inscription becomes what it would be on a real stone-banked channel: a
-   * carved course-marking, not a title. Each side's pair reads from its own seat.
-   */
-  private buildRiverInscription(
-    b: MeshBuilder,
-    provider: BoardOptions['riverText'],
-  ): void {
-    if (!provider) return;
-    const capMid = (RIVER_CUT_HALF + BANK_CAP_HALF) * 0.5;
-    const size = (BANK_CAP_HALF - RIVER_CUT_HALF) * 0.92;
-    const layout: [string, number, number][] = [
-      // character, x, which bank it is carved into (−1 = Chu, +1 = Han)
-      ['楚', -2.92, -1],
-      ['河', -2.3, -1],
-      ['漢', 2.3, 1],
-      ['界', 2.92, 1],
-    ];
-    const half = size * 0.5;
-    // The dressed panel the character is cut into. It stands a fraction proud of
-    // the banking cap, the way a lettered stone is set into a rubble course.
-    const panel = [-half, -half, half, -half, half, half, -half, half];
-    for (const [ch, x, zs] of layout) {
-      const outline = provider(ch);
-      if (!outline) continue;
-      const cz = zs * capMid;
-      // Black reads from −Z, Red from +Z; the inscription follows its own bank.
-      const yaw = zs < 0 ? Math.PI : 0;
-      inciseOutline(b, outline, panel, {
-        cx: x,
-        cz,
-        y: BANK_RISE + silkSag(x, cz) + 0.0007,
-        depth: 0.0048,
-        fit: size * 0.84,
-        yaw,
-      });
-    }
   }
 
   // -- height field ----------------------------------------------------------
