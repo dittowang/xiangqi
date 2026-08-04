@@ -330,16 +330,19 @@ function chuCrown(P: Lib, m: RigMetrics, headZ: number, headBaseY: number, rise:
   g.parts.push(P.mkPart(body, 'lacquer', 'lacquer', 'head', { name: 'crownBody', rigid: true }));
 
   // The wings: flat blades sweeping up, out and back from the crown's throat.
+  // They have to clear the crown by a wide margin — a wing that stays inside
+  // the crown's own outline is a detail, not a silhouette, and this pair is
+  // carrying the Chu advisor's identity.
   for (const s of [-1, 1]) {
     const grid: V3[][] = [];
     const rows = 4;
     for (let r = 0; r < rows; r++) {
       const t = r / (rows - 1);
       // Rises fast, leans out and back, and narrows to a point.
-      const x = s * R * (0.5 + t * spread);
+      const x = s * R * (0.55 + t * spread);
       const y = base + L * (rise * 0.3 + t * (rise * 0.95));
       const z = headZ + R * (0.1 + t * t * 0.7);
-      const w = L * (0.11 - t * 0.075);
+      const w = L * (0.12 - t * 0.085);
       grid.push([
         [x, y - w, z],
         [x, y + w, z],
@@ -551,14 +554,19 @@ function buildAdvisor(ctx: UnitBuildContext): PartGroup {
   // to differ from each other as well as from the other army.
   const beard: 'short' | 'long' = ctx.variant % 2 === 0 ? 'short' : 'long';
   const capRise = (han ? 0.62 : 0.94) * (1 + rng.range(-0.05, 0.05));
-  const wingSpread = 0.55 + rng.range(-0.06, 0.06);
-  const folds = 9 + (ctx.variant % 2);
+  const wingSpread = 2.0 + rng.range(-0.15, 0.15);
+  const folds = 10 + (ctx.variant % 2);
 
   // --- the weapon, and the hands that hold it -----------------------------
   // Han: 劍 low and forward in a parrying guard, point out past the left knee.
   // Chu: 鉞 vertical at the right side, butt just clear of the board.
-  const swordDir = new THREE.Vector3(-0.42, -0.5, -0.76);
-  const aimR = han ? aim(swordDir, 0.5) : aim(UP);
+  // The guard is angled across the body rather than straight out in front: a
+  // 劍 held forward puts the point half a square ahead of the figure, which
+  // wrecks the declared aspect and crowds the next piece on the board.
+  const swordDir = new THREE.Vector3(-0.62, -0.55, -0.56);
+  // The 鉞 is rolled a quarter turn so its crescent is broadside from the front
+  // — edge-on it is a line, and a ritual axe that reads as a line is a staff.
+  const aimR = han ? aim(swordDir, 0.5) : aim(UP, Math.PI / 2);
   const gripR = han
     ? new THREE.Vector3(m.hipWidth * 0.72, m.waistY - m.torsoLen * 0.02, -m.chestDepth * 1.15)
     : new THREE.Vector3(m.hipWidth * 0.86, m.waistY + m.torsoLen * 0.28, -m.chestDepth * 0.72);
@@ -652,7 +660,10 @@ function buildAdvisor(ctx: UnitBuildContext): PartGroup {
   const hemY = m.ankleY * 1.15;
   const shoulderY = m.shoulderY + m.torsoLen * 0.04;
   const waistY = m.waistY + m.torsoLen * 0.02;
-  const hemR = m.hipWidth * (han ? 1.5 : 1.42);
+  const hemR = m.hipWidth * (han ? 1.52 : 1.66);
+  // The two rear points of the Chu hem fall as far as they can without going
+  // through the board: `robeSkirt` drops a vertex by at most 0.71 of `tail`.
+  const tail = han ? 0 : Math.max(0, (hemY - m.height * 0.008) / 0.71);
 
   const bodice = P.prim.loft(
     [
@@ -674,7 +685,7 @@ function buildAdvisor(ctx: UnitBuildContext): PartGroup {
       rHem: hemR,
       folds,
       squash: 0.8,
-      tail: han ? 0 : m.legLen * 0.16,
+      tail,
       pigment: 'cloth',
     }),
   );
@@ -769,7 +780,7 @@ function buildAdvisor(ctx: UnitBuildContext): PartGroup {
       grip: v3(gripR),
       rot: aimR.euler,
       bone: 'handR',
-      length: m.height * 0.4,
+      length: m.height * 0.36,
       halfWidth: m.height * 0.021,
       metalPigment: 'metal',
     });

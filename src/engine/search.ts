@@ -5,8 +5,8 @@
  * worth more than any other single component: a perfectly ordered tree has an
  * effective branching factor of sqrt(b), and xiangqi's b is around 40. The
  * ordering chain is TT move -> MVV-LVA captures -> two killers -> history, and
- * `SearchResultFull.effectiveBranching` reports the measured node ratio between
- * successive depths so the claim can be checked rather than believed.
+ * `tests/bench.test.ts` measures the resulting branching factor from fresh
+ * tables so the claim can be checked rather than believed.
  *
  * Xiangqi-specific choices worth calling out:
  *
@@ -35,6 +35,7 @@ import {
 } from '@core/types.ts';
 import { seedFor } from '@core/rng.ts';
 import { PIECE_VALUE, evaluate } from './eval.ts';
+import { SEE_VALUE, mayLoseMaterial, see } from './see.ts';
 import { MoveList, generateCaptures, generateMoves } from './movegen.ts';
 import { type Position, REP_DRAW, REP_LOSS, REP_WIN } from './position.ts';
 import { HALFMOVE_DRAW_LIMIT } from './rules.ts';
@@ -51,14 +52,13 @@ export const MAX_SEARCH_PLY = 96;
 /**
  * Quiescence plies at which quiet checking moves are searched as well as
  * captures. Check *evasions* are always searched exhaustively (a side in check
- * never stands pat); this constant only controls giving check.
+ * never stands pat); this only controls giving check.
  *
- * 1 is a measured compromise: finding quiet checks costs a make/unmake per
- * quiet move at the first quiescence ply, which is about a 25% node-rate hit,
- * and it buys the tactics that end with a cannon dropping onto the back rank.
- * Beyond one ply the cost compounds and the return collapses.
+ * Settled by a head-to-head match rather than by argument — see the note above
+ * `SearchOptions.qCheckPlies`. Overridable per search so the match harness can
+ * play the two settings against each other.
  */
-const Q_CHECK_PLIES = 1;
+const Q_CHECK_PLIES_DEFAULT = 0;
 
 /** Quiescence delta-pruning margin: a captured piece plus this must beat alpha. */
 const DELTA_MARGIN = 180;
@@ -87,6 +87,12 @@ export interface SearchOptions {
   timeMs?: number;
   /** Hard node cap, used by tests to make a search deterministic. */
   nodeLimit?: number;
+  /**
+   * Quiescence plies at which quiet checking moves are generated. 0 disables
+   * them entirely (captures and check evasions only). Defaults to
+   * `Q_CHECK_PLIES_DEFAULT`.
+   */
+  qCheckPlies?: number;
   now?: () => number;
   /**
    * Polled alongside the clock, roughly every thousand nodes. This is how a
@@ -106,12 +112,17 @@ export interface RootCandidate {
 export interface SearchResultFull extends SearchResult {
   /** Root moves with their scores from the last completed depth, best first. */
   candidates: RootCandidate[];
-  /** Nodes visited at each completed depth, index 0 = depth 1. */
+  /** Nodes visited *during* each completed iteration, index 0 = depth 1. */
   depthNodes: number[];
   /**
-   * Geometric mean of `nodes(d) / nodes(d-1)` over the completed iterations.
-   * With no ordering at all this sits near the real branching factor (~40); a
-   * well-ordered search drives it toward its square root.
+   * Geometric mean of `depthNodes[d] / depthNodes[d-1]`.
+   *
+   * Read this with care: it measures the marginal cost of each iteration, and
+   * the transposition table carries between them, so a deeper iteration can
+   * genuinely visit *fewer* nodes than the one before and drag the mean below
+   * what the ordering deserves credit for. The comparable figure — total nodes
+   * to complete depth d over total to complete depth d-1, each from a fresh
+   * table — is measured in `tests/bench.test.ts` and is the one to quote.
    */
   effectiveBranching: number;
 }
@@ -140,6 +151,7 @@ export class Searcher {
   private nodes = 0;
   private deadline = 0;
   private nodeLimit = 0;
+  private qCheckPlies = Q_CHECK_PLIES_DEFAULT;
   private now: () => number = defaultNow;
   private shouldStop: (() => boolean) | null = null;
   private stopped = false;
@@ -187,6 +199,7 @@ export class Searcher {
     this.stopped = false;
     this.stopRequested = false;
     this.nodeLimit = opts.nodeLimit ?? 0;
+    this.qCheckPlies = opts.qCheckPlies ?? Q_CHECK_PLIES_DEFAULT;
     this.generation = (this.generation + 1) & 0xff;
 
     const start = this.now();
@@ -412,7 +425,7 @@ export class Searcher {
     if ((this.nodes & 1023) === 0) this.checkTime();
     if (this.stopped) return 0;
 
-    if (ply >= MAX_SEARCH_PLY - 4) return evaluate(pos);
+    if (ply >= MAX_SEARCH_PLY - 4) return evaluate(pos, alpha, beta);
 
     // --- mate-distance pruning: never look for a mate longer than one already
     //     proven on this path.
@@ -540,22 +553,25 @@ export class Searcher {
     this.nodes++;
     if ((this.nodes & 1023) === 0) this.checkTime();
     if (this.stopped) return 0;
-    if (ply >= MAX_SEARCH_PLY - 4) return evaluate(pos);
+    if (ply >= MAX_SEARCH_PLY - 4) return evaluate(pos, alpha, beta);
 
     const inCheck = pos.checkNow;
     let best = -INFINITY;
 
     if (!inCheck) {
       // Stand pat: the side to move is never forced to capture, so the static
-      // score is a lower bound on what it can achieve.
-      const standPat = evaluate(pos);
+      // score is a lower bound on what it can achieve. The window is handed to
+      // the evaluation so it can skip its expensive terms when the cheap ones
+      // already put the score outside — quiescence is where that fires most,
+      // because a capture has usually just moved the material balance a long way.
+      const standPat = evaluate(pos, alpha, beta);
       if (standPat >= beta) return standPat;
       if (standPat > alpha) alpha = standPat;
       best = standPat;
     }
 
     const list = this.qlists[ply];
-    const wantQuietChecks = !inCheck && qply < Q_CHECK_PLIES;
+    const wantQuietChecks = !inCheck && qply < this.qCheckPlies;
     if (inCheck || wantQuietChecks) generateMoves(pos, list);
     else generateCaptures(pos, list);
     this.scoreMoves(list, NO_MOVE, ply);
@@ -566,10 +582,25 @@ export class Searcher {
       const m = list.moves[i];
       const captured = moveCaptured(m);
 
-      // --- delta pruning: if winning this piece outright still leaves us short
-      //     of alpha, the line is not worth a node.
-      if (!inCheck && captured !== 0 && best > -INFINITY) {
-        if (best + PIECE_VALUE[captured & 7] + DELTA_MARGIN < alpha) continue;
+      if (!inCheck && captured !== 0) {
+        // --- delta pruning: if winning this piece outright still leaves us
+        //     short of alpha, the line is not worth a node.
+        if (best > -INFINITY && best + PIECE_VALUE[captured & 7] + DELTA_MARGIN < alpha) continue;
+        // --- static exchange pruning: a capture that loses material against
+        //     best recapture is not a quiescence move, it is a blunder that
+        //     would then need its own quiescence tree to refute.
+        //
+        //     This is the *only* place SEE is used. Using it for move ordering
+        //     as well was implemented and measured: at a fixed depth 7 it made
+        //     the tree both bigger and slower (opening 155k nodes / 2116 ms
+        //     versus 136k / 1674 ms with ordering-SEE removed; midgame 199k /
+        //     2422 ms versus 180k / 1792 ms), because SEE ignores pins and
+        //     unavailable recaptures, so demoting a "losing" capture below the
+        //     quiet moves is often simply wrong. Gating it to depth >= 3 did
+        //     not rescue it either. Pruning in quiescence keeps all of the
+        //     benefit and pays for the exchange evaluation only where the tree
+        //     would otherwise have exploded.
+        if (mayLoseMaterial(pos, m) && see(pos, m) < 0) continue;
       }
 
       if (!pos.makeMove(m)) {
@@ -630,7 +661,10 @@ export class Searcher {
           // soldier taking a chariot is always tried before a chariot taking a
           // soldier.
           const attacker = board[moveFrom(m)] & 7;
-          s = 1_000_000 + PIECE_VALUE[captured & 7] * 16 - PIECE_VALUE[attacker];
+          // Ordering stays pure MVV-LVA. Demoting SEE-losing captures below
+          // the killers was tried and measured worse on both nodes and wall
+          // clock — see the note on `see()`'s use in `quiesce` below.
+          s = 1_000_000 + SEE_VALUE[captured & 7] * 16 - SEE_VALUE[attacker];
         } else if (m === k1) {
           s = 900_000;
         } else if (m === k2) {

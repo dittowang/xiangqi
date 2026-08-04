@@ -46,6 +46,13 @@ import {
   advisorCount,
   elephantCount,
 } from './tables.ts';
+import {
+  T_MATERIAL_EG,
+  T_MATERIAL_MG,
+  T_PHASE,
+  T_PST,
+  T_SOLDIER,
+} from './terms.ts';
 import { Z_PIECE_HI, Z_PIECE_LO, Z_SIDE_HI, Z_SIDE_LO } from './zobrist.ts';
 
 /** Deepest make/unmake stack the engine will ever build. */
@@ -75,6 +82,23 @@ export class Position {
 
   keyLo = 0;
   keyHi = 0;
+
+  /**
+   * Incrementally maintained evaluation terms, all Red-positive.
+   *
+   * These are the two evaluation terms that change by a bounded amount when one
+   * piece moves, so they are updated here — four subtractions and four
+   * additions per move — instead of being recomputed by walking the piece lists
+   * at every leaf. `eval.ts` blends `termMaterialMg`/`termMaterialEg` with the
+   * game phase and adds the terms that genuinely need the whole board.
+   */
+  termMaterialMg = 0;
+  termMaterialEg = 0;
+  termPst = 0;
+  /** Soldier river bonuses, kept apart because their weight tapers separately. */
+  termSoldier = 0;
+  /** Unsigned attacking material, the phase numerator. */
+  termPhase = 0;
 
   /** Cached: is the side to move currently in check? Maintained by make/unmake. */
   checkNow = false;
@@ -123,6 +147,11 @@ export class Position {
     this.generalSq[1] = -1;
     this.keyLo = 0;
     this.keyHi = 0;
+    this.termMaterialMg = 0;
+    this.termMaterialEg = 0;
+    this.termPst = 0;
+    this.termSoldier = 0;
+    this.termPhase = 0;
     this.ply = 0;
     this.halfmove = p.halfmove;
     this.fullmove = p.fullmove;
@@ -164,6 +193,11 @@ export class Position {
     this.fullmove = other.fullmove;
     this.keyLo = other.keyLo;
     this.keyHi = other.keyHi;
+    this.termMaterialMg = other.termMaterialMg;
+    this.termMaterialEg = other.termMaterialEg;
+    this.termPst = other.termPst;
+    this.termSoldier = other.termSoldier;
+    this.termPhase = other.termPhase;
     this.checkNow = other.checkNow;
     this.ply = 0;
     this.keyStackLo[0] = this.keyLo;
@@ -183,6 +217,11 @@ export class Position {
     const zi = code * N_SQ + s;
     this.keyLo ^= Z_PIECE_LO[zi];
     this.keyHi ^= Z_PIECE_HI[zi];
+    this.termMaterialMg += T_MATERIAL_MG[zi];
+    this.termMaterialEg += T_MATERIAL_EG[zi];
+    this.termPst += T_PST[zi];
+    this.termSoldier += T_SOLDIER[zi];
+    this.termPhase += T_PHASE[zi];
     if ((code & 7) === PieceType.General) this.generalSq[code >> 3] = s;
   }
 
@@ -197,6 +236,11 @@ export class Position {
     const zi = code * N_SQ + s;
     this.keyLo ^= Z_PIECE_LO[zi];
     this.keyHi ^= Z_PIECE_HI[zi];
+    this.termMaterialMg -= T_MATERIAL_MG[zi];
+    this.termMaterialEg -= T_MATERIAL_EG[zi];
+    this.termPst -= T_PST[zi];
+    this.termSoldier -= T_SOLDIER[zi];
+    this.termPhase -= T_PHASE[zi];
   }
 
   private shiftPiece(from: number, to: number, code: PieceCode): void {
@@ -209,6 +253,11 @@ export class Position {
     const zt = code * N_SQ + to;
     this.keyLo ^= Z_PIECE_LO[zf] ^ Z_PIECE_LO[zt];
     this.keyHi ^= Z_PIECE_HI[zf] ^ Z_PIECE_HI[zt];
+    // Material and phase are square-independent for every piece except the
+    // soldier, but the subtract-then-add form costs one extra array read and
+    // keeps a single code path for all seven types.
+    this.termPst += T_PST[zt] - T_PST[zf];
+    this.termSoldier += T_SOLDIER[zt] - T_SOLDIER[zf];
   }
 
   /** Squares occupied by `code`, valid for `i < pieceCount[code]`. */

@@ -158,15 +158,20 @@ function buildGeneral(ctx: UnitBuildContext): PartGroup {
     P,
   );
 
-  // The mantle 披風 over the shoulders. Han's is a short cape that stops at the
-  // pauldrons; Chu's is heavy, drops to the elbow and has half as many, twice
-  // as deep folds — soft mass against a hard figure, and a second read on the
-  // shoulder line at silhouette size.
+  // The mantle 披風 over the shoulders. Han's is a short collar cape that stops
+  // above the pauldrons; Chu's is heavier and reaches the top of the arm.
+  //
+  // Both are deliberately kept *shorter than the pauldrons are wide*. A cape
+  // whose hem radius exceeds the shoulder by much drapes over the whole harness
+  // and the figure turns into a bell: the lamellar disappears, the arms
+  // disappear, and a general built from four hundred plates reads as a lampshade
+  // with a hat on. The mantle's job is one soft horizontal at the collarbone,
+  // not a garment.
   g.parts.push(
     P.cloth.shoulderCape({
       shoulderY: m.shoulderY + m.torsoLen * (han ? 0.05 : 0.07),
-      r: m.shoulderWidth * (han ? 0.84 : 1.06),
-      drop: m.torsoLen * (han ? 0.4 : 0.66),
+      r: m.shoulderWidth * (han ? 0.62 : 0.78),
+      drop: m.torsoLen * (han ? 0.24 : 0.36),
       folds: han ? 9 : 6,
     }),
   );
@@ -178,12 +183,12 @@ function buildGeneral(ctx: UnitBuildContext): PartGroup {
       P.cloth.cloak({
         shoulderY: m.shoulderY + m.torsoLen * 0.06,
         hemY: Math.max(platformTop + m.ankleY * 0.4, m.hipY - m.legLen * 0.92),
-        rTop: m.shoulderWidth * 0.62,
-        rHem: m.shoulderWidth * 1.16,
+        rTop: m.shoulderWidth * 0.6,
+        rHem: m.shoulderWidth * 1.02,
         z: m.chestDepth * 0.46,
         folds: 7,
         foldDepth: 0.22,
-        flare: 0.4,
+        flare: 0.24,
       }),
     );
   } else {
@@ -506,12 +511,15 @@ function dressHarness(g: PartGroup, ctx: UnitBuildContext, rig: Rig, han: boolea
   for (const S of ['L', 'R'] as const) {
     mergeInto(
       g,
+      // Twenty plates, not twenty-four: the factory bakes an instance set below
+      // twenty-four into the mesh it shares a material with, and an InstancedMesh
+      // at that size costs a draw call to save nothing.
       P.lamellar.pauldron({
         side: S,
         shoulder: v3(B[`upperArm${S}`]),
-        r: m.upperArmR * (han ? 2.9 : 2.6),
+        r: m.upperArmR * (han ? 3.0 : 2.7),
         rows: 4,
-        perRow: 6,
+        perRow: 5,
       }),
       P,
     );
@@ -596,8 +604,11 @@ function dressHarness(g: PartGroup, ctx: UnitBuildContext, rig: Rig, han: boolea
 function rearPlume(ctx: UnitBuildContext, at: V3, headLen: number, headWidth: number): PartGroup {
   const P = ctx.parts;
   const g = P.emptyGroup();
-  const H = headLen * 1.15;
-  const W = headWidth * 0.42;
+  // Sized against the head, not against the helmet: a crest that is merely
+  // "taller than the bowl" vanishes at board distance, and this one has to be
+  // the top of the tallest human silhouette on the board.
+  const H = headLen * 1.95;
+  const W = headWidth * 0.66;
   const rows = 6;
   const grid: V3[][] = [];
   for (let r = 0; r < rows; r++) {
@@ -647,31 +658,37 @@ function rearPlume(ctx: UnitBuildContext, at: V3, headLen: number, headWidth: nu
 function hornWings(ctx: UnitBuildContext, at: V3, headLen: number, headWidth: number): PartGroup {
   const P = ctx.parts;
   const g = P.emptyGroup();
-  const H = headLen * 0.95;
-  const W = headWidth * 1.55;
+  const H = headLen * 1.7;
+  // Wide enough to reach past the pauldrons. This number *is* the silhouette:
+  // half of headWidth would give a pair of bumps that read as noise on the
+  // helmet, and the Chu general would collapse into the Han one.
+  const W = headWidth * 3.0;
+  // Sprung from the coronet line, not the apex of the tower, so the wings frame
+  // the crown instead of balancing on it.
+  const base: V3 = [at[0], at[1] - headLen * 0.92, at[2]];
 
   // Outline in XY: a swept blade with two forward-hooking tines off the top
-  // edge, so the wing has a notch in it rather than a clean arc.
+  // edge, so the wing has notches in it rather than a clean arc.
   const poly: V2[] = [
-    [0, -H * 0.16],
-    [W * 0.34, -H * 0.06],
-    [W * 0.6, H * 0.16],
-    [W * 0.66, H * 0.46],
-    [W * 0.52, H * 0.4],
-    [W * 0.62, H * 0.72],
-    [W * 0.44, H * 0.6],
-    [W * 0.4, H * 0.86],
-    [W * 0.26, H * 0.46],
-    [W * 0.08, H * 0.2],
-    [0, H * 0.12],
+    [0, -H * 0.14],
+    [W * 0.3, -H * 0.02],
+    [W * 0.52, H * 0.2],
+    [W * 0.6, H * 0.5],
+    [W * 0.46, H * 0.42],
+    [W * 0.55, H * 0.78],
+    [W * 0.38, H * 0.62],
+    [W * 0.34, H * 0.9],
+    [W * 0.22, H * 0.48],
+    [W * 0.07, H * 0.18],
+    [0, H * 0.1],
   ];
   const right = P.prim.extrudePlanar(poly, {
-    depth: headWidth * 0.09,
-    chamfer: headWidth * 0.022,
+    depth: headWidth * 0.1,
+    chamfer: headWidth * 0.024,
     name: 'hornWing',
   });
   // Stand it up across the head and rake it back a little.
-  P.prim.place(right, { pos: [at[0], at[1] - H * 0.06, at[2]], rot: [0.26, 0, 0] });
+  P.prim.place(right, { pos: base, rot: [0.24, 0, 0] });
   g.parts.push(P.mkPart(right, 'gold', 'metal', 'head', { name: 'hornWingR', rigid: true }));
   g.parts.push(
     P.mkPart(P.prim.mirrorX(right), 'gold', 'metal', 'head', { name: 'hornWingL', rigid: true }),
@@ -679,13 +696,13 @@ function hornWings(ctx: UnitBuildContext, at: V3, headLen: number, headWidth: nu
 
   // A lacquered crown board between the wings, tying them to the helm.
   const board = P.prim.bevelSlab({
-    w: headWidth * 0.5,
-    h: H * 0.3,
-    d: headWidth * 0.34,
-    bevel: headWidth * 0.05,
+    w: headWidth * 0.62,
+    h: headLen * 0.42,
+    d: headWidth * 0.38,
+    bevel: headWidth * 0.06,
     name: 'crownBoard',
   });
-  P.prim.place(board, { pos: [at[0], at[1] + H * 0.06, at[2]], rot: [0.16, 0, 0] });
+  P.prim.place(board, { pos: [base[0], base[1] + headLen * 0.3, base[2]], rot: [0.16, 0, 0] });
   g.parts.push(P.mkPart(board, 'lacquer', 'lacquer', 'head', { name: 'crownBoard', rigid: true }));
   return g;
 }
@@ -858,10 +875,13 @@ function backStandard(g: PartGroup, ctx: UnitBuildContext, rig: Rig, han: boolea
     P.standard.standard({
       shape: han ? 'hanSquare' : 'chuSwallowtail',
       base: at,
-      poleLength: h * (han ? 0.78 : 0.88),
+      // Han's 旌 is deliberately the smaller of the two: his silhouette already
+      // spends its height on the plume, and a banner big enough to compete with
+      // the crown turns the commander into a standard-bearer.
+      poleLength: h * (han ? 0.62 : 0.88),
       poleR: h * 0.014,
-      bannerHeight: h * (han ? 0.26 : 0.32),
-      bannerWidth: h * (han ? 0.32 : 0.3),
+      bannerHeight: h * (han ? 0.19 : 0.32),
+      bannerWidth: h * (han ? 0.22 : 0.3),
       lean: han ? 0.36 : 0.1,
       fly: han ? -0.55 : 0.45,
       boneHint: 'spine02',

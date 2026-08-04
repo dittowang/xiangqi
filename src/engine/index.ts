@@ -54,14 +54,26 @@ export {
   parseNotation,
 } from './notation.ts';
 export {
+  LAZY_MARGIN,
   PIECE_VALUE,
   breakdown,
   evaluate,
   evaluateRedPov,
+  lazyExitCount,
+  lazyOmittedMagnitude,
+  resetLazyExitCount,
   weightsFor,
   type EvalBreakdown,
   type EvalWeights,
 } from './eval.ts';
+export { SEE_VALUE, mayLoseMaterial, see, smallestAttacker } from './see.ts';
+export {
+  MATERIAL_ENDGAME,
+  MATERIAL_OPENING,
+  PHASE_MAX,
+  SOLDIER_CROSSED,
+  SOLDIER_DEEP,
+} from './terms.ts';
 export {
   MATE_THRESHOLD,
   MATE_VALUE,

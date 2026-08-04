@@ -581,6 +581,12 @@ export const PIGMENT = {
 /** The cannon's stone: a projectile and its burst. */
 export const PROJECTILE = {
   radius: 0.085,
+  /**
+   * Apex height as a multiple of a third of the shot's length. A 砲 is a
+   * traction trebuchet, not a mortar: the arc has to clear the pieces between
+   * without leaving frame, and this is the number that decides that.
+   */
+  arcScale: 1.0,
   /** Chips thrown by the burst on impact. */
   burstChips: 74,
   burstSpeed: 3.1,

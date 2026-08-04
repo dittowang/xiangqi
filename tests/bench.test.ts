@@ -41,7 +41,7 @@ describe('component throughput', () => {
     // The evaluation runs two weighted-mobility passes, so it can never be much
     // faster than half a movegen; if it drops far below that, something in it
     // has started allocating.
-    expect(evalRate).toBeGreaterThan(20_000);
+    expect(evalRate).toBeGreaterThan(30_000);
     expect(genRate).toBeGreaterThan(60_000);
   }, 30_000);
 
@@ -55,6 +55,43 @@ describe('component throughput', () => {
     expect(nodes).toBe(3290240);
     expect(nodes / (ms / 1000)).toBeGreaterThan(50_000);
   }, 120_000);
+});
+
+describe('search shape', () => {
+  /**
+   * The honest effective branching factor.
+   *
+   * Reading it off one iterative-deepening run flatters the ordering badly: the
+   * transposition table carries between iterations, so a deeper pass can visit
+   * *fewer* nodes than a shallower one and the geometric mean collapses. This
+   * runs each depth as its own search with a fresh table, which is the number
+   * that can be compared against the theoretical floor — xiangqi's raw
+   * branching factor is around 40, so perfect ordering would sit near 6.3.
+   */
+  it('effective branching factor, fresh table per depth', () => {
+    for (const [name, fen] of [
+      ['opening', START_FEN],
+      ['midgame', MIDGAME],
+    ] as [string, string][]) {
+      const nodes: number[] = [];
+      for (let d = 4; d <= 8; d++) {
+        const searcher = new Searcher(20); // fresh table, no carry-over
+        const r = searcher.search(new Position(fen), { maxDepth: d, timeMs: 0 });
+        nodes.push(r.nodes);
+      }
+      const ratios: number[] = [];
+      for (let i = 1; i < nodes.length; i++) ratios.push(nodes[i] / nodes[i - 1]);
+      const ebf = Math.exp(ratios.reduce((a, r) => a + Math.log(r), 0) / ratios.length);
+      console.log(
+        `[bench] EBF ${name}: ${ebf.toFixed(2)} from depth 4..8 nodes ${JSON.stringify(nodes)} ` +
+          `(ratios ${ratios.map((r) => r.toFixed(2)).join(', ')})`,
+      );
+      // Well under the raw branching factor of ~40; if any ordering component
+      // regresses this climbs immediately.
+      expect(ebf).toBeGreaterThan(1.5);
+      expect(ebf).toBeLessThan(10);
+    }
+  }, 180_000);
 });
 
 describe('search throughput', () => {
@@ -71,7 +108,7 @@ describe('search throughput', () => {
         `${Math.round(nps).toLocaleString()} n/s, EBF ${result.effectiveBranching.toFixed(2)}, ` +
         `per-depth ${JSON.stringify(result.depthNodes)}`,
     );
-    expect(result.depth).toBeGreaterThanOrEqual(5);
-    expect(nps).toBeGreaterThan(15_000);
+    expect(result.depth).toBeGreaterThanOrEqual(6);
+    expect(nps).toBeGreaterThan(30_000);
   }, 30_000);
 });

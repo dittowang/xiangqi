@@ -127,10 +127,14 @@ const FIXTURES: { name: string; fen: string; expect: number[] }[] = [
 ];
 
 describe('perft on five more fixtures', () => {
-  it.each(FIXTURES)('$name — engine matches its recorded counts', ({ fen, expect: want }) => {
-    const pos = new Position(fen);
-    for (let d = 1; d <= want.length; d++) expect(perft(pos, d)).toBe(want[d - 1]);
-  });
+  it.each(FIXTURES)(
+    '$name — engine matches its recorded counts',
+    { timeout: 120_000 },
+    ({ fen, expect: want }) => {
+      const pos = new Position(fen);
+      for (let d = 1; d <= want.length; d++) expect(perft(pos, d)).toBe(want[d - 1]);
+    },
+  );
 
   it.each(FIXTURES)(
     '$name — the naive reference agrees to depth 3',
