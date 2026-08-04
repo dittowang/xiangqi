@@ -321,6 +321,33 @@ export function bindSkin(
   return geometry;
 }
 
+/**
+ * Bind every vertex 100% to one bone *index*.
+ *
+ * The index form exists because mount bones — a horse's cannon bone, a
+ * chariot's wheel — live past the twenty humanoid bones in the same skeleton
+ * and have no `BoneName`. Rigid-binding them rather than parenting a mesh to
+ * each one is what collapses a horse from twenty draw calls to two: the leg
+ * segments still articulate, because a rigid skin weight and a parented mesh
+ * are the same transform, but they can now be merged with everything else that
+ * shares their material.
+ */
+export function bindRigidToIndex(
+  geometry: THREE.BufferGeometry,
+  boneIndex: number,
+): THREE.BufferGeometry {
+  const n = (geometry.getAttribute('position') as THREE.BufferAttribute).count;
+  const si = new Uint16Array(n * MAX_INFLUENCES);
+  const sw = new Float32Array(n * MAX_INFLUENCES);
+  for (let v = 0; v < n; v++) {
+    si[v * 4] = boneIndex;
+    sw[v * 4] = 1;
+  }
+  geometry.setAttribute('skinIndex', new THREE.Uint16BufferAttribute(si, 4));
+  geometry.setAttribute('skinWeight', new THREE.Float32BufferAttribute(sw, 4));
+  return geometry;
+}
+
 // ---------------------------------------------------------------------------
 // Diagnostics
 // ---------------------------------------------------------------------------

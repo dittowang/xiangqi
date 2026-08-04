@@ -51,7 +51,7 @@ import {
 } from './parts/types.ts';
 import { unitSpec, type UnitSpec } from './proportions.ts';
 import { buildRig, type Rig, type RigOptions } from './rig.ts';
-import { bindSkin } from './skinning.ts';
+import { bindRigidToIndex, bindSkin } from './skinning.ts';
 
 // ===========================================================================
 // The unit-builder contract
@@ -133,6 +133,14 @@ export interface FactoryOptions {
   fallback?: UnitBuilder;
   /** Diagnostics sink: budget overruns, silhouette drift, missing builders. */
   onWarn?: (message: string) => void;
+  /**
+   * Instance sets smaller than this are baked into the merged mesh they share a
+   * material with instead of becoming their own `InstancedMesh`. Below the
+   * threshold an InstancedMesh costs a draw call and saves only vertex memory,
+   * which is the wrong trade at 32 units on screen. Raise it to trade draw
+   * calls for memory, lower it (0) to keep every instance set instanced.
+   */
+  bakeInstancesBelow?: number;
 }
 
 interface MeshGroupKey {
@@ -146,6 +154,7 @@ export class Factory implements CharacterFactory {
   private readonly allowFallback: boolean;
   private readonly fallback: UnitBuilder | undefined;
   private readonly warn: (m: string) => void;
+  private readonly bakeBelow: number;
 
   private geometryCount = 0;
   private triangleTotal = 0;
@@ -157,6 +166,7 @@ export class Factory implements CharacterFactory {
     this.allowFallback = opts.allowFallback !== false;
     this.fallback = opts.fallback;
     this.warn = opts.onWarn ?? ((m) => console.warn(`[characters] ${m}`));
+    this.bakeBelow = opts.bakeInstancesBelow ?? 24;
   }
 
   create(side: Side, type: PieceType, variant = 0): UnitInstance {
@@ -233,31 +243,120 @@ export class Factory implements CharacterFactory {
     // --- mount bones --------------------------------------------------------
     this.buildMountBones(group.bones, bindWorld, mountBones, objectFor);
 
+    // --- one skeleton for the figure AND its mount --------------------------
+    // The first twenty bones are exactly `BONE_ORDER`, so a clip authored
+    // against the shared rig retargets untouched. Mount bones are appended
+    // after them. That lets a horse's sixteen leg-segment bones drive *skin
+    // weights* instead of parenting sixteen separate meshes, which is the
+    // difference between twenty draw calls per horse and two.
+    const boneNames: string[] = [...BONE_ORDER];
+    const allBones: THREE.Bone[] = [...rig.boneList];
+    for (const name of Object.keys(mountBones)) {
+      const b = mountBones[name];
+      if (b instanceof THREE.Bone) {
+        boneNames.push(name);
+        allBones.push(b);
+      }
+    }
+    const boneIndex = new Map<string, number>();
+    boneNames.forEach((n, i) => boneIndex.set(n, i));
+    const inverses = boneNames.map((n) => (bindWorld.get(n) ?? IDENTITY).clone().invert());
+    const skeleton = new THREE.Skeleton(allBones, inverses);
+
     const skinned: THREE.SkinnedMesh[] = [];
     const props: THREE.Object3D[] = [];
     const owned = new Set<THREE.BufferGeometry>();
     let triangles = 0;
 
-    // --- skinned parts ------------------------------------------------------
-    const skinGroups = new Map<string, { key: MeshGroupKey; geoms: THREE.BufferGeometry[] }>();
-    for (const p of group.parts) {
-      if (p.mountBone) continue;
-      const geo = p.geometry;
-      bindSkin(geo, rig, p.boneHint, {
-        ...(p.rigid ? { rigid: true } : {}),
-        ...(p.allow ? { allow: p.allow } : {}),
-        depth: p.rigid ? 1 : 2,
-      });
-      const pigment = resolvePigment(p.pigment, spec.side);
-      const k = `${p.cls}|${pigment}|${p.noSilk ? 1 : 0}`;
-      let bucket = skinGroups.get(k);
-      if (!bucket) {
-        bucket = { key: { cls: p.cls, pigment, noSilk: !!p.noSilk }, geoms: [] };
-        skinGroups.set(k, bucket);
+    // --- material buckets ---------------------------------------------------
+    const buckets = new Map<string, { key: MeshGroupKey; geoms: THREE.BufferGeometry[] }>();
+    const bucketFor = (p: { cls: Part['cls']; pigment: PigmentName; noSilk?: boolean }) => {
+      const k = `${p.cls}|${p.pigment}|${p.noSilk ? 1 : 0}`;
+      let b = buckets.get(k);
+      if (!b) {
+        b = { key: { cls: p.cls, pigment: p.pigment, noSilk: !!p.noSilk }, geoms: [] };
+        buckets.set(k, b);
       }
-      bucket.geoms.push(geo);
+      return b;
+    };
+
+    for (const p of group.parts) {
+      const pigment = resolvePigment(p.pigment, spec.side);
+      if (p.mountBone) {
+        // Rigid on a mount bone. Geometry stays in rig space; the bone's
+        // inverse bind matrix does the work.
+        const idx = boneIndex.get(p.mountBone);
+        if (idx === undefined) {
+          this.warn(`${spec.key}: part "${p.name ?? '?'}" names unknown mount bone "${p.mountBone}"`);
+          continue;
+        }
+        bindRigidToIndex(p.geometry, idx);
+      } else {
+        bindSkin(p.geometry, rig, p.boneHint, {
+          ...(p.rigid ? { rigid: true } : {}),
+          ...(p.allow ? { allow: p.allow } : {}),
+          depth: p.rigid ? 1 : 2,
+        });
+      }
+      bucketFor({ cls: p.cls, pigment, ...(p.noSilk ? { noSilk: true } : {}) }).geoms.push(p.geometry);
     }
-    for (const bucket of skinGroups.values()) {
+
+    // --- instanced parts ----------------------------------------------------
+    // Below the threshold an `InstancedMesh` costs a draw call and saves only
+    // vertex memory, so a fifteen-plate pauldron is cheaper baked into the mesh
+    // it shares a material with. Above it — a twenty-six-spoke wheel, a
+    // ninety-plate cuirass row — instancing wins on both counts and stays.
+    for (const p of group.instanced) {
+      if (p.transforms.length === 0) continue;
+      const host = p.mountBone ?? p.boneHint;
+      const idx = boneIndex.get(host);
+      const pigment = resolvePigment(p.pigment, spec.side);
+
+      if (p.transforms.length < this.bakeBelow && idx !== undefined) {
+        const bucket = bucketFor({ cls: p.cls, pigment, ...(p.noSilk ? { noSilk: true } : {}) });
+        for (const t of p.transforms) {
+          const g = p.geometry.clone();
+          g.applyMatrix4(t);
+          bindRigidToIndex(g, idx);
+          bucket.geoms.push(g);
+        }
+        continue;
+      }
+
+      const inv = (bindWorld.get(host) ?? IDENTITY).clone().invert();
+      const mat = this.material({
+        cls: p.cls,
+        pigment,
+        variation,
+        ...(p.noSilk ? { noSilk: true } : {}),
+      });
+      // Instanced geometry is shared between bands, so it may already carry
+      // smooth normals from an earlier band; adding them twice is wasteful.
+      if (!p.geometry.getAttribute('aSmoothNormal')) addSmoothNormals(p.geometry);
+      const mesh = new THREE.InstancedMesh(p.geometry, mat, p.transforms.length);
+      mesh.name = `${spec.key}:${p.name ?? 'instanced'}`;
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      const m = new THREE.Matrix4();
+      for (let i = 0; i < p.transforms.length; i++) {
+        m.multiplyMatrices(inv, p.transforms[i]);
+        mesh.setMatrixAt(i, m);
+      }
+      mesh.instanceMatrix.needsUpdate = true;
+      mesh.computeBoundingBox();
+      mesh.computeBoundingSphere();
+      objectFor(host).add(mesh);
+      props.push(mesh);
+      if (!owned.has(p.geometry)) {
+        owned.add(p.geometry);
+        this.geometryCount++;
+      }
+      triangles += triangleCount(p.geometry) * p.transforms.length;
+    }
+
+    // --- merge each bucket into one skinned mesh ----------------------------
+    for (const bucket of buckets.values()) {
+      if (bucket.geoms.length === 0) continue;
       const merged = addSmoothNormals(mergeGeometryList(bucket.geoms));
       owned.add(merged);
       this.geometryCount++;
@@ -275,87 +374,10 @@ export class Factory implements CharacterFactory {
       // Explicit identity bind matrix: the geometry is authored in the same
       // space the bone inverses were taken in, and the mesh's own transform is
       // cancelled out by three's attached bind mode.
-      mesh.bind(rig.skeleton, new THREE.Matrix4());
+      mesh.bind(skeleton, new THREE.Matrix4());
       root.add(mesh);
       skinned.push(mesh);
       triangles += triangleCount(merged);
-    }
-
-    // --- rigid parts on mount bones ----------------------------------------
-    const rigidGroups = new Map<
-      string,
-      { key: MeshGroupKey; bone: string; geoms: THREE.BufferGeometry[] }
-    >();
-    for (const p of group.parts) {
-      if (!p.mountBone) continue;
-      const pigment = resolvePigment(p.pigment, spec.side);
-      const k = `${p.mountBone}|${p.cls}|${pigment}|${p.noSilk ? 1 : 0}`;
-      let bucket = rigidGroups.get(k);
-      if (!bucket) {
-        bucket = {
-          key: { cls: p.cls, pigment, noSilk: !!p.noSilk },
-          bone: p.mountBone,
-          geoms: [],
-        };
-        rigidGroups.set(k, bucket);
-      }
-      // Rig space into the owning bone's local space.
-      const inv = (bindWorld.get(p.mountBone) ?? IDENTITY).clone().invert();
-      p.geometry.applyMatrix4(inv);
-      bucket.geoms.push(p.geometry);
-    }
-    for (const bucket of rigidGroups.values()) {
-      const merged = addSmoothNormals(mergeGeometryList(bucket.geoms));
-      owned.add(merged);
-      this.geometryCount++;
-      const mat = this.material({
-        cls: bucket.key.cls,
-        pigment: bucket.key.pigment,
-        variation,
-        ...(bucket.key.noSilk ? { noSilk: true } : {}),
-      });
-      const mesh = new THREE.Mesh(merged, mat);
-      mesh.name = `${spec.key}:${bucket.bone}:${bucket.key.cls}`;
-      mesh.castShadow = true;
-      mesh.receiveShadow = true;
-      objectFor(bucket.bone).add(mesh);
-      props.push(mesh);
-      triangles += triangleCount(merged);
-    }
-
-    // --- instanced parts ----------------------------------------------------
-    for (const p of group.instanced) {
-      if (p.transforms.length === 0) continue;
-      const host = p.mountBone ?? p.boneHint;
-      const inv = (bindWorld.get(host) ?? IDENTITY).clone().invert();
-      const pigment = resolvePigment(p.pigment, spec.side);
-      const mat = this.material({
-        cls: p.cls,
-        pigment,
-        variation,
-        ...(p.noSilk ? { noSilk: true } : {}),
-      });
-      // Instanced geometry is shared between bands, so it may already carry
-      // smooth normals from an earlier unit; adding them twice is harmless but
-      // wasteful, hence the guard.
-      if (!p.geometry.getAttribute('aSmoothNormal')) addSmoothNormals(p.geometry);
-      const mesh = new THREE.InstancedMesh(p.geometry, mat, p.transforms.length);
-      mesh.name = `${spec.key}:${p.name ?? 'instanced'}`;
-      mesh.castShadow = true;
-      mesh.receiveShadow = true;
-      const m = new THREE.Matrix4();
-      for (let i = 0; i < p.transforms.length; i++) {
-        m.multiplyMatrices(inv, p.transforms[i]);
-        mesh.setMatrixAt(i, m);
-      }
-      mesh.instanceMatrix.needsUpdate = true;
-      mesh.computeBoundingBox();
-      mesh.computeBoundingSphere();
-      objectFor(host).add(mesh);
-      props.push(mesh);
-      owned.add(p.geometry);
-      this.geometryCount++;
-      triangles += triangleCount(p.geometry) * p.transforms.length;
     }
 
     // --- attachment sockets -------------------------------------------------
@@ -392,7 +414,7 @@ export class Factory implements CharacterFactory {
       root,
       skinned,
       props,
-      skeleton: rig.skeleton,
+      skeleton,
       bones: rig.bones,
       mountBones,
       attach,

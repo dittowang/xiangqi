@@ -565,13 +565,15 @@ export function trebuchet(o: TrebuchetOpts): PartGroup {
   // -- sled ----------------------------------------------------------------
   const beamR = H * 0.055;
   for (const s of [-1, 1]) {
+    // w = across the sled, h = its depth, d = its length along Z. No rotation:
+    // the slab's own axes already line up with the sled's.
     const runner = bevelSlab({
       w: H * 0.11,
       h: H * 0.1,
       d: o.sledLength,
       bevel: H * 0.02,
     });
-    place(runner, { pos: P(s * o.spread * 0.92, H * 0.05, 0), rot: [Math.PI / 2, 0, 0] });
+    place(runner, { pos: P(s * o.spread * 0.92, H * 0.05, 0) });
     g.parts.push(
       mkPart(runner, 'timber', timber, 'root', { name: 'sledRunner', rigid: true, mountBone: 'treb.base' }),
     );

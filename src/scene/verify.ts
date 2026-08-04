@@ -42,11 +42,12 @@ import {
   palaceDiagonals,
   silkSag,
 } from './board.ts';
-import { BASE_TOP_Y } from './bases.ts';
+import { BASE_TOP_Y, adaptGlyphPath } from './bases.ts';
 import { Backdrop, LAKE_Y, TERRACE_RADIUS } from './backdrop.ts';
 import { Director, PUSH_LAND_FRACTION, RETURN_SLOWDOWN, SPRING } from './camera.ts';
 import { LightingRig } from './lighting.ts';
 import { createFallbackMaterials } from './fallbackMaterials.ts';
+import { createSceneRig } from './index.ts';
 import type { SealOutline } from './bases.ts';
 
 /**
@@ -699,6 +700,76 @@ section('bases and the incised glyph');
 
 // ---------------------------------------------------------------------------
 
+section('glyph adapter and marks');
+
+{
+  // The adapter is what the integration layer wires @ui/seal.ts through, so it
+  // has to survive whatever shape that module settles on.
+  const square = [0, 0, 1, 0, 1, 1, 0, 1];
+  const asPoints = [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }, { x: 0, y: 1 }];
+  check('adapter: bare array of flat contours', adaptGlyphPath([square])?.contours.length === 1, 'ok');
+  check('adapter: { contours }', adaptGlyphPath({ contours: [square] })?.contours.length === 1, 'ok');
+  check('adapter: { paths } alias', adaptGlyphPath({ paths: [square] })?.contours.length === 1, 'ok');
+  check('adapter: arrays of {x,y} points', adaptGlyphPath([asPoints])?.contours.length === 1, 'ok');
+  check('adapter: explicit hole flags survive', adaptGlyphPath({ contours: [square, square], holes: [false, true] })?.holes?.[1] === true, 'ok');
+  check('adapter: junk yields null, not a throw', adaptGlyphPath({ nope: 1 }) === null && adaptGlyphPath(null) === null, 'ok');
+  check('adapter: contours too short are dropped', adaptGlyphPath([[0, 0, 1, 1]]) === null, 'ok');
+
+  // Legal marks: stage in, then retire.
+  const targets = [sq(0, 5), sq(1, 5), sq(2, 5), sq(3, 5)];
+  board.showLegalMarks(targets);
+  const legal = board.markers.group.getObjectByName('scene/markers/legal') as THREE.InstancedMesh;
+  check('legal marks appear', legal.count === targets.length, `${legal.count} instances`);
+  for (let i = 0; i < 60; i++) board.update(1 / 60);
+  const m = new THREE.Matrix4();
+  const s = new THREE.Vector3();
+  legal.getMatrixAt(3, m);
+  m.decompose(new THREE.Vector3(), new THREE.Quaternion(), s);
+  near('the last mark reaches full size', s.x, 1, 0.01);
+  board.clearLegalMarks();
+  for (let i = 0; i < 60; i++) board.update(1 / 60);
+  check('legal marks retire completely', legal.count === 0, `${legal.count} instances`);
+
+  // Hover slides to the square rather than jumping.
+  board.setHover(sq(4, 5));
+  for (let i = 0; i < 60; i++) board.update(1 / 60);
+  const hover = board.markers.group.getObjectByName('scene/markers/hover') as THREE.Mesh;
+  near('hover ring lands on its square (x)', hover.position.x, worldX(4), 0.01);
+  near('hover ring lands on its square (z)', hover.position.z, worldZ(5), 0.01);
+  check('hover ring floats clear of the board', hover.position.y > board.surfaceAt(worldX(4), worldZ(5)), `${fmt(hover.position.y)}`);
+  board.setHover(null);
+  for (let i = 0; i < 90; i++) board.update(1 / 60);
+  check('hover ring leaves', hover.visible === false, 'hidden');
+
+  // Check pulse.
+  board.setCheck(sq(4, 0));
+  for (let i = 0; i < 30; i++) board.update(1 / 60);
+  const chk = board.markers.group.getObjectByName('scene/markers/check') as THREE.Mesh;
+  const a = chk.scale.x;
+  for (let i = 0; i < 18; i++) board.update(1 / 60);
+  const b2 = chk.scale.x;
+  check('check mark pulses', Math.abs(a - b2) > 0.01, `scale ${fmt(a)} -> ${fmt(b2)}`);
+  board.setCheck(null);
+
+  board.setLastMove(sq(1, 7), sq(4, 7));
+  const rings = board.markers.group.getObjectByName('scene/markers/lastMove') as THREE.InstancedMesh;
+  check('last move leaves two marks', rings.count === 2, `${rings.count} instances`);
+
+  // Growing a base bucket past a standard game's piece count.
+  const extra = new Board({ materials, detail: 'low' });
+  for (let i = 0; i < 8; i++) {
+    extra.bases.add(100 + i, Side.Red, PieceType.Soldier);
+    extra.bases.setPosition(100 + i, i * 0.9 - 3.6, 1.0);
+  }
+  near('a grown bucket still reports the right height', extra.heightAt(-3.6, 1.0), silkSag(-3.6, 1.0) + BASE_TOP_Y, 1e-9);
+  near('and so does its eighth instance', extra.heightAt(2.7, 1.0), silkSag(2.7, 1.0) + BASE_TOP_Y, 1e-9);
+  extra.bases.remove(103);
+  near('a removed base stops contributing', extra.heightAt(-0.9, 1.0), silkSag(-0.9, 1.0), 1e-9);
+  extra.dispose();
+}
+
+// ---------------------------------------------------------------------------
+
 section('backdrop');
 
 {
@@ -1022,8 +1093,100 @@ async function pushTests(): Promise<void> {
 
 // ---------------------------------------------------------------------------
 
+async function rigTests(): Promise<void> {
+  section('scene rig (the path main.ts takes)');
+
+  const rig = createSceneRig({
+    materials,
+    seal: () => testOutline(),
+    riverText: () => testOutline(),
+    detail: 'medium',
+    aspect: 16 / 9,
+  });
+
+  check('rig root holds board, backdrop and lights', rig.root.children.length === 3, `${rig.root.children.length} children`);
+  check('rig exposes the camera', rig.camera.isPerspectiveCamera === true, `fov ${fmt(rig.camera.fov)}`);
+  check(
+    'a riverText provider carves the banking',
+    !!rig.board.parts.riverText && tris(rig.board.parts.riverText) > 20,
+    `${rig.board.parts.riverText ? tris(rig.board.parts.riverText) : 0} tris of inscription`,
+  );
+
+  const st = rig.stats();
+  process.stdout.write(
+    `      medium detail: ${Math.round(st.triangles)} board tris in ${st.meshes} meshes, ${Math.round(st.backdropTriangles)} backdrop tris\n`,
+  );
+
+  // The lighting rig must reach the water and sky shaders, not just the lights.
+  const waterMat = (rig.board.parts.water as THREE.Mesh).material as THREE.ShaderMaterial;
+  const gradeBefore = waterMat.uniforms.uGradeAmount.value as number;
+  rig.setPhase('endgame', 1.0);
+  for (let i = 0; i < 90; i++) rig.update(1 / 60);
+  const gradeAfter = waterMat.uniforms.uGradeAmount.value as number;
+  near('the mood grade reaches the water shader', gradeAfter, MOODS.endgame.gradeAmount, 1e-6);
+  check('and it actually moved', Math.abs(gradeAfter - gradeBefore) > 0.05, `${fmt(gradeBefore)} -> ${fmt(gradeAfter)}`);
+  near('the key light followed the same mood', rig.lighting.state.keyElevation, MOODS.endgame.keyElevation, 1e-6);
+  near('and the camera took the endgame framing', rig.director.getPose().pitch, 0.42, 0.02);
+
+  // Terminal: the slow arc has to keep turning.
+  rig.director.setTerminalFocus(sq(4, 0));
+  rig.director.setMode('terminal', 0.5);
+  for (let i = 0; i < 120; i++) rig.update(1 / 60);
+  const yaw0 = rig.director.getPose().yaw;
+  for (let i = 0; i < 120; i++) rig.update(1 / 60);
+  const yaw1 = rig.director.getPose().yaw;
+  check('terminal mode arcs', Math.abs(yaw1 - yaw0) > 0.05, `yaw ${fmt(yaw0)} -> ${fmt(yaw1)} over 2 s`);
+  near('and it arcs around the fallen general', rig.director.getPose().target[2], worldZ(0), 0.2);
+
+  // A capture during the terminal set piece must hand the arc back on release.
+  // NOTE: the push promise resolves from inside `update()`, so it has to be
+  // driven, not merely awaited — awaiting it on a stalled clock is a deadlock,
+  // and the choreographer must interleave the same way.
+  {
+    let done = false;
+    const p = rig.director.pushToCapture(sq(3, 0), sq(4, 0)).then(() => {
+      done = true;
+    });
+    for (let i = 0; i < 300 && !done; i++) {
+      rig.update(1 / 60);
+      await Promise.resolve();
+    }
+    await p;
+    check('a push fired during the terminal arc lands', done, 'resolved');
+  }
+  rig.director.release();
+  for (let i = 0; i < 120; i++) rig.update(1 / 60);
+  const yaw2 = rig.director.getPose().yaw;
+  for (let i = 0; i < 120; i++) rig.update(1 / 60);
+  check(
+    'the arc resumes after an event push releases',
+    Math.abs(rig.director.getPose().yaw - yaw2) > 0.05,
+    `yaw moved ${fmt(Math.abs(rig.director.getPose().yaw - yaw2))} rad in 2 s`,
+  );
+
+  // Formation tracking.
+  rig.director.setMode('formation');
+  rig.director.setTrackTarget(0, 3.2, 0.4);
+  for (let i = 0; i < 90; i++) rig.update(1 / 60);
+  near('formation tracking moves the orbit target', rig.director.getPose().target[2], 3.2, 0.05);
+
+  // The height field is what the animator binds to.
+  near('rig.heightAt matches board.heightAt', rig.heightAt(1.0, 1.0), rig.board.heightAt(1.0, 1.0), 1e-12);
+
+  rig.setSilhouetteMode(true);
+  check('rig silhouette mode reaches everything', waterMat.uniforms.uSilhouette.value === 1 && rig.backdrop.group.children.length === 3, 'set');
+  rig.setSilhouetteMode(false);
+
+  rig.resize(1920, 1080);
+  near('resize sets the aspect', rig.camera.aspect, 1920 / 1080, 1e-9);
+
+  rig.dispose();
+  check('rig disposes cleanly', rig.root.children.length === 0, 'root emptied');
+}
+
 async function main(): Promise<void> {
   await pushTests();
+  await rigTests();
 
   section('summary');
   process.stdout.write(`      ${passes} checks passed, ${failures.length} failed\n`);

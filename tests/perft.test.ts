@@ -52,6 +52,23 @@ describe('perft from the standard opening', () => {
     expect(p.ply).toBe(0);
   });
 
+  /**
+   * Not an assertion about speed so much as a recorded measurement: perft is
+   * pure make/unmake plus legality, so its node rate is the floor the search's
+   * own rate is built on. The threshold is deliberately loose — it exists to
+   * catch an accidental quadratic, not to police a few percent.
+   */
+  it('records the make/unmake node rate', { timeout: 120_000 }, () => {
+    const p = new Position(START_FEN);
+    perft(p, 2); // warm the JIT
+    const t0 = Date.now();
+    const nodes = perft(p, 4);
+    const ms = Date.now() - t0;
+    const nps = Math.round(nodes / (ms / 1000));
+    console.log(`[perft] depth 4: ${nodes} nodes in ${ms}ms = ${nps} nodes/sec`);
+    expect(nps).toBeGreaterThan(50_000);
+  });
+
   it('divide sums to the total', () => {
     const p = new Position(START_FEN);
     const divide = perftDivide(p, 3);

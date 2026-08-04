@@ -49,17 +49,20 @@ import {
  * 相2 兵1; the numbers below are that scale in centipawns with two deliberate
  * departures, both standard among strong xiangqi engines:
  *
- *   - The chariot is pushed slightly past 9 soldiers (900 vs 100) because a
- *     xiangqi soldier is much weaker than a western pawn before it crosses.
+ *   - The chariot is pushed past 9 soldiers (900 vs 100) because a xiangqi
+ *     soldier is much weaker than a western pawn before it crosses — but kept
+ *     just under cannon + horse together, which is the exchange the traditional
+ *     scale calls level.
  *   - Cannon and horse are *not* equal. The cannon opens above the horse (470
- *     vs 400) because the board is full of screens, and ends below it (410 vs
- *     440) because an empty board leaves it nothing to fire over.
+ *     vs 440) because the board is full of screens, and ends well below it (410
+ *     vs 470) because an empty board leaves it nothing to fire over. That
+ *     crossover is the single most useful thing the phase taper buys.
  *
  * The general is worth zero: it is never captured, and giving it a value would
  * only pollute the material balance in bare-general endings.
  */
-const MATERIAL_OPENING = [0, 0, 210, 220, 400, 900, 470, 100];
-const MATERIAL_ENDGAME = [0, 0, 240, 230, 440, 940, 410, 100];
+const MATERIAL_OPENING = [0, 0, 210, 220, 440, 900, 470, 100];
+const MATERIAL_ENDGAME = [0, 0, 240, 230, 470, 940, 410, 100];
 
 /** Extra value a soldier gains the moment it is over the river. */
 const SOLDIER_CROSSED = 90;
@@ -268,8 +271,16 @@ const SAFETY = {
 // Phase taper
 // ---------------------------------------------------------------------------
 
-/** Only the three attacking types drive the phase; shells and soldiers do not. */
-const PHASE_MAX = 2 * (2 * 900 + 2 * 470 + 2 * 400);
+/**
+ * Only the three attacking types drive the phase; shells and soldiers do not.
+ * These weights are deliberately *not* the material values — they are a fixed
+ * yardstick for "how much is still on the board", and tying them to the tapered
+ * values would make the taper depend on itself.
+ */
+const PHASE_CHARIOT = 900;
+const PHASE_CANNON = 470;
+const PHASE_HORSE = 400;
+const PHASE_MAX = 2 * (2 * PHASE_CHARIOT + 2 * PHASE_CANNON + 2 * PHASE_HORSE);
 
 /** Small bonus for having the move; keeps the search from shuffling. */
 const TEMPO = 8;
@@ -315,20 +326,46 @@ export interface EvalBreakdown {
   phase: number;
 }
 
+/**
+ * Scratch breakdown, filled by every evaluation. The search calls `evaluate()`
+ * at every leaf, so this path must not allocate — `breakdown()` copies the
+ * scratch out for the callers that actually want the detail.
+ */
+const scratch: EvalBreakdown = {
+  material: 0,
+  pst: 0,
+  mobility: 0,
+  safety: 0,
+  tempo: 0,
+  total: 0,
+  phase: 1,
+};
+
 /** Centipawns from the side to move's point of view. */
 export function evaluate(pos: Position): number {
-  const red = evaluateRedPov(pos);
+  const red = compute(pos);
   return pos.side === Side.Red ? red : -red;
 }
 
 /** Centipawns from Red's point of view, whoever is to move. */
 export function evaluateRedPov(pos: Position): number {
-  return breakdown(pos).total;
+  return compute(pos);
 }
 
+/** A copy of the per-term detail, for tests and the review-mode tooltip. */
 export function breakdown(pos: Position): EvalBreakdown {
+  compute(pos);
+  return { ...scratch };
+}
+
+function compute(pos: Position): number {
   const phase = clamp(phaseOf(pos) / PHASE_MAX, 0, 1);
-  const w = weightsFor(phase);
+  // The weights are pure functions of the phase, and computing them inline
+  // keeps this whole function allocation-free.
+  const wPst = lerp(0.8, 1.0, phase);
+  const wMobility = lerp(1.2, 0.9, phase);
+  const wSafety = lerp(0.7, 1.2, phase);
+  const wSoldier = lerp(1.45, 1.0, phase);
 
   let material = 0;
   let pst = 0;
@@ -344,7 +381,7 @@ export function breakdown(pos: Position): EvalBreakdown {
     if (type === PieceType.Soldier && hasCrossedRiver(s, side)) {
       const r = rankOf(s);
       const deep = side === Side.Red ? r <= 2 : r >= 7;
-      value += (SOLDIER_CROSSED + (deep ? SOLDIER_DEEP : 0)) * w.soldierAdvance;
+      value += (SOLDIER_CROSSED + (deep ? SOLDIER_DEEP : 0)) * wSoldier;
     }
     material += sign * value;
 
@@ -356,18 +393,16 @@ export function breakdown(pos: Position): EvalBreakdown {
   const safety = generalSafety(pos, Side.Red) - generalSafety(pos, Side.Black);
   const tempo = pos.side === Side.Red ? TEMPO : -TEMPO;
 
-  const total =
-    material + pst * w.pst + mobility * w.mobility + safety * w.safety + tempo;
+  const total = material + pst * wPst + mobility * wMobility + safety * wSafety + tempo;
 
-  return {
-    material: roundSym(material),
-    pst: roundSym(pst * w.pst),
-    mobility: roundSym(mobility * w.mobility),
-    safety: roundSym(safety * w.safety),
-    tempo,
-    total: roundSym(total),
-    phase,
-  };
+  scratch.material = roundSym(material);
+  scratch.pst = roundSym(pst * wPst);
+  scratch.mobility = roundSym(mobility * wMobility);
+  scratch.safety = roundSym(safety * wSafety);
+  scratch.tempo = tempo;
+  scratch.phase = phase;
+  scratch.total = roundSym(total);
+  return scratch.total;
 }
 
 /**
@@ -380,14 +415,19 @@ function roundSym(x: number): number {
   return x < 0 ? -Math.round(-x) : Math.round(x);
 }
 
+/** Unrolled deliberately: an array literal here would allocate on every leaf. */
 function phaseOf(pos: Position): number {
-  let n = 0;
-  for (const side of [Side.Red, Side.Black]) {
-    n += pos.countOf(makePiece(side, PieceType.Chariot)) * 900;
-    n += pos.countOf(makePiece(side, PieceType.Cannon)) * 470;
-    n += pos.countOf(makePiece(side, PieceType.Horse)) * 400;
-  }
-  return n;
+  return (
+    (pos.countOf(makePiece(Side.Red, PieceType.Chariot)) +
+      pos.countOf(makePiece(Side.Black, PieceType.Chariot))) *
+      PHASE_CHARIOT +
+    (pos.countOf(makePiece(Side.Red, PieceType.Cannon)) +
+      pos.countOf(makePiece(Side.Black, PieceType.Cannon))) *
+      PHASE_CANNON +
+    (pos.countOf(makePiece(Side.Red, PieceType.Horse)) +
+      pos.countOf(makePiece(Side.Black, PieceType.Horse))) *
+      PHASE_HORSE
+  );
 }
 
 /**

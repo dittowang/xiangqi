@@ -298,7 +298,7 @@ export interface SlabOpts {
   w: number;
   /** Height across Y. */
   h: number;
-  /** Thickness along Z; the plate's outward face is at +Z. */
+  /** Thickness along Z. The bevelled outer face is the +Z one. */
   d: number;
   /** How far the outer face is inset from the back face, per side. */
   bevel?: number;
@@ -308,6 +308,12 @@ export interface SlabOpts {
   backFace?: boolean;
   /** Push the outer face forward at the centre — a subtle crown on a plate. */
   crown?: number;
+  /**
+   * Where z = 0 sits. 'centre' (the default) spans -d/2..+d/2, which is what
+   * every caller expects of a box and what keeps a rotated slab symmetric about
+   * its placement point. 'back' spans 0..d, for a plate laid *on* a surface.
+   */
+  anchor?: 'centre' | 'back';
   name?: string;
 }
 
@@ -323,8 +329,9 @@ export function bevelSlab(o: SlabOpts): THREE.BufferGeometry {
   const hh = o.h / 2;
   const fw = Math.max(1e-4, hw - bx);
   const fh = Math.max(1e-4, hh - by);
-  const zb = 0;
-  const zf = o.d + (o.crown ?? 0);
+  const z0 = o.anchor === 'back' ? 0 : -o.d / 2;
+  const zb = z0;
+  const zf = z0 + o.d + (o.crown ?? 0);
   const b = new MeshBuilder();
   const B: V3[] = [
     [hw, -hh, zb],

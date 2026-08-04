@@ -22,7 +22,7 @@
  */
 
 import * as THREE from 'three';
-import type { GongbiMaterials, MaterialRequest } from '@core/contracts.ts';
+import { BONE_ORDER, type GongbiMaterials, type MaterialRequest } from '@core/contracts.ts';
 import { PieceType, Side, UNIT_KEY, type UnitKey } from '@core/types.ts';
 import { createCharacters, unitsStillFallingBack } from './index.ts';
 import { silhouetteConflicts, unitSpec, UNIT_KEYS_IN_VALUE_ORDER } from './proportions.ts';
@@ -824,7 +824,8 @@ function verifyUnits(): void {
       pad('tris', 8, true) +
       pad('budget', 8, true) +
       pad('%', 6, true) +
-      pad('meshes', 8, true) +
+      pad('skin', 6, true) +
+      pad('prop', 6, true) +
       pad('bones', 7, true) +
       pad('W', 7, true) +
       pad('H', 7, true) +
@@ -853,8 +854,19 @@ function verifyUnits(): void {
       grand += u.meta.triangles;
       grandMeshes += meshes;
 
-      // Hard checks.
-      check(u.skeleton.bones.length === 20, `${key}: skeleton must have 20 bones`);
+      // Hard checks. The skeleton's first twenty bones must be exactly
+      // BONE_ORDER — clips retarget by index, so a shifted bone silently
+      // animates the wrong limb. Mount bones follow after them.
+      check(
+        u.skeleton.bones.length >= 20,
+        `${key}: skeleton has ${u.skeleton.bones.length} bones, expected at least 20`,
+      );
+      for (let i = 0; i < 20; i++) {
+        check(
+          u.skeleton.bones[i].name === BONE_ORDER[i],
+          `${key}: skeleton bone ${i} is "${u.skeleton.bones[i].name}", expected "${BONE_ORDER[i]}"`,
+        );
+      }
       check(u.skinned.length > 0, `${key}: no skinned meshes`);
       check(hh > 0.2, `${key}: degenerate height ${hh}`);
       for (const sm of u.skinned) {
@@ -876,7 +888,8 @@ function verifyUnits(): void {
           pad(u.meta.triangles, 8, true) +
           pad(spec.budget, 8, true) +
           pad(((u.meta.triangles / spec.budget) * 100).toFixed(0), 6, true) +
-          pad(meshes, 8, true) +
+          pad(u.skinned.length, 6, true) +
+          pad(u.props.length, 6, true) +
           pad(Object.keys(u.mountBones).length + 20, 7, true) +
           pad(w.toFixed(2), 7, true) +
           pad(hh.toFixed(2), 7, true) +

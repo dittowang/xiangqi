@@ -10,11 +10,11 @@
 
 import type { SearchResult } from '@core/contracts.ts';
 import { START_FEN } from '@core/testapi.ts';
-import { type Difficulty, type Move, NO_MOVE } from '@core/types.ts';
+import { type Difficulty, type Move, NO_MOVE, moveFrom, moveTo } from '@core/types.ts';
 import { bookEntries } from './book.ts';
-import { perft } from './movegen.ts';
+import { findLegalMove, perft } from './movegen.ts';
 import { Position } from './position.ts';
-import { type SearchProgress, Searcher, findBestMove } from './search.ts';
+import { type SearchProgress, type SearchResultFull, Searcher, findBestMove } from './search.ts';
 
 export interface HostSearchOptions {
   timeMs?: number;
@@ -47,15 +47,24 @@ export class EngineHost {
    * Replace the position. `moves` are applied on top of `fen` through the real
    * move generator, which is what gives the search a repetition history — a
    * bare FEN cannot express "this position has occurred twice already".
+   *
+   * Every move is validated against the legal move list rather than simply made,
+   * because this is the path a saved game is restored through: a save written by
+   * an older build with a different move encoding must fail loudly here so the
+   * game layer can discard it, not silently produce a corrupt board.
    */
   setPosition(fen: string, moves: readonly Move[]): void {
     this.position.setFen(fen);
-    for (const m of moves) {
+    for (let i = 0; i < moves.length; i++) {
+      const m = moves[i];
       if (m === NO_MOVE) continue;
-      if (!this.position.makeMove(m)) {
-        this.position.unmakeMove();
-        throw new Error(`illegal move ${m} while replaying the position`);
+      const legal = findLegalMove(this.position, moveFrom(m), moveTo(m));
+      if (legal === 0) {
+        throw new Error(
+          `move ${i + 1} (${moveFrom(m)}->${moveTo(m)}) is not legal in ${this.position.toFen()}`,
+        );
       }
+      this.position.makeMove(legal);
     }
   }
 
@@ -96,7 +105,8 @@ export class EngineHost {
   }
 }
 
-function stripInternals(full: SearchResult & Record<string, unknown>): SearchResult {
+/** Drop the search's internal diagnostics; the contract's shape is the wire format. */
+function stripInternals(full: SearchResultFull): SearchResult {
   return {
     move: full.move,
     score: full.score,

@@ -35,11 +35,13 @@ describe('mirror symmetry', () => {
     const mirrored = new Position(mirrorFen(pos));
     const a = breakdown(pos);
     const b = breakdown(mirrored);
-    expect(b.material).toBe(-a.material);
-    expect(b.pst).toBe(-a.pst);
-    expect(b.mobility).toBe(-a.mobility);
-    expect(b.safety).toBe(-a.safety);
-    expect(b.tempo).toBe(-a.tempo);
+    // `-0` is not `+0` under Object.is, so normalise the sign of zero.
+    const neg = (x: number) => (x === 0 ? 0 : -x);
+    expect(b.material).toBe(neg(a.material));
+    expect(b.pst).toBe(neg(a.pst));
+    expect(b.mobility).toBe(neg(a.mobility));
+    expect(b.safety).toBe(neg(a.safety));
+    expect(b.tempo).toBe(neg(a.tempo));
     expect(b.phase).toBe(a.phase);
   });
 
@@ -73,26 +75,39 @@ describe('material ordering', () => {
     expect(v[PieceType.Chariot]).toBeLessThan(v[PieceType.Cannon] + v[PieceType.Horse]);
   });
 
-  /** Same board, one extra Red piece of the named type; higher must be better. */
-  function withExtra(piece: string): number {
-    const pos = positionOf(
-      { e0: 'K', d0: 'A', f0: 'A', e9: 'k', d9: 'a', f9: 'a', a4: piece },
-      'w',
-    );
-    return evaluateRedPov(pos);
+  /**
+   * A materially symmetric opening-phase board plus one extra Red piece on e4.
+   * The board has to be full for this test to mean what it says: the cannon is
+   * only worth more than the horse *in the opening*, and a bare board would be
+   * measuring the endgame end of the taper instead.
+   */
+  const SYMMETRIC = {
+    e0: 'K', d0: 'A', f0: 'A', a0: 'R', i0: 'R', b0: 'N', h0: 'N', b2: 'C', h2: 'C',
+    e9: 'k', d9: 'a', f9: 'a', a9: 'r', i9: 'r', b9: 'n', h9: 'n', b7: 'c', h7: 'c',
+  } as const;
+
+  function extraMaterial(piece: string): number {
+    return breakdown(positionOf({ ...SYMMETRIC, e4: piece }, 'w')).material;
   }
 
   it('an extra chariot beats an extra cannon beats an extra horse', () => {
-    expect(withExtra('R')).toBeGreaterThan(withExtra('C'));
-    expect(withExtra('C')).toBeGreaterThan(withExtra('N'));
-    expect(withExtra('N')).toBeGreaterThan(withExtra('P'));
+    expect(breakdown(positionOf({ ...SYMMETRIC, e4: 'R' }, 'w')).phase).toBe(1);
+    expect(extraMaterial('R')).toBeGreaterThan(extraMaterial('C'));
+    expect(extraMaterial('C')).toBeGreaterThan(extraMaterial('N'));
+    expect(extraMaterial('N')).toBeGreaterThan(extraMaterial('P'));
+  });
+
+  it('the horse overtakes the cannon once the board empties', () => {
+    // Same two pieces, but on a bare board: the cannon has nothing to fire over.
+    const withCannon = positionOf({ e0: 'K', e9: 'k', d9: 'a', e4: 'C' }, 'w');
+    const withHorse = positionOf({ e0: 'K', e9: 'k', d9: 'a', e4: 'N' }, 'w');
+    expect(breakdown(withCannon).phase).toBeLessThan(0.2);
+    expect(breakdown(withHorse).material).toBeGreaterThan(breakdown(withCannon).material);
   });
 
   it('having the extra piece is better than not having it', () => {
-    const bare = evaluateRedPov(
-      positionOf({ e0: 'K', d0: 'A', f0: 'A', e9: 'k', d9: 'a', f9: 'a' }, 'w'),
-    );
-    expect(withExtra('P')).toBeGreaterThan(bare);
+    const bare = evaluateRedPov(positionOf({ ...SYMMETRIC }, 'w'));
+    expect(evaluateRedPov(positionOf({ ...SYMMETRIC, e4: 'P' }, 'w'))).toBeGreaterThan(bare);
   });
 });
 

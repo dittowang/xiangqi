@@ -71,14 +71,29 @@ const VERT = /* glsl */ `
 uniform float uTime;
 uniform vec2  uWaveDir;      // unit flow direction in XZ
 uniform float uAmplitude;
+uniform vec4  uChannel;      // floorHalf, riverHalf, bankRise, depth
+uniform float uWaterY;
 
 varying vec3 vWorld;
 varying vec2 vWave;          // phase of the two wave trains, reused in the fragment
+varying float vTaper;        // 0 at the bank, 1 in open water
 
 const float TWO_PI = 6.28318530718;
 
+/** Bed height under this point — the same piecewise profile the CPU builds. */
+float bedHeight(float az) {
+  if (az <= uChannel.x) return -uChannel.w;
+  float t = clamp((az - uChannel.x) / max(uChannel.y - uChannel.x, 1e-4), 0.0, 1.0);
+  return mix(-uChannel.w, uChannel.z, t);
+}
+
 void main() {
   vec4 world = modelMatrix * vec4(position, 1.0);
+
+  // Waves die out where the water runs onto the bank. Without this a crest at
+  // the channel edge lifts above the cut stone it is supposed to be lapping
+  // against, and the river reads as a decal floating over the groove.
+  vTaper = smoothstep(0.0, 0.022, uWaterY - bedHeight(abs(world.z)));
 
   // Two crossing trains: a long one along the current and a short one raked
   // across it. Sum of sines is enough here because the amplitude is ~5 mm.
@@ -86,7 +101,7 @@ void main() {
   float pb = dot(world.xz, vec2(uWaveDir.y, -uWaveDir.x) * 0.82 + uWaveDir * 0.55)
              * (TWO_PI / ${WAVE_B_LEN.toFixed(4)}) - uTime * 3.4;
 
-  world.y += (sin(pa) * 0.62 + sin(pb) * 0.38) * uAmplitude;
+  world.y += (sin(pa) * 0.62 + sin(pb) * 0.38) * uAmplitude * vTaper;
 
   vWorld = world.xyz;
   vWave = vec2(pa, pb);
@@ -124,6 +139,7 @@ uniform float uWaterY;
 
 varying vec3 vWorld;
 varying vec2 vWave;
+varying float vTaper;
 
 const float TWO_PI = 6.28318530718;
 
@@ -178,10 +194,12 @@ void main() {
   float nx = fbm(np + vec2(e, 0.0)) - n0;
   float nz = fbm(np + vec2(0.0, e)) - n0;
 
-  float dA = cos(vWave.x) * (TWO_PI / ${WAVE_A_LEN.toFixed(4)}) * 0.62 * uAmplitude;
-  float dB = cos(vWave.y) * (TWO_PI / ${WAVE_B_LEN.toFixed(4)}) * 0.38 * uAmplitude;
+  // The same taper the vertex stage applied, so the shading normal agrees with
+  // the surface that was actually displaced.
+  float dA = cos(vWave.x) * (TWO_PI / ${WAVE_A_LEN.toFixed(4)}) * 0.62 * uAmplitude * vTaper;
+  float dB = cos(vWave.y) * (TWO_PI / ${WAVE_B_LEN.toFixed(4)}) * 0.38 * uAmplitude * vTaper;
   vec2 slope = uWaveDir * dA + vec2(uWaveDir.y, -uWaveDir.x) * dB;
-  slope += vec2(nx, nz) * 0.55;
+  slope += vec2(nx, nz) * 0.55 * mix(0.35, 1.0, vTaper);
 
   vec3 N = normalize(vec3(-slope.x, 1.0, -slope.y));
 

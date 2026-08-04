@@ -21,6 +21,14 @@ import type { EngineRequest, EngineResponse } from './protocol.ts';
 import { STOP_FLAG_INDEX } from './protocol.ts';
 import type { SearchProgress } from './search.ts';
 
+/**
+ * `Omit` over a discriminated union collapses it to the common keys, so the
+ * per-request payloads would vanish. Distributing it over the members first
+ * keeps each variant intact.
+ */
+type WithoutId<T> = T extends { id: number } ? Omit<T, 'id'> : never;
+type EngineRequestBody = WithoutId<EngineRequest>;
+
 export interface EngineClientOptions {
   /** Forwarded from the worker as the search deepens; drives the HUD. */
   onProgress?: (p: SearchProgress) => void;
@@ -83,7 +91,7 @@ class WorkerEngineClient implements EngineClient {
     else entry.resolve(msg);
   }
 
-  private request(req: Omit<EngineRequest, 'id'> & { id?: number }): Promise<EngineResponse> {
+  private request(req: EngineRequestBody & { id?: number }): Promise<EngineResponse> {
     if (this.disposed) return Promise.reject(new Error('engine client disposed'));
     const id = req.id ?? this.nextId++;
     const full = { ...req, id } as EngineRequest;
