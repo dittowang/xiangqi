@@ -193,6 +193,14 @@ describe('ordinary repetition is a draw', () => {
    * When both sides commit the same foul the rulebook cancels them out. Here
    * each chariot shuffles between two squares that both bear on the enemy's
    * undefended horse, so both sides are perpetual chasers and neither wins.
+   *
+   * NOTE — there is deliberately no fixture for mutual perpetual *check*. Every
+   * construction attempted needs each side to give check on every move of the
+   * cycle, which means each check must be answered by a counter-check; the
+   * positions that satisfy that either have both generals attacked at once
+   * (illegal) or break the cycle. The `redCheck && blackCheck -> draw` branch
+   * of `classifyRepetition` is therefore only exercised by argument, not by a
+   * board. The mutual-foul-cancels branch below is the same shape and is real.
    */
   it('a foul committed by both sides cancels into a draw', () => {
     const pos = positionOf(

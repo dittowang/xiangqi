@@ -24,10 +24,10 @@
  *           forward at the neck driving with a 鉤 goad. Rider low and forward,
  *           box high and behind: an L.
  *   Chu 楚  no howdah at all. A tilted war drum 鼓 cradled on the back, a
- *           drummer seated behind it mid-beat with a mallet in one hand and a
- *           long goad in the other, and a heavy riveted headplate carrying an
- *           upright crest between the ears. Rider high and central, drum face
- *           turned to the camera: a wedge with a disc in it.
+ *           drummer seated behind it mid-beat with one mallet raised and the
+ *           other down across the head, and a heavy riveted headplate carrying
+ *           an upright crest between the ears. Rider high and central, drum
+ *           face turned to the camera: a wedge with a disc in it.
  * The two outlines are different shapes, not the same shape in two colours.
  *
  * THE TRUNK IS THE ATTACK. `elephant.trunk01`..`trunk10`, ten bones, each
@@ -1510,14 +1510,16 @@ function buildElephant(ctx: UnitBuildContext): PartGroup {
   );
 
   // Working poses, and the two armies' crews work at different things.
-  const goadRot: V3 = han ? [-1.5, 0, -0.12] : [-1.45, 0, 0.1];
+  // For Chu, `goadRot` is the off-hand mallet's angle: down and forward across
+  // the drum head, opposing the raised one.
+  const goadRot: V3 = han ? [-1.5, 0, -0.12] : [-1.15, 0, 0.22];
   const malletRot: V3 = [0.75, 0, -0.3];
   if (han) {
     armOffsets(rig0, 'R', [0.42, -0.5, -0.76], [0.05, -0.15, -0.99], offsets);
     armOffsets(rig0, 'L', [-0.42, -0.62, -0.66], [-0.08, -0.42, -0.9], offsets);
   } else {
     armOffsets(rig0, 'R', [0.55, 0.3, 0.42], [0.12, 0.86, 0.5], offsets);
-    armOffsets(rig0, 'L', [-0.42, -0.5, -0.75], [-0.1, -0.2, -0.97], offsets);
+    armOffsets(rig0, 'L', [-0.52, -0.3, -0.6], [-0.16, -0.42, -0.89], offsets);
   }
 
   const rig = ctx.useRig({
@@ -1654,13 +1656,15 @@ function buildElephant(ctx: UnitBuildContext): PartGroup {
       }),
     );
   } else {
-    // The drummer, caught between beats: mallet up and back over his shoulder,
-    // long goad braced forward in the off hand.
+    // The drummer, caught between beats: one mallet up and back over his
+    // shoulder, the other down across the drum head. Two mallets rather than a
+    // mallet and a goad — a goad long enough to reach this elephant's crown
+    // from a seat behind the drum would be a pike, and a short one reads as a
+    // stick pointing at nothing.
     const ml = mallet(ctx, v3(gripR), malletRot, h * 0.5, 'handR');
     merge(g, ml);
     tip = ml.points.tip;
-    const gd = goad(ctx, v3(gripL), goadRot, h * 1.05, 'handL');
-    merge(g, gd);
+    merge(g, mallet(ctx, v3(gripL), goadRot, h * 0.46, 'handL'));
   }
   g.attach.push({ name: 'haftTip', bone: 'handR', position: [tip.x, tip.y, tip.z] });
 

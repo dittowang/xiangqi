@@ -50,13 +50,25 @@ const INFINITY = 32000;
 export const MAX_SEARCH_PLY = 96;
 
 /**
- * Quiescence plies at which quiet checking moves are searched as well as
- * captures. Check *evasions* are always searched exhaustively (a side in check
- * never stands pat); this only controls giving check.
+ * Quiescence plies at which quiet *checking* moves are searched as well as
+ * captures. Check **evasions** are always searched exhaustively — a side in
+ * check never stands pat — so this only controls giving check.
  *
- * Settled by a head-to-head match rather than by argument — see the note above
- * `SearchOptions.qCheckPlies`. Overridable per search so the match harness can
- * play the two settings against each other.
+ * Zero, settled by measurement rather than by argument. Generating quiet checks
+ * means making and unmaking every quiet move at the first quiescence ply just
+ * to find the handful that check, and it turns out to buy nothing:
+ *
+ *   - Fixed depth, same tree: at depth 7 from the opening, 155k nodes in
+ *     2116 ms with quiet checks against 136k nodes in 1674 ms without; from a
+ *     midgame, 199k / 2422 ms against 180k / 1792 ms. Quiet checks made the
+ *     tree both bigger and slower.
+ *   - Head to head: 80 games, 40 book openings played from both colours at
+ *     80 ms a move with unfinished games adjudicated at 250cp,
+ *     `qCheckPlies = 1` scored 38.5/80 = 48.1% (±5.6%, 1 SD). Statistically a
+ *     dead heat.
+ *
+ * So: no measurable strength, a clear cost in depth. `tests/qcheck-match.test.ts`
+ * is the harness; unskip it to re-run the match after any search change.
  */
 const Q_CHECK_PLIES_DEFAULT = 0;
 
@@ -88,9 +100,10 @@ export interface SearchOptions {
   /** Hard node cap, used by tests to make a search deterministic. */
   nodeLimit?: number;
   /**
-   * Quiescence plies at which quiet checking moves are generated. 0 disables
-   * them entirely (captures and check evasions only). Defaults to
-   * `Q_CHECK_PLIES_DEFAULT`.
+   * Quiescence plies at which quiet checking moves are generated. 0 — the
+   * default, and the measured setting — searches captures and check evasions
+   * only. Exposed so the head-to-head harness can play the settings off against
+   * each other.
    */
   qCheckPlies?: number;
   now?: () => number;

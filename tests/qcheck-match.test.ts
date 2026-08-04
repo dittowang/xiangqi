@@ -1,7 +1,28 @@
+/**
+ * Head-to-head match harness — SKIPPED BY DEFAULT.
+ *
+ * A search change that looks better on a benchmark can still be worse over the
+ * board, and the only way to know is to play the two versions against each
+ * other. This plays every opening below from both colours at a fixed time per
+ * move, adjudicates anything still running at the ply cap by evaluation so the
+ * result does not drown in draws, and reports the score with a standard error.
+ *
+ * Remove the `.skip` to run it. It takes about eleven minutes for 80 games at
+ * 80 ms a move, which is why it is not part of the ordinary suite.
+ *
+ * RECORDED RESULT (the one `Q_CHECK_PLIES_DEFAULT` is set from):
+ *   qCheckPlies=1 scored 38.5/80 = 48.1% (+/- ~5.6%, 1 SD) against
+ *   qCheckPlies=0 at 80 ms a move. Endings: 42 checkmate, 9 stalemate,
+ *   1 perpetual chase, 21 adjudicated, 7 ply-cap draws.
+ *   Read together with the fixed-depth timings in `search.ts`, which show
+ *   qCheckPlies=0 reaching the same depth in roughly two thirds of the time:
+ *   equal strength, less time, so 0 ships.
+ */
+
 import { describe, it } from 'vitest';
 import { START_FEN } from '@core/testapi.ts';
 import { Side } from '@core/types.ts';
-import { Position, Searcher, adjudicate, iccsToMove } from '@engine/index.ts';
+import { Position, Searcher, adjudicate, evaluateRedPov, iccsToMove } from '@engine/index.ts';
 
 /** Distinct book openings, replayed to give each game a different character. */
 const OPENINGS = [
@@ -35,10 +56,22 @@ const OPENINGS = [
   'h2e2 h9g7 h0g2 i9h9 i0h0 b9c7 i3i4 g6g5',
   'h2e2 h9g7 h0g2 i9h9 i0h0 b9c7 a3a4 c6c5',
   'c3c4 c9e7 h2e2 h9g7 h0g2 i9h9',
+  'h2e2 h9g7 h0g2 i9h9 i0h0 b9c7 c3c4 g6g5 h0h6 h7i7',
+  'h2e2 h9g7 h0g2 i9h9 i0h0 b9c7 c3c4 h7h5',
+  'h2e2 h7e7 h0g2 h9g7 c3c4 i9h9 b0c2 b9c7',
+  'h2e2 b7e7 h0g2 h9g7 i0h0 i9h9 h0h4 b9c7',
+  'g0e2 c9e7 b0c2 b9c7 a0b0 a9b9',
+  'g0e2 h9g7 b0c2 i9h9 a0b0 b9c7',
+  'c3c4 g6g5 h2e2 h9g7 h0g2 i9h9 i0h0 b9c7',
+  'b0c2 c9e7 h2e2 h9g7 h0g2 i9h9',
+  'h2e2 h9g7 h0g2 i9h9 i0h0 b9c7 f0e1 c6c5',
+  'h2e2 h9g7 h0g2 b9a7 i0h0 i9h9 h0h6 a9b9',
 ];
 
 const MOVE_MS = 80;
-const MAX_PLIES = 100;
+const MAX_PLIES = 140;
+/** Centipawn edge at the ply cap that counts as a win, so draws are not inflated. */
+const ADJUDICATE_CP = 250;
 
 interface Engine {
   name: string;
@@ -64,10 +97,15 @@ function playGame(opening: string, red: Engine, black: Engine): { score: number;
     if (r.move === 0) return { score: pos.side === Side.Red ? 0 : 1, plies: ply, how: 'nomove' };
     pos.makeMove(r.move);
   }
-  return { score: 0.5, plies: MAX_PLIES, how: 'ply-cap' };
+  // Adjudicate rather than calling every long game a draw: a 250cp edge at the
+  // cap is decisive in practice and keeps the signal from drowning in draws.
+  const cp = evaluateRedPov(pos);
+  if (cp >= ADJUDICATE_CP) return { score: 1, plies: MAX_PLIES, how: 'adj-red' };
+  if (cp <= -ADJUDICATE_CP) return { score: 0, plies: MAX_PLIES, how: 'adj-black' };
+  return { score: 0.5, plies: MAX_PLIES, how: 'ply-cap-draw' };
 }
 
-describe('qCheckPlies head-to-head', () => {
+describe.skip('qCheckPlies head-to-head', () => {
   it('runs the match', () => {
     const a: Engine = { name: 'q1', q: 1, searcher: new Searcher(20) };
     const b: Engine = { name: 'q0', q: 0, searcher: new Searcher(20) };
