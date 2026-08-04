@@ -1330,8 +1330,12 @@ export class Animator implements UnitAnimator {
       lock.world.lerpVectors(lock.from, lock.to, eased);
       const ground = this.groundY(lock.world.x, lock.world.z) + this.ankleWorldHeight();
       lock.world.y = ground + swingLift(u, this.plan.lift * this.height * this.scale);
-      // A swinging foot is still solved for, at partial authority, so it tracks
-      // the arc instead of being left wherever forward kinematics put it.
+      // A swinging foot is solved for too, so it rides the arc instead of being
+      // left wherever forward kinematics put it — and, critically, so that it
+      // arrives at exactly the point the next lock will freeze. `weight` is not
+      // the IK authority here (that is always 1); it is how hard this foot pulls
+      // on the hip solve and how flat the sole is held, both of which should be
+      // lower in the air than on the board.
       lock.weight = 0.85;
     } else if (lock.locked) {
       lock.plant.y = this.groundY(lock.plant.x, lock.plant.z) + this.ankleWorldHeight();
