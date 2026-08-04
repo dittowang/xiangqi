@@ -20,9 +20,10 @@
  *           shoulder; a fringed saddle cloth 障泥 over the flanks; a cinnabar
  *           chest tassel on the breast collar; a square 旌 guidon raked back
  *           off the cantle.
- *   Chu 楚  forward-raked peaked helm with long swept horns; a long 戟 laid
- *           back over the croup carrying a swallow-tailed 幡; lamellar barding
- *           panels over chest and croup; bronze cheek discs on the bridle.
+ *   Chu 楚  forward-raked peaked helm with long swept horns; a 戟 shouldered
+ *           and raked back over the croup carrying a swallow-tailed 幡; lamellar
+ *           barding panels over chest and croup; bronze cheek discs on the
+ *           bridle.
  * Helmet form, weapon outline and pennant shape all differ. The horse itself is
  * dun in both armies — a horse is a horse — so the army read comes entirely
  * from what is strapped to it, which is also how the archaeology reads.
@@ -1410,8 +1411,8 @@ function buildHorse(ctx: UnitBuildContext): PartGroup {
   // two cavalry silhouettes above the saddle.
   //   Han  the 環首刀 up at the shoulder, elbow out and back — a compact,
   //        vertical accent standing clear of the helmet.
-  //   Chu  the 戟 carried forward and low, so the haft rakes back over the
-  //        croup and lengthens the horizontal mass instead.
+  //   Chu  the 戟 shouldered, raked back over the croup at about 50 degrees
+  //        from vertical.
   // The yaw is not decoration: a blade is a thin plate, and one held in the
   // XY plane vanishes to a needle from the side. Turning it 50 degrees keeps
   // some blade width visible from every azimuth the camera director uses.
@@ -1422,7 +1423,22 @@ function buildHorse(ctx: UnitBuildContext): PartGroup {
   // cast, and a sabre is not worth breaking that ladder for. The 50-degree yaw
   // keeps the blade's flat visible from every azimuth the director uses.
   const daoRot: V3 = [1.1, 0.88, -0.3];
-  const jiRot: V3 = [1.38, 0, -0.05];
+  // THE 戟 WAS LYING ON THE ANIMAL, NOT BESIDE IT. At 1.38 rad it was 11 degrees
+  // off horizontal, and a 1.86-stature haft gripped at 0.34 put 0.63 h of it
+  // *forward* of the rider's fist: measured, the butt sat at (0.21, 1.03, -1.05)
+  // h — level with the horse's poll, a hand's width outside its cheek — and the
+  // shaft ran the whole length of the animal's neck and barrel at barely a
+  // shin's clearance. On the board that is not a weapon a man is carrying, it is
+  // a stick laid across a horse, and with a chariot beside it doing the same
+  // thing the Chu back rank read as a mesh of sticks over the pieces.
+  //
+  // Raked to 50 degrees from vertical and shortened to 1.16 statures with the
+  // grip moved forward to 0.26, the butt lifts to (0.22, 0.95, -0.65) h — clear
+  // of the neck, which is 0.14 h half-width at that station — and the point goes
+  // up and back over the croup instead of down and forward over the head. The
+  // piece keeps its horizontal read: the haft still spans 0.9 h of Z, and it now
+  // stands clear of the animal instead of merging with it.
+  const jiRot: V3 = [0.87, 0, -0.13];
   armOffsets(
     rig0,
     'R',
@@ -1597,17 +1613,17 @@ function buildHorse(ctx: UnitBuildContext): PartGroup {
     );
     tip = g.points.tip !== before && g.points.tip ? g.points.tip : new THREE.Vector3(...v3(gripR));
   } else {
-    // 戟 — a long halberd laid back over the croup. It is the single biggest
-    // contributor to the Chu horse's horizontal read, and raking it back rather
-    // than up keeps it out of the height budget.
+    // 戟 — a halberd shouldered and raked back over the croup. Still the biggest
+    // single contributor to the Chu horse's horizontal read; see `jiRot` for why
+    // it is no longer lying along the animal.
     const before = g.points.tip;
     const halberd = P.weapons.ji({
       grip: v3(gripR),
       bone: 'handR',
       rot: jiRot,
-      length: h * 1.86,
-      gripAt: 0.34,
-      shaftR: h * 0.014,
+      length: h * 1.16,
+      gripAt: 0.26,
+      shaftR: h * 0.015,
       metalPigment: 'metal',
     });
     // 戈 lashes its three haft ferrules in the accent pigment, which on an
@@ -1672,14 +1688,19 @@ function buildHorse(ctx: UnitBuildContext): PartGroup {
     // Han guidon, hung off the weapon instead of the saddle, and notched.
     const along = tip.clone().sub(gripR);
     const at = tip.clone().addScaledVector(along, -0.24);
+    // Flown REARWARD off the haft rather than outboard of it. `fly` is an XZ
+    // bearing with 0 at +X, so the old 0.35 put the pennon's fly out across the
+    // files — it cleared the horse's own outline by 0.1 h and was the widest
+    // thing on the unit. At -1.4 it streams back along the haft's own line,
+    // where a pennon on a moving lance actually goes.
     merge(
       g,
       P.standard.banner({
         shape: 'chuSwallowtail',
         at: [at.x, at.y, at.z],
         height: h * 0.2,
-        width: h * 0.3,
-        fly: 0.35,
+        width: h * 0.26,
+        fly: -1.4,
         wave: 0.16,
         phase: ctx.rng.range(0, 6.28),
         boneHint: 'handR',

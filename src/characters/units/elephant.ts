@@ -20,15 +20,25 @@
  *
  * TWO ARMIES.
  *   Han 漢  a lacquered 象輿 howdah on the back with a low rail and a fringed
- *           valance, a square 旌 at its rear corner, and a mahout seated
- *           forward at the neck driving with a 鉤 goad. Rider low and forward,
- *           box high and behind: an L.
+ *           valance, a square 旌 upright on the centre line behind it, and a
+ *           mahout seated forward at the neck driving with a 鉤 goad. Rider low
+ *           and forward, box high and behind: an L.
  *   Chu 楚  no howdah at all. A tilted war drum 鼓 cradled on the back, a
  *           drummer seated behind it mid-beat with one mallet raised and the
- *           other down across the head, and a heavy riveted headplate carrying
- *           an upright crest between the ears. Rider high and central, drum
- *           face turned to the camera: a wedge with a disc in it.
+ *           other down across the head, laced lamellar 象鎧 over chest and
+ *           croup, and a heavy riveted headplate carrying an upright crest
+ *           between the ears. Rider high and central, drum face turned to the
+ *           camera: a wedge with a disc in it.
  * The two outlines are different shapes, not the same shape in two colours.
+ *
+ * AND THE ARMY HAS TO SURVIVE THE HIDE. The animal is dun in both armies, which
+ * is both the archaeology and the right call — but on the bulkiest silhouette in
+ * the cast a box and a drum are a small fraction of the pixels, and a stills
+ * critic reading a real frame called both elephants grey. So the trappings carry
+ * far more colour than a literal reading of the brief would put on them: a
+ * housing over both flanks (cinnabar for Han, azurite for Chu), lacquered
+ * harness straps on the hide in the army's own lacquer, a fringe in that lacquer
+ * rather than in gamboge, and a frontlet on the Han head to match Chu's plate.
  *
  * THE TRUNK IS THE ATTACK. `elephant.trunk01`..`trunk10`, ten bones, each
  * carrying one rigid section, laid on a shallow half-radian arc so the rest
@@ -45,7 +55,7 @@ import * as THREE from 'three';
 import type { BoneName } from '@core/contracts.ts';
 import { PieceType, Side } from '@core/types.ts';
 import { registerUnit, type UnitBuildContext } from '@characters/factory.ts';
-import type { InstancedPart, PartGroup, PartPigment, V3 } from '@characters/parts/types.ts';
+import type { InstancedPart, Part, PartGroup, PartPigment, V3 } from '@characters/parts/types.ts';
 import type { Rig, RigOptions } from '@characters/rig.ts';
 
 // ---------------------------------------------------------------------------
@@ -54,6 +64,32 @@ import type { Rig, RigOptions } from '@characters/rig.ts';
 
 /** Elephant hide. Grey in both armies — the army lives in the trappings. */
 const HIDE: PartPigment = 'stone';
+/**
+ * 石色 quantised by the 石色 ramp, which is not what this was.
+ *
+ * The hide was `leather` + `stone`: the palette's grey pigment shaded by the
+ * ramp written for ochre and ink. That mismatch is not free. `RAMPS.leather`
+ * carries `accent: 0.22`, so a three-step class pushes its top band 22% of the
+ * way toward the pigment's *fourth* band before it ever reaches the shader —
+ * 石色 band 2 is #6E6857 and what actually landed on the animal was #77705E,
+ * which is not a colour in `core/palette.ts` at all. A frame capture measured it
+ * as #786E55, dE 5.6 off the band it was supposed to be.
+ *
+ * `RAMPS.stone` is the ramp 石色 was authored against: `accent: 0.12`, so the
+ * same band lands at #736D5B and the drift off the true band falls from
+ * dE 3.35 to dE 2.06. It does not reach zero and it cannot from this file: the
+ * accent push is applied by the renderer to the top band of every three-step
+ * class, so the only pigment slots that land a lit surface exactly on a palette
+ * band are the four-step ones (lacquer, iron, gold), and none of them is a hide. It also carries
+ * `outline: 'fine'` — ink, 1.15 px — where `leather` carries `outline:
+ * 'structure'`, which is 泥金 at 1.6 px. The elephant was the only animal in the
+ * cast drawn in a heavy gold contour, and a gold line around a grey mass is most
+ * of why the grey read as muddy rather than as dun.
+ *
+ * This is a bucket rename, not a new bucket: nothing else on the unit is
+ * `stone`-classed, and nothing else is `leather` + `stone`.
+ */
+const HIDE_CLS: Part['cls'] = 'stone';
 /** Tusk, toenail and drumhead: all the same pale keratin/rawhide bucket. */
 const BONE: PartPigment = 'shellWhite';
 
@@ -292,7 +328,7 @@ function buildBeast(ctx: UnitBuildContext, d: Dims): Beast {
     { sides: 8, name: 'elephantBody' },
   );
   g.parts.push(
-    P.mkPart(body, 'leather', HIDE, 'root', { name: 'elephantBody', rigid: true, mountBone: 'elephant.spine' }),
+    P.mkPart(body, HIDE_CLS, HIDE, 'root', { name: 'elephantBody', rigid: true, mountBone: 'elephant.spine' }),
   );
 
   // -- head ----------------------------------------------------------------
@@ -323,6 +359,7 @@ function buildBeast(ctx: UnitBuildContext, d: Dims): Beast {
           [s * HW * 0.70, S * 0.058, z],
         ],
         radii: [legR * 1.22, legR * 1.06, legR * 0.98, legR * 1.08],
+        cls: HIDE_CLS,
         pigment: HIDE,
         hoofPigment: HIDE,
         sides: 7,
@@ -330,8 +367,8 @@ function buildBeast(ctx: UnitBuildContext, d: Dims): Beast {
         hoofHeight: S * 0.058,
       });
       // The foot pad is the same hide as the rest of the animal, so it goes in
-      // the hide's mesh rather than opening a (stone, stone) pair of its own.
-      for (const part of leg.parts) if (part.name && part.name.endsWith(':hoof')) part.cls = 'leather';
+      // the hide's mesh rather than opening a pair of its own.
+      for (const part of leg.parts) if (part.name && part.name.endsWith(':hoof')) part.cls = HIDE_CLS;
       g.parts.push(...leg.parts);
       g.bones.push(...leg.bones);
       // A lumbering walk is a lateral-sequence four-beat: left hind, left fore,
@@ -360,7 +397,7 @@ function buildBeast(ctx: UnitBuildContext, d: Dims): Beast {
           { capStart: false, capEnd: false, name: 'legCrease' },
         );
         g.parts.push(
-          P.mkPart(crease, 'leather', HIDE, 'root', {
+          P.mkPart(crease, HIDE_CLS, HIDE, 'root', {
             name: 'legCrease',
             rigid: true,
             mountBone: `elephant.leg${tag}${side}0${seg}`,
@@ -411,7 +448,7 @@ function buildBeast(ctx: UnitBuildContext, d: Dims): Beast {
       { sides: 5, name: 'elephantTail' },
     );
     g.parts.push(
-      P.mkPart(tail, 'leather', HIDE, 'root', { name: 'elephantTail', rigid: true, mountBone: 'elephant.tail01' }),
+      P.mkPart(tail, HIDE_CLS, HIDE, 'root', { name: 'elephantTail', rigid: true, mountBone: 'elephant.tail01' }),
     );
     // The tuft — three hard strands, so the tail ends in a shape.
     for (let i = 0; i < 3; i++) {
@@ -433,6 +470,10 @@ function buildBeast(ctx: UnitBuildContext, d: Dims): Beast {
   }
 
   // -- army trappings ------------------------------------------------------
+  // The housing goes on both animals: it is the single biggest lever on "both
+  // elephants render grey", and it is the same garment cut two ways.
+  buildCaparison(ctx, d, g);
+
   let seat: V3;
   let seatZ: number;
   let seatBone: string;
@@ -443,6 +484,7 @@ function buildBeast(ctx: UnitBuildContext, d: Dims): Beast {
     seat = [0, backY(d, seatZ) + S * 0.035, seatZ];
     seatBone = 'elephant.neck';
     buildHowdah(ctx, d, g);
+    buildFrontlet(ctx, d, g, headZ, headBase, headTopY);
     // A padded neck roll under the mahout, so he is not sitting on bare spine.
     const nk = bodyAt(d, seatZ);
     const pad = prim.loft(
@@ -460,13 +502,14 @@ function buildBeast(ctx: UnitBuildContext, d: Dims): Beast {
     seatZ = L * 0.23;
     seat = [0, backY(d, seatZ) + S * 0.045, seatZ];
     seatBone = 'elephant.spine';
+    buildBarding(ctx, d, g);
     buildDrum(ctx, d, g);
     buildHeadplate(ctx, d, g, headZ, headBase, headTopY);
     const bk = bodyAt(d, seatZ);
     const pad = prim.loft(
       [
-        prim.ring({ rx: bk.rx * 0.8, rz: L * 0.1, y: bk.y + bk.ry * 0.7, cz: seatZ, sides: 6, squareness: 0.5 }),
-        prim.ring({ rx: bk.rx * 0.66, rz: L * 0.09, y: bk.y + bk.ry * 1.1, cz: seatZ, sides: 6, squareness: 0.55 }),
+        prim.ring({ rx: bk.rx * 0.8, rz: L * 0.09, y: bk.y + bk.ry * 0.66, cz: seatZ, sides: 6, squareness: 0.5 }),
+        prim.ring({ rx: bk.rx * 0.66, rz: L * 0.08, y: bk.y + bk.ry * 1.0, cz: seatZ, sides: 6, squareness: 0.55 }),
       ],
       { capStart: false, name: 'backPad' },
     );
@@ -475,29 +518,7 @@ function buildBeast(ctx: UnitBuildContext, d: Dims): Beast {
     );
   }
 
-  // Girth strap round the barrel — it holds the howdah or the drum cradle on,
-  // and in both armies it is the one line that crosses the flank plane.
-  {
-    const gz = L * 0.02;
-    const gs = bodyAt(d, gz);
-    const loop: V3[] = [];
-    for (let i = 0; i <= 14; i++) {
-      const a = (i / 14) * Math.PI * 2;
-      loop.push([Math.cos(a) * gs.rx * 1.02, gs.y + Math.sin(a) * gs.ry * 1.02, gz]);
-    }
-    g.parts.push(
-      P.trim.piping({
-        path: loop,
-        r: S * 0.022,
-        boneHint: 'root',
-        mountBone: 'elephant.spine',
-        pigment: 'leather',
-        cls: 'leather',
-        sides: 4,
-        name: 'girth',
-      }),
-    );
-  }
+  buildHarness(ctx, d, g);
 
   // -- published landmarks and sockets -------------------------------------
   g.points.seat = new THREE.Vector3(...seat);
@@ -557,7 +578,7 @@ function buildHead(
     ],
     { name: 'elephantSkull' },
   );
-  g.parts.push(P.mkPart(skull, 'leather', HIDE, 'root', { name: 'elephantSkull', rigid: true, mountBone: bone }));
+  g.parts.push(P.mkPart(skull, HIDE_CLS, HIDE, 'root', { name: 'elephantSkull', rigid: true, mountBone: bone }));
 
   // The two crown lobes. An elephant's forehead is not one dome; the pair of
   // bosses with a valley between them is the shape a viewer names instantly.
@@ -573,13 +594,13 @@ function buildHead(
       { capStart: false, name: 'crownLobe' },
     );
     lobe.translate(s * HW * 0.26, 0, headZ - L * 0.005);
-    g.parts.push(P.mkPart(lobe, 'leather', HIDE, 'root', { name: 'crownLobe', rigid: true, mountBone: bone }));
+    g.parts.push(P.mkPart(lobe, HIDE_CLS, HIDE, 'root', { name: 'crownLobe', rigid: true, mountBone: bone }));
   }
 
   // Brow ridge over the eyes: a bevelled slab, raked forward.
   const brow = prim.bevelSlab({ w: HW * 1.16, h: S * 0.08, d: S * 0.10, bevel: S * 0.02, name: 'brow' });
   prim.place(brow, { pos: [0, base + S * 0.11, headZ - L * 0.10], rot: [-0.30, 0, 0] });
-  g.parts.push(P.mkPart(brow, 'leather', HIDE, 'root', { name: 'brow', rigid: true, mountBone: bone }));
+  g.parts.push(P.mkPart(brow, HIDE_CLS, HIDE, 'root', { name: 'brow', rigid: true, mountBone: bone }));
 
   // The face block between the tusks — the trunk grows out of its front.
   const face = prim.loft(
@@ -590,14 +611,14 @@ function buildHead(
     ],
     { name: 'elephantFace' },
   );
-  g.parts.push(P.mkPart(face, 'leather', HIDE, 'root', { name: 'elephantFace', rigid: true, mountBone: bone }));
+  g.parts.push(P.mkPart(face, HIDE_CLS, HIDE, 'root', { name: 'elephantFace', rigid: true, mountBone: bone }));
 
   // Temple hollows: a cut plane either side, so the head has an undercut and
   // the ear has something to stand off from.
   for (const s of [-1, 1]) {
     const temple = prim.bevelSlab({ w: S * 0.09, h: S * 0.24, d: S * 0.13, bevel: S * 0.025 });
     prim.place(temple, { pos: [s * HW * 0.70, base + S * 0.13, headZ - L * 0.045], rot: [0, s * 0.3, s * 0.16] });
-    g.parts.push(P.mkPart(temple, 'leather', HIDE, 'root', { name: 'temple', rigid: true, mountBone: bone }));
+    g.parts.push(P.mkPart(temple, HIDE_CLS, HIDE, 'root', { name: 'temple', rigid: true, mountBone: bone }));
   }
 
   // Eye and the crease above it. Twelve triangles each, and an elephant with no
@@ -618,7 +639,7 @@ function buildHead(
     ],
     { name: 'elephantLip' },
   );
-  g.parts.push(P.mkPart(lipBlock, 'leather', HIDE, 'root', { name: 'elephantLip', rigid: true, mountBone: bone }));
+  g.parts.push(P.mkPart(lipBlock, HIDE_CLS, HIDE, 'root', { name: 'elephantLip', rigid: true, mountBone: bone }));
 }
 
 /**
@@ -663,11 +684,37 @@ function buildEars(ctx: UnitBuildContext, d: Dims, g: PartGroup, headZ: number, 
       }
       grid.push(row);
     }
+    const bone = s < 0 ? 'elephant.earL' : 'elephant.earR';
     g.parts.push(
-      P.mkPart(P.prim.shell(grid, S * 0.016, { name: 'elephantEar', flip: s > 0 }), 'leather', HIDE, 'root', {
+      P.mkPart(P.prim.shell(grid, S * 0.016, { name: 'elephantEar', flip: s > 0 }), HIDE_CLS, HIDE, 'root', {
         name: `elephantEar${s < 0 ? 'L' : 'R'}`,
         rigid: true,
-        mountBone: s < 0 ? 'elephant.earL' : 'elephant.earR',
+        mountBone: bone,
+      }),
+    );
+
+    // 耳套 — a bound cord along the ear's outer margin, in the army's lacquer.
+    //
+    // Small, and it does more for army legibility than anything else on this
+    // animal. The play camera puts a back-rank elephant nearly head-on, and from
+    // head-on the flanks — where the housing is — are edge-on and the ears fill
+    // most of the outline. With a bare hide margin the Chu elephant read grey
+    // from the front however much blue was on its flanks; with the margin bound,
+    // the widest feature on the unit carries the army colour from every azimuth.
+    // Traced from the ear grid's own outer column, so it cannot come adrift from
+    // the notches in the edge it is binding.
+    g.parts.push(
+      P.trim.piping({
+        path: grid.map((row) => row[cols - 1]),
+        // Deliberately heavy — a 2 px cord is drawn entirely in outline at board
+        // distance and contributes no colour at all.
+        r: S * 0.032,
+        boneHint: 'root',
+        mountBone: bone,
+        pigment: 'lacquer',
+        cls: 'lacquer',
+        sides: 4,
+        name: 'earRim',
       }),
     );
   }
@@ -729,7 +776,7 @@ function buildTusks(
       { capStart: false, capEnd: false, name: 'tuskSocket' },
     );
     g.parts.push(
-      P.mkPart(socket, 'leather', HIDE, 'root', {
+      P.mkPart(socket, HIDE_CLS, HIDE, 'root', {
         name: 'tuskSocket',
         rigid: true,
         mountBone: 'elephant.head',
@@ -858,7 +905,7 @@ function buildTrunk(
       ],
       { sides: 7, name },
     );
-    g.parts.push(P.mkPart(seg, 'leather', HIDE, 'root', { name, rigid: true, mountBone: name }));
+    g.parts.push(P.mkPart(seg, HIDE_CLS, HIDE, 'root', { name, rigid: true, mountBone: name }));
   }
 
   const tip = at(len);
@@ -873,13 +920,337 @@ function buildTrunk(
   });
   P.prim.place(lip, { pos: [tip[0], tip[1] + S * 0.012, tip[2] - S * 0.024], rot: [0.7 + TRUNK_BEND, 0, 0] });
   g.parts.push(
-    P.mkPart(lip, 'leather', HIDE, 'root', {
+    P.mkPart(lip, HIDE_CLS, HIDE, 'root', {
       name: 'trunkLip',
       rigid: true,
       mountBone: `elephant.trunk${String(segs).padStart(2, '0')}`,
     }),
   );
   return tip;
+}
+
+// ---------------------------------------------------------------------------
+// Trappings carried on the hide, both armies
+// ---------------------------------------------------------------------------
+
+/**
+ * 攀胸 · 肚帶 · 鞦 — breast strap, girth and crupper, in the army's own lacquer,
+ * hung with phalerae.
+ *
+ * This replaces a single ochre girth loop, and it is where the Han elephant's
+ * gold went. The 旌 at the rear corner of the howdah used to fly four gamboge
+ * streamers plus a square banner outward off the box: from the play camera those
+ * read as four gold sashes crossing the animal's back and stopping in mid-air
+ * 0.18 h outside its flank, because that is geometrically what they were. Cloth
+ * that hangs off a unit into open space cannot be read as anything else. The
+ * standard is now upright over the croup (see `buildHowdah`) and the gold that
+ * was flying beside the elephant is here instead, ON the hide, as harness.
+ *
+ * Every strap is traced from `bodyAt()`, so it lies on the surface the animal is
+ * actually built from rather than on a guess at where that surface is: a loop is
+ * the section's own ellipse scaled out by 2%, and a flank run interpolates
+ * between two of them. Change the body table and the harness follows it.
+ */
+function buildHarness(ctx: UnitBuildContext, d: Dims, g: PartGroup): void {
+  const P = ctx.parts;
+  const { S, L } = d;
+
+  /** A closed strap round the barrel at station `z`, on the hide. */
+  const loop = (z: number, bone: string, name: string, r: number): void => {
+    const sec = bodyAt(d, z);
+    const path: V3[] = [];
+    for (let i = 0; i <= 14; i++) {
+      const a = (i / 14) * Math.PI * 2;
+      path.push([Math.cos(a) * sec.rx * 1.02, sec.y + Math.sin(a) * sec.ry * 1.02, z]);
+    }
+    g.parts.push(
+      P.trim.piping({
+        path,
+        r,
+        boneHint: 'root',
+        mountBone: bone,
+        pigment: 'lacquer',
+        cls: 'lacquer',
+        sides: 4,
+        name,
+      }),
+    );
+  };
+
+  const breastZ = -L * 0.36;
+  const girthZ = L * 0.02;
+  const crupperZ = L * 0.4;
+  loop(breastZ, 'elephant.chest', 'breastStrap', S * 0.026);
+  loop(girthZ, 'elephant.spine', 'girth', S * 0.026);
+  loop(crupperZ, 'elephant.spine', 'crupper', S * 0.024);
+
+  // Two longitudinal runs along the upper flank tying the three loops together.
+  // They sit at 55° up the section from the widest point, which on this body is
+  // the shelf just below where the howdah or the drum cradle bears — the line a
+  // real harness takes, and the line that reads from above.
+  const at = (z: number, s: number): V3 => {
+    const sec = bodyAt(d, z);
+    return [s * sec.rx * 0.62 * 1.03, sec.y + sec.ry * 0.82, z];
+  };
+  for (const s of [-1, 1]) {
+    g.parts.push(
+      P.trim.piping({
+        path: [at(breastZ, s), at(-L * 0.18, s), at(girthZ, s), at(L * 0.22, s), at(crupperZ, s)],
+        r: S * 0.02,
+        boneHint: 'root',
+        mountBone: 'elephant.spine',
+        pigment: 'lacquer',
+        cls: 'lacquer',
+        sides: 4,
+        name: 'flankStrap',
+      }),
+    );
+    // 杏葉 phalerae along the run. `iron` + the army metal is a bucket this unit
+    // already carries, so the ornament is free of a draw call.
+    for (const z of [-L * 0.22, L * 0.06, L * 0.3]) {
+      const p = at(z, s);
+      g.parts.push(
+        P.trim.boss({
+          at: [p[0] + s * S * 0.012, p[1] + S * 0.012, p[2]],
+          r: S * 0.038,
+          height: S * 0.02,
+          boneHint: 'root',
+          mountBone: 'elephant.spine',
+          pigment: 'metal',
+          cls: 'iron',
+          rot: [0, 0, s * Math.PI * 0.32],
+          sides: 6,
+        }),
+      );
+    }
+  }
+}
+
+/**
+ * The flank housing — 障泥 for Han, a squarer swallow-tailed one for Chu.
+ *
+ * This is the single biggest thing that can be done about "both armies'
+ * elephants render grey". The animal itself stays dun in both armies, which is
+ * the honest archaeology and also the reason the elephant is the one unit whose
+ * army is unreadable at board distance: on a piece this bulky, trappings that
+ * amount to a box and a drum are a small fraction of the pixels. A housing over
+ * both flanks turns the largest flat area on the unit into army colour without
+ * touching the silhouette by a millimetre — the cloth follows `bodyAt()` at
+ * 1.02 … 1.12 of the section radius, so from a black-shape pass the elephant is
+ * exactly the elephant it was.
+ *
+ * It stops well above the belly line on purpose. Carried to the ground it would
+ * fill the space between the leg columns, and the daylight under this animal is
+ * part of how it reads as an animal and not as a plinth.
+ */
+function buildCaparison(ctx: UnitBuildContext, d: Dims, g: PartGroup): void {
+  const P = ctx.parts;
+  const han = ctx.side === Side.Red;
+  const { S, L } = d;
+  const z0 = -L * 0.34;
+  const z1 = L * 0.42;
+  const rows = 4;
+  const cols = 6;
+
+  for (const s of [-1, 1]) {
+    const grid: V3[][] = [];
+    for (let r = 0; r < rows; r++) {
+      const t = r / (rows - 1);
+      const row: V3[] = [];
+      for (let c = 0; c < cols; c++) {
+        const u = c / (cols - 1);
+        const z = z0 + (z1 - z0) * u;
+        const sec = bodyAt(d, z);
+        // Han scallops its hem in a shallow wave; Chu notches it into
+        // swallow-tails — the same two-army rule the pennants follow.
+        const hem = r === rows - 1 ? (han ? Math.sin(u * 9) * S * 0.028 : (c % 2 ? -S * 0.05 : S * 0.03)) : 0;
+        row.push([
+          s * sec.rx * (1.02 + t * 0.1),
+          sec.y + sec.ry * (0.98 - t * 1.3) - t * t * S * 0.05 + hem,
+          z,
+        ]);
+      }
+      grid.push(row);
+    }
+    g.parts.push(
+      P.mkPart(
+        P.prim.shell(grid, S * 0.013, { name: 'caparison', flip: s > 0 }),
+        'cloth',
+        han ? 'cloth' : 'accent',
+        'root',
+        { name: 'caparison', rigid: true, mountBone: 'elephant.spine' },
+      ),
+    );
+  }
+
+  // Fringe along the hem: lacquered silk cord in the army's own lacquer, so it
+  // folds into the bucket the howdah or the drum already occupies.
+  const strand = P.prim.prism({
+    rx0: S * 0.012,
+    rx1: S * 0.005,
+    y0: 0,
+    y1: -S * 0.06,
+    sides: 4,
+    squareness: 0.2,
+    name: 'fringe',
+  });
+  const mats: THREE.Matrix4[] = [];
+  for (const s of [-1, 1]) {
+    for (let i = 0; i < 9; i++) {
+      const u = (i + 0.5) / 9;
+      const z = z0 + (z1 - z0) * u;
+      const sec = bodyAt(d, z);
+      mats.push(
+        P.prim.matrix(
+          [s * sec.rx * 1.13, sec.y - sec.ry * 0.32 - S * 0.05 + Math.sin(u * 9) * S * 0.02, z],
+          [0, 0, s * 0.14],
+        ),
+      );
+    }
+  }
+  g.instanced.push({
+    geometry: strand,
+    cls: 'lacquer',
+    pigment: 'lacquer',
+    boneHint: 'root',
+    mountBone: 'elephant.spine',
+    rigid: true,
+    noSilk: true,
+    transforms: mats,
+    name: 'caparisonFringe',
+  });
+}
+
+/**
+ * Han's 當顱 frontlet: a cinnabar plate over the forehead with a gold boss and a
+ * row of studs. Lighter than Chu's riveted headplate and with no crest, so the
+ * two armies' heads still read as two different heads under the same hide.
+ */
+function buildFrontlet(
+  ctx: UnitBuildContext,
+  d: Dims,
+  g: PartGroup,
+  headZ: number,
+  base: number,
+  topY: number,
+): void {
+  const P = ctx.parts;
+  const bone = 'elephant.head';
+  const { S, L, HW } = d;
+
+  const plate = P.prim.shell(
+    [
+      [
+        [-HW * 0.44, topY - S * 0.07, headZ - L * 0.005],
+        [0, topY - S * 0.02, headZ - L * 0.015],
+        [HW * 0.44, topY - S * 0.07, headZ - L * 0.005],
+      ],
+      [
+        [-HW * 0.72, base + S * 0.21, headZ - L * 0.075],
+        [0, base + S * 0.25, headZ - L * 0.1],
+        [HW * 0.72, base + S * 0.21, headZ - L * 0.075],
+      ],
+      [
+        [-HW * 0.62, base + S * 0.085, headZ - L * 0.105],
+        [0, base + S * 0.11, headZ - L * 0.14],
+        [HW * 0.62, base + S * 0.085, headZ - L * 0.105],
+      ],
+    ],
+    S * 0.015,
+    { name: 'frontlet', flip: true },
+  );
+  g.parts.push(P.mkPart(plate, 'lacquer', 'lacquer', 'root', { name: 'frontlet', rigid: true, mountBone: bone }));
+
+  g.parts.push(
+    P.trim.boss({
+      at: [0, base + S * 0.19, headZ - L * 0.12],
+      r: S * 0.05,
+      height: S * 0.03,
+      boneHint: 'root',
+      mountBone: bone,
+      pigment: 'metal',
+      cls: 'iron',
+      rot: [1.2, 0, 0],
+      sides: 6,
+    }),
+  );
+  const studs = P.rivets.rivetArc({
+    centre: [0, base + S * 0.2, headZ - L * 0.08],
+    rx: HW * 0.64,
+    rz: S * 0.14,
+    count: 7,
+    arc: Math.PI,
+    arcCentre: -Math.PI / 2,
+    tilt: 0.4,
+    boneHint: 'root',
+    pigment: 'metal',
+    rivet: { r: S * 0.016, h: S * 0.011 },
+    name: 'frontletStuds',
+  });
+  for (const inst of studs.instanced) inst.mountBone = bone;
+  g.instanced.push(...studs.instanced);
+}
+
+/**
+ * 象鎧 — Chu's lamellar barding over the chest and the croup, from the same band
+ * primitive the men and the cavalry horses wear, so one technology armours the
+ * whole army. Laced in the army's black lacquer.
+ *
+ * Twenty-two plates a panel, deliberately: `main.ts` bakes an instance set of
+ * fewer than sixty-four into the mesh it shares a material with, so two panels
+ * plus their lacing cost triangles and no draw call.
+ */
+function buildBarding(ctx: UnitBuildContext, d: Dims, g: PartGroup): void {
+  const P = ctx.parts;
+  const { S, L } = d;
+
+  const panel = (
+    label: string,
+    stations: number[],
+    arc: number,
+    arcCentre: number,
+    tilt: number,
+    lift: (i: number) => number,
+    bone: string,
+  ): void => {
+    const rows = stations.map((z, i) => {
+      const sec = bodyAt(d, z);
+      return {
+        y: sec.y + sec.ry * lift(i),
+        // Outside the housing, not under it: `buildCaparison` runs to 1.12 of
+        // the section radius at its hem, and plates laced at 1.05 would come and
+        // go through the cloth down the length of the panel.
+        rx: sec.rx * 1.16,
+        // A tenth of the section's own depth, not the whole of it. The plate
+        // ring is an ellipse in XZ, so `rz` is how far behind the station the
+        // rearmost plate sits; at the horse's 1.14 an elephant's croup panel
+        // balloons half a body-length off the back of the animal.
+        rz: sec.ry * 0.55,
+        cz: z,
+        count: 11,
+        arc,
+        arcCentre,
+        tilt,
+      };
+    });
+    const mid = bodyAt(d, stations[0]);
+    const plateW = ((arc * (mid.rx + mid.ry) * 0.5) / 11) * 1.1;
+    const band = P.lamellar.lamellarBand({
+      rows,
+      plate: { w: plateW, h: S * 0.09, d: plateW * 0.11, bevel: plateW * 0.16, crown: plateW * 0.04 },
+      boneHint: 'root',
+      pigment: 'lacquer',
+      cord: true,
+      cordPigment: 'lacquer',
+      cordCls: 'lacquer',
+      name: label,
+    });
+    for (const p of band.instanced) p.mountBone = bone;
+    g.instanced.push(...band.instanced);
+  };
+
+  panel('bardingChest', [-L * 0.3, -L * 0.4], Math.PI * 1.05, -Math.PI / 2, -0.12, (i) => 0.5 - i * 0.7, 'elephant.chest');
+  panel('bardingCroup', [L * 0.26, L * 0.36], Math.PI * 0.95, Math.PI / 2, 0.12, (i) => 0.55 - i * 0.7, 'elephant.spine');
 }
 
 // ---------------------------------------------------------------------------
@@ -899,7 +1270,7 @@ function buildHowdah(ctx: UnitBuildContext, d: Dims, g: PartGroup): void {
   const { prim } = P;
   const { S, L, HW } = d;
   const bone = 'elephant.spine';
-  const z = L * 0.10;
+  const z = L * 0.06;
   const floorY = backY(d, z) - S * 0.01;
   const hw = HW * 0.82;
   const depth = L * 0.42;
@@ -951,7 +1322,10 @@ function buildHowdah(ctx: UnitBuildContext, d: Dims, g: PartGroup): void {
     );
   }
 
-  // Valance over both flanks with a scalloped hem.
+  // A short valance skirting the box itself. The long run down the flanks that
+  // used to live here is now `buildCaparison`, which starts a quarter of the
+  // body ahead of the howdah and ends behind it — this is only the cloth that
+  // hides the joint between box and back.
   for (const s of [-1, 1]) {
     const grid: V3[][] = [];
     for (let r = 0; r < 3; r++) {
@@ -961,10 +1335,10 @@ function buildHowdah(ctx: UnitBuildContext, d: Dims, g: PartGroup): void {
         const u = c / 4;
         const zz = z + (u - 0.5) * depth * 0.98;
         const sec = bodyAt(d, zz);
-        const scallop = r === 2 ? Math.sin(u * 11) * S * 0.03 : 0;
+        const scallop = r === 2 ? Math.sin(u * 11) * S * 0.026 : 0;
         row.push([
-          s * (hw * (1.0 - t * 0.02) + sec.rx * t * 0.06),
-          floorY - t * S * 0.24 + scallop,
+          s * (hw * (1.0 - t * 0.02) + sec.rx * t * 0.04),
+          floorY - t * S * 0.13 + scallop,
           zz,
         ]);
       }
@@ -980,8 +1354,12 @@ function buildHowdah(ctx: UnitBuildContext, d: Dims, g: PartGroup): void {
   }
 
   // The canopy fringe the brief asks for, read as a line of short tassels hung
-  // from the rail rather than as a roof. Instanced and kept under the factory's
-  // bake threshold, so it costs triangles and no draw call.
+  // from the rail rather than as a roof. In the army's own lacquer rather than
+  // its accent: on Han that is the difference between a cinnabar fringe and a
+  // gamboge one, and gamboge on a grey animal read as loose gold trim rather
+  // than as this army's colour. It also folds into the bucket the howdah's own
+  // boards already occupy. Instanced and under the bake threshold, so it costs
+  // triangles and no draw call.
   {
     const strand = prim.prism({
       rx0: S * 0.010,
@@ -1005,8 +1383,8 @@ function buildHowdah(ctx: UnitBuildContext, d: Dims, g: PartGroup): void {
     }
     const fringe: InstancedPart = {
       geometry: strand,
-      cls: 'cloth',
-      pigment: 'accent',
+      cls: 'lacquer',
+      pigment: 'lacquer',
       boneHint: 'root',
       mountBone: bone,
       rigid: true,
@@ -1017,25 +1395,37 @@ function buildHowdah(ctx: UnitBuildContext, d: Dims, g: PartGroup): void {
     g.instanced.push(fringe);
   }
 
-  // 旌 — the Han square standard at the rear corner of the box. Square pennant,
-  // straight lower edge, streamer fringe: the Han shape, and the army axis the
-  // brief asks for on top of helmet and weapon.
+  // 旌 — the Han square standard, on the CENTRE LINE at the back of the box and
+  // flying straight to the rear.
+  //
+  // It used to stand at the box's right rear corner (x = 0.82 hw) and fly at
+  // -0.5 rad, i.e. outboard. Measured, its cloth then occupied x 0.39 … 0.80 h
+  // against a body that is 0.62 h wide, and its four streamers hung from
+  // x 0.46 … 0.73 h — off the side of the animal, over nothing. From the play
+  // camera that is four gold straps crossing the elephant's back and stopping in
+  // mid-air past its flank, which is precisely how the stills critic read them.
+  //
+  // On the centre line with `fly` at -π/2 the banner lies over the croup, inside
+  // the plan silhouette, and it does the job a rear standard is for: it gives
+  // the piece a back. The streamers are down to two and hang inside the cloth's
+  // own width. The cloth is the army's darker red rather than gamboge, so what
+  // is left of the gold on this unit is fittings only.
   const std = P.standard.standard({
     shape: 'hanSquare',
-    base: [hw * 0.82, floorY + S * 0.02, z + depth * 0.42],
-    poleLength: S * 0.34,
+    base: [0, floorY + S * 0.02, z + depth * 0.46],
+    poleLength: S * 0.46,
     poleR: S * 0.012,
-    bannerHeight: S * 0.19,
-    bannerWidth: S * 0.23,
-    lean: 0.22,
-    fly: -0.5,
+    bannerHeight: S * 0.18,
+    bannerWidth: S * 0.16,
+    lean: 0.04,
+    fly: -Math.PI / 2,
     boneHint: 'root',
     mountBone: bone,
-    clothPigment: 'accent',
+    clothPigment: 'cloth',
     polePigment: 'leather',
     // metalPigment left default: passing it also recolours the pole's cloth
     // knot tassel and opens a (cloth, metal) bucket for one ornament.
-    streamerCount: 4,
+    streamerCount: 2,
     phase: ctx.rng.range(0, 6.28),
   });
   g.parts.push(...std.parts);
@@ -1128,6 +1518,43 @@ function buildDrum(ctx: UnitBuildContext, d: Dims, g: PartGroup): void {
     g.parts.push(
       P.mkPart(place(hoop), 'iron', 'metal', 'root', { name: 'drumHoop', rigid: true, mountBone: bone }),
     );
+
+    // The painted device on the drumhead: a boss and four radial bars in the
+    // army's lacquer. Chu drums were painted, and this is not only decoration —
+    // the head is the biggest single surface the play camera sees on this unit,
+    // and left as bare rawhide it is a pale disc that reads as no army at all.
+    // Four bars and a roundel put 玄漆 on it without hiding the disc, which is
+    // the piece's silhouette cue.
+    const y = s * (half + R * 0.075);
+    const disc = prim.hardLathe(
+      [
+        [R * 0.3, y],
+        [R * 0.26, y + s * R * 0.03],
+        [0.001, y + s * R * 0.04],
+      ],
+      8,
+      { capStart: false, capEnd: false, name: 'drumDevice' },
+    );
+    g.parts.push(
+      P.mkPart(place(disc), 'lacquer', 'lacquer', 'root', { name: 'drumDevice', rigid: true, mountBone: bone }),
+    );
+    const bars: THREE.BufferGeometry[] = [];
+    for (let i = 0; i < 4; i++) {
+      const a = (i / 4) * Math.PI * 2 + Math.PI / 4;
+      const bar = prim.bevelSlab({ w: R * 0.42, h: R * 0.09, d: R * 0.02, bevel: R * 0.008 });
+      prim.place(bar, {
+        pos: [Math.cos(a) * R * 0.52, y + s * R * 0.006, Math.sin(a) * R * 0.52],
+        rot: [Math.PI / 2, -a, 0],
+      });
+      bars.push(bar);
+    }
+    g.parts.push(
+      P.mkPart(place(prim.mergeGeometryList(bars)), 'lacquer', 'lacquer', 'root', {
+        name: 'drumDeviceBars',
+        rigid: true,
+        mountBone: bone,
+      }),
+    );
   }
 
   // Lacing studs round the near hoop.
@@ -1208,19 +1635,22 @@ function buildHeadplate(
   const plate = prim.shell(
     [
       [
-        [-HW * 0.44, topY - S * 0.045, headZ - L * 0.01],
+        [-HW * 0.52, topY - S * 0.045, headZ - L * 0.01],
         [0, topY + S * 0.005, headZ - L * 0.02],
-        [HW * 0.44, topY - S * 0.045, headZ - L * 0.01],
+        [HW * 0.52, topY - S * 0.045, headZ - L * 0.01],
       ],
+      // Flared past the temples rather than stopping on them. The play camera
+      // sees a back-rank elephant head-on, and the forehead is the one big
+      // army-coloured surface it can put there.
       [
-        [-HW * 0.66, base + S * 0.22, headZ - L * 0.075],
+        [-HW * 0.82, base + S * 0.22, headZ - L * 0.07],
         [0, base + S * 0.27, headZ - L * 0.095],
-        [HW * 0.66, base + S * 0.22, headZ - L * 0.075],
+        [HW * 0.82, base + S * 0.22, headZ - L * 0.07],
       ],
       [
-        [-HW * 0.60, base + S * 0.055, headZ - L * 0.115],
+        [-HW * 0.74, base + S * 0.05, headZ - L * 0.105],
         [0, base + S * 0.08, headZ - L * 0.14],
-        [HW * 0.60, base + S * 0.055, headZ - L * 0.115],
+        [HW * 0.74, base + S * 0.05, headZ - L * 0.105],
       ],
     ],
     S * 0.017,
@@ -1230,7 +1660,7 @@ function buildHeadplate(
 
   const studs = P.rivets.rivetArc({
     centre: [0, base + S * 0.20, headZ - L * 0.075],
-    rx: HW * 0.6,
+    rx: HW * 0.74,
     rz: S * 0.16,
     count: 9,
     arc: Math.PI,
@@ -1516,13 +1946,25 @@ function buildElephant(ctx: UnitBuildContext): PartGroup {
   // Working poses, and the two armies' crews work at different things.
   // For Chu, `goadRot` is the off-hand mallet's angle: down and forward across
   // the drum head, opposing the raised one.
-  const goadRot: V3 = han ? [-1.5, 0, -0.12] : [-1.15, 0, 0.22];
+  // The goad is angled DOWN at the crown rather than levelled out over it. Held
+  // level it reached z = -1.66 h at head height — a metre of iron cantilevered
+  // off the front of the piece at exactly the height the eye reads the animal's
+  // mass, so the elephant's silhouette acquired a spike that belonged to nothing.
+  // Pointed down at the crown it does the job a goad does, and the diagonal it
+  // draws between the mahout and the head is stronger for being steeper.
+  const goadRot: V3 = han ? [-2.05, 0, -0.12] : [-1.15, 0, 0.22];
   const malletRot: V3 = [0.75, 0, -0.3];
   if (han) {
     armOffsets(rig0, 'R', [0.42, -0.5, -0.76], [0.05, -0.15, -0.99], offsets);
     armOffsets(rig0, 'L', [-0.42, -0.62, -0.66], [-0.08, -0.42, -0.9], offsets);
   } else {
-    armOffsets(rig0, 'R', [0.55, 0.3, 0.42], [0.12, 0.86, 0.5], offsets);
+    // Up rather than up-and-back. Carried back at 0.42/0.50 the drummer's mallet
+    // arm reached 0.47 h behind the seat at shoulder height, which put the
+    // widest part of the whole upper silhouette out over the croup and made the
+    // piece read as top-heavy toward the rear. Raised nearer the vertical the
+    // beat is more legible anyway: the mallet stands clear of the drum head
+    // instead of behind his own shoulder.
+    armOffsets(rig0, 'R', [0.58, 0.5, 0.2], [0.12, 0.95, 0.26], offsets);
     armOffsets(rig0, 'L', [-0.52, -0.3, -0.6], [-0.16, -0.42, -0.89], offsets);
   }
 
@@ -1640,7 +2082,7 @@ function buildElephant(ctx: UnitBuildContext): PartGroup {
     // The mahout drives with the goad held forward and down over the animal's
     // crown — the working pose, which also puts a diagonal across the gap
     // between his body and the head and ties the two masses together.
-    const gd = goad(ctx, v3(gripR), goadRot, h * 0.72, 'handR');
+    const gd = goad(ctx, v3(gripR), goadRot, h * 0.62, 'handR');
     merge(g, gd);
     tip = gd.points.tip;
     // Left hand rests on the neck rope.
@@ -1653,8 +2095,10 @@ function buildElephant(ctx: UnitBuildContext): PartGroup {
         ],
         r: m.height * 0.011,
         boneHint: 'handL',
-        pigment: 'accent',
-        cls: 'leather',
+        // Lacquered cord in the army's own colour, not the accent. A gamboge
+        // rope on a grey animal was one more gold line reading as loose harness.
+        pigment: 'lacquer',
+        cls: 'lacquer',
         sides: 4,
         name: 'neckRope',
       }),

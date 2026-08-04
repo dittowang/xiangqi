@@ -26,7 +26,9 @@
  * number rather than letting the animator estimate it is the whole difference
  * between a wheel that rolls and a wheel that skids, and a skidding wheel is an
  * automatic fail. `data` also carries `width` and `spokes` so a motion-blur or
- * strobe pass can reason about spoke frequency without re-deriving it.
+ * strobe pass can reason about spoke frequency without re-deriving it — and the
+ * spoke count is now low enough (12 Han, 16 Chu) that the wheel resolves at
+ * board distance instead of aliasing into a grey wash the moment it turns.
  *
  * The wheel is built here rather than taken from `parts/vehicle.ts` for two
  * reasons: the two armies need different wheels (26 heavy spokes and a rounded
@@ -42,11 +44,11 @@
  * ----------
  *   |          | Han 俥                          | Chu 車                        |
  *   |----------|---------------------------------|-------------------------------|
- *   | canopy   | round 傘蓋 parasol, scalloped   | square canopy, four upswept   |
- *   |          | rim, single finial              | corners each with a finial    |
+ *   | canopy   | round 傘蓋 parasol, scalloped   | chamfered square canopy, four |
+ *   |          | hem, single finial              | swept corners with finials    |
  *   | car      | rounded rail that dips at the   | square car, four corner posts |
  *   |          | 軾 front bar                    | with capped finials           |
- *   | wheel    | 26 stout spokes, round felloe   | 30 fine spokes, flat tread    |
+ *   | wheel    | 12 stout spokes, round felloe   | 16 fine spokes, flat tread    |
  *   | yoke     | two curved neck forks 軛        | straight yoke, bronze caps    |
  *   | crew     | doumou helms                    | Chu peaked helms              |
  *
@@ -181,18 +183,42 @@ function dimensions(h: number, han: boolean): Car {
   const floorThk = R * 0.1;
   const floorY = R * 1.1;
   const hd = h * 0.37;
-  // Canopy height is the whole unit's height, and it is a compromise between
-  // two hard constraints: it must clear the driver's fan crest (about 1.1
-  // statures above the floor) and it must stay under the elephant, which is the
-  // next unit up the height ladder at 2.76 world units. 1.22 statures leaves
-  // roughly a finger's clearance over the crest and lands the finial at 2.5.
-  const canopyH = h * 1.22;
-  const canopyR = h * (han ? 0.86 : 0.8);
+  // HEADROOM FIRST, THEN THE PLAN VIEW. Both numbers below were wrong, and both
+  // were wrong in ways that only a real frame shows.
+  //
+  // Headroom. The crew stand on `floorTop` = 1.15 R = 0.897 h and are one
+  // stature tall, so a crewman's crown is at 1.90 h and the tip of the driver's
+  // fan crest at 1.99 h. What has to clear that is not the canopy's apex but its
+  // UNDERSIDE — apex minus `canopyDrop` minus the valance. At 1.22 h of mast and
+  // a drop of 0.34 R the underside landed at 1.79 h: a hundredth of a stature
+  // *below* the crew's crowns. The heads were built, 1356 vertices of them, and
+  // no camera could ever see one. 1.62 h of mast puts the apex at 2.48 h, the
+  // rim at 2.30 h and the valance hem at 2.12 h — 0.22 h of daylight over
+  // `floorTop + stature`, and still 0.13 h over the crest.
+  //
+  // Plan view. At 0.86 h the parasol was wider than the car and both naves put
+  // together, so from the play camera — which looks down on the board — the
+  // whole unit was one flat octagon. The Han chariot read as a stop sign and the
+  // Chu one as a slab with poles under it. At 0.60 h the canopy covers the car
+  // and nothing else: both wheels, the axle ends, the 軾 and the entire length
+  // of the draught pole lie outside it, and the piece reads as a vehicle seen
+  // from above rather than as a disc.
+  const canopyH = h * 1.62;
+  // Nearly the same for both armies, because the Chu roof's corners are now
+  // chamfered — see `canopy()`. Unclamped, a square of radius r reaches √2·r at
+  // its corners, and at a shared 0.60 h the Chu canopy spanned 1.70 h corner to
+  // corner against the Han parasol's 1.20 h: it was still the dominant plan-view
+  // mass after the Han one had stopped being.
+  const canopyR = h * (han ? 0.6 : 0.58);
   return {
     R,
     track: h * 0.745,
-    wheelW: R * 0.12,
-    spokes: han ? 26 : 30,
+    // A felloe half again as wide as it was. From the play camera a wheel
+    // standing in the YZ plane is seen nearly edge-on, and at 0.12 R it was two
+    // pixels of timber holding up the whole "two big circles" read.
+    wheelW: R * 0.15,
+    // Twelve and sixteen, not twenty-six and thirty. See `wheel()`.
+    spokes: han ? 12 : 16,
     axleY: R,
     floorY,
     floorThk,
@@ -200,12 +226,15 @@ function dimensions(h: number, han: boolean): Car {
     hw: h * 0.53,
     hd,
     panelTop: floorY + h * 0.5,
-    poleLen: h * 1.66,
+    poleLen: h * 1.60,
     poleTipY: floorY + h * 0.28,
     canopyH,
     canopyR,
-    canopyZ: hd * 0.12,
-    canopyDrop: canopyR * 0.34,
+    // Set back over the crew instead of centred on the car. In plan the unit is
+    // then asymmetric — yoke and pole ahead, car in the middle, canopy behind —
+    // and an asymmetric plan is what gives a top-down silhouette a *front*.
+    canopyZ: hd * 0.3,
+    canopyDrop: canopyR * 0.3,
   };
 }
 
@@ -311,10 +340,23 @@ interface WheelOpts {
  *
  * Felloe and hub are lathes about +Y rotated onto the axle; the spokes are one
  * five-sided tapered prism instanced `spokes` times, each rotated about the
- * **axle** by its own angle. Twenty-six spokes at 26 triangles each is 676
- * triangles and one draw call, which is the only reason a historically correct
- * spoke count is affordable at all — a Han chariot wheel carries 26 to 30, and a
- * wheel with eight would read as a cart.
+ * **axle** by its own angle.
+ *
+ * SPOKE COUNT IS A SAMPLING PROBLEM, NOT AN ARCHAEOLOGY PROBLEM. A real Han
+ * wheel carries 26 to 30, and this built 26 and 30 for exactly that reason. On
+ * the board the wheel is about 55 px across, so 30 spokes is a **1.6 px pitch at
+ * the rim** — below the pixel grid, which means the spokes are not spokes at
+ * board distance, they are a uniform grey wash inside the felloe, and the moment
+ * the chariot rolls that wash aliases into a strobe. Sixteen is the most a wheel
+ * this size can carry and still resolve: about 11 px of pitch at the rim, which
+ * survives the outline pass and reads as a *count* of spokes rather than a
+ * texture. Han takes twelve stout ones, Chu sixteen fine ones — the two armies
+ * still differ, and eight would read as a farm cart.
+ *
+ * The spokes run 0.10 R to 0.93 R against a hub that is 0.16 R at its widest and
+ * a felloe whose inner face is at 0.86 R (Han) / 0.85 R (Chu), so every spoke is
+ * buried at both ends: none of them starts in mid-air inside the nave, and none
+ * pushes through the tread on the far side.
  */
 function wheel(ctx: UnitBuildContext, o: WheelOpts): PartGroup {
   const P = ctx.parts;
@@ -383,12 +425,15 @@ function wheel(ctx: UnitBuildContext, o: WheelOpts): PartGroup {
   // the axle — a plain `Euler(θ, 0, 0)`, so every spoke stays in the wheel's own
   // plane instead of collapsing onto the axle.
   const spoke = P.prim.prism({
-    rx0: R * (o.han ? 0.04 : 0.032),
-    rz0: R * (o.han ? 0.03 : 0.024),
-    rx1: R * (o.han ? 0.024 : 0.019),
-    rz1: R * (o.han ? 0.021 : 0.017),
-    y0: R * 0.12,
-    y1: R * 0.88,
+    // Stouter than before by half: a wheel with twelve spokes has to make each
+    // one count, and a spoke thinner than the outline stroke is drawn entirely
+    // in outline.
+    rx0: R * (o.han ? 0.058 : 0.044),
+    rz0: R * (o.han ? 0.044 : 0.034),
+    rx1: R * (o.han ? 0.036 : 0.027),
+    rz1: R * (o.han ? 0.03 : 0.023),
+    y0: R * 0.1,
+    y1: R * 0.93,
     sides: 5,
     squareness: 0.4,
     name: 'spoke',
@@ -546,8 +591,13 @@ function carBody(ctx: UnitBuildContext, c: Car, han: boolean): PartGroup {
     name: 'carFloor',
   });
   P.prim.place(floor, { pos: [0, floorY, 0], rot: [Math.PI / 2, 0, 0] });
+  // Lacquered, not bare timber. Once the canopy stopped covering the car, the
+  // floor became the largest surface the play camera sees on this unit, and a
+  // 1.06 × 0.74 rectangle of the army's own lacquer between two wheels is worth
+  // more to the board read than the same rectangle of ochre boarding. A Warring
+  // States 輿 floor was lacquered anyway; the bare boards were the exception.
   g.parts.push(
-    P.mkPart(floor, 'timber', 'ochre', 'root', {
+    P.mkPart(floor, 'lacquer', 'lacquer', 'root', {
       name: 'carFloor',
       rigid: true,
       mountBone: 'chariot.body',
@@ -776,15 +826,23 @@ function draughtPole(ctx: UnitBuildContext, c: Car, han: boolean): PartGroup {
   const { R, hd, floorY, poleLen, poleTipY, track } = c;
   const tipZ = -hd - poleLen;
 
+  // THE POLE AND YOKE ARE THE PIECE'S DIRECTIONAL AXIS, so they are built to be
+  // seen from directly above and not only from the side. A 辀 at 0.08 R is about
+  // two pixels wide on the board — the longest line in the silhouette, drawn
+  // entirely in outline. Everything forward of the car is thickened by roughly
+  // half here, which is also closer to the archaeology: the 辀 of an Eastern Zhou
+  // chariot is a structural beam that carries the whole draught, not a broom
+  // handle.
+  //
   // The pole runs under the floor, out through the front and rises toward the
   // yoke. Four stations, so it has a real bend in it rather than a straight
   // stick sloping upward.
   const pole = P.prim.sweep(
     [
-      { p: [0, floorY - R * 0.04, hd * 0.5], rx: R * 0.08, squareness: 0.4 },
-      { p: [0, floorY - R * 0.02, -hd], rx: R * 0.075, squareness: 0.4 },
-      { p: [0, floorY + (poleTipY - floorY) * 0.42, -hd - poleLen * 0.52], rx: R * 0.062, squareness: 0.4 },
-      { p: [0, poleTipY, tipZ], rx: R * 0.05, squareness: 0.4 },
+      { p: [0, floorY - R * 0.04, hd * 0.5], rx: R * 0.115, squareness: 0.45 },
+      { p: [0, floorY - R * 0.02, -hd], rx: R * 0.11, squareness: 0.45 },
+      { p: [0, floorY + (poleTipY - floorY) * 0.42, -hd - poleLen * 0.52], rx: R * 0.092, squareness: 0.45 },
+      { p: [0, poleTipY, tipZ], rx: R * 0.075, squareness: 0.45 },
     ],
     { sides: 6, name: 'draughtPole' },
   );
@@ -796,14 +854,15 @@ function draughtPole(ctx: UnitBuildContext, c: Car, han: boolean): PartGroup {
     }),
   );
 
-  // Yoke 衡 across the pole tip.
+  // Yoke 衡 across the pole tip: the cross-stroke of the T that tells you which
+  // way the piece is pointing.
   const yoke = P.prim.prism({
-    rx0: R * 0.055,
-    rz0: R * 0.045,
-    rx1: R * 0.055,
-    rz1: R * 0.045,
-    y0: -track * 0.78,
-    y1: track * 0.78,
+    rx0: R * 0.085,
+    rz0: R * 0.07,
+    rx1: R * 0.085,
+    rz1: R * 0.07,
+    y0: -track * 0.82,
+    y1: track * 0.82,
     sides: han ? 6 : 4,
     squareness: han ? 0.35 : 0.6,
     name: 'yoke',
@@ -818,15 +877,33 @@ function draughtPole(ctx: UnitBuildContext, c: Car, han: boolean): PartGroup {
     }),
   );
 
-  // Neck forks 軛: Han's curve down and forward around a horse's neck, Chu's
+  // Bronze caps on the two yoke ends, both armies. From above they are the only
+  // bright thing forward of the car, and a pair of them either side of the pole
+  // is what reads as "the front" at a glance.
+  for (const s of [-1, 1]) {
+    g.parts.push(
+      P.trim.ferrule({
+        at: [s * track * 0.78, poleTipY, tipZ],
+        r: R * 0.075,
+        height: R * 0.09,
+        proud: R * 0.018,
+        boneHint: 'root',
+        mountBone: 'chariot.pole',
+        rot: [0, 0, Math.PI / 2],
+        sides: 6,
+      }),
+    );
+  }
+
+  // Neck forks 軛: Han's curve down and back around a horse's neck, Chu's
   // are straight bronze-capped struts.
   for (const s of [-1, 1]) {
     if (han) {
       const fork = P.prim.sweep(
         [
-          { p: [s * track * 0.46, poleTipY, tipZ], rx: R * 0.038, squareness: 0.4 },
-          { p: [s * track * 0.6, poleTipY - R * 0.26, tipZ - R * 0.06], rx: R * 0.032, squareness: 0.4 },
-          { p: [s * track * 0.58, poleTipY - R * 0.52, tipZ + R * 0.16], rx: R * 0.026, squareness: 0.4 },
+          { p: [s * track * 0.46, poleTipY, tipZ], rx: R * 0.045, squareness: 0.4 },
+          { p: [s * track * 0.6, poleTipY - R * 0.26, tipZ + R * 0.02], rx: R * 0.038, squareness: 0.4 },
+          { p: [s * track * 0.58, poleTipY - R * 0.52, tipZ + R * 0.2], rx: R * 0.03, squareness: 0.4 },
         ],
         { sides: 5, name: 'yokeFork' },
       );
@@ -894,24 +971,57 @@ function draughtPole(ctx: UnitBuildContext, c: Car, han: boolean): PartGroup {
 // 傘蓋 — canopy
 // ---------------------------------------------------------------------------
 
+/** How far the Chu canopy's chamfered corners run past its edge midpoints. */
+const SQ_CHAMFER = 1.2;
+
 /**
  * The canopy: a mast rising out of the car floor and a shade on top of it.
  *
- * Both roofs are lofted from the **rim upward**, not from the apex down.
- * `prim.loft` gets its outward winding from the assumption that each successive
- * ring is further along the sweep and therefore higher; feed it a dome from the
- * top down and every face on it points inward.
+ * ONE CLOSED SOLID, NOT A SHEET. The shade used to be a single lofted skin with
+ * `capStart: false` and a degenerate apex ring — an *open* surface with no
+ * underside and no rim. The renderer's outline pass draws back faces, so an open
+ * sheet's outline turns inside out along its boundary, and on the two segments
+ * where the boundary faced the camera the backdrop came straight through the
+ * cloth. It is built here as a five-ring stack capped at **both** ends, so the
+ * parasol is a solid with a real edge and a real underside and there is nothing
+ * for the sky to leak through.
  *
- * Han flies a round 傘蓋 parasol with a scalloped rim and one finial. Chu carries
- * a square canopy whose four corners sweep upward, each capped with its own
- * finial. From above, one is a disc and the other a lozenge; from the side, one
- * is a shallow arc and the other a notched trapezoid.
+ * The stack, lowest ring first — `prim.loft` reads its outward winding from the
+ * assumption that each ring is further along the sweep than the last, so the
+ * rings have to climb:
+ *
+ *     l = 0  hem    the bottom of the 幨 valance, widest
+ *     l = 1  rim    where the valance meets the shade
+ *     l = 2  mid    the shade's slope
+ *     l = 3  upper
+ *     l = 4  apex   a small ring, never a point: a degenerate ring caps into
+ *                   sixteen zero-area triangles instead of a lid
+ *
+ * The valance is part of the same solid rather than a second skin hung off it,
+ * which is what keeps the whole canopy closed with one loft and no seam. It also
+ * does real work: it drops the canopy's visual mass 0.18 h below the rim, which
+ * is what stops a canopy raised high enough to clear the crew from reading as a
+ * saucer parked in mid-air above them.
+ *
+ * The 蓋弓 ribs are gone. Eight spars under a 0.86 h parasol were readable; four
+ * splayed to 1.4 × the Chu canopy's radius were most of the "tangle of poles"
+ * the plan view showed, and under a solid shade with a valance round it not one
+ * of them is ever visible. The triangles went into closing the shade instead.
+ *
+ * Han flies a round 傘蓋 with a scalloped edge and one finial; Chu a chamfered
+ * square whose four corners sweep upward, each with its own finial. From above
+ * one is a disc and the other a lozenge — and now both are small enough that
+ * what you actually read from above is the car and the pole under them.
  */
 function canopy(ctx: UnitBuildContext, c: Car, han: boolean): PartGroup {
   const P = ctx.parts;
   const g = P.emptyGroup();
   const { R, canopyR: cr, canopyZ: cz, canopyH, canopyDrop: drop, floorY } = c;
   const topY = floorY + canopyH;
+  /** Depth of the hanging 幨 valance below the shade's rim. */
+  const valance = cr * 0.3;
+  const rimY = topY - drop;
+  const hemY = rimY - valance;
 
   const mast = P.prim.prism({
     rx0: R * 0.055,
@@ -935,36 +1045,44 @@ function canopy(ctx: UnitBuildContext, c: Car, han: boolean): PartGroup {
   );
 
   const segs = 16;
-  const levels = 4;
-  const rings: V3[][] = [];
-  for (let l = 0; l < levels; l++) {
-    // l = 0 is the rim, l = levels-1 the apex: rings must climb for the loft to
-    // wind outward.
-    const t = 1 - l / (levels - 1);
+  // radius factor and height per level, hem first. `f` never reaches zero.
+  const shape: { f: number; y: number }[] = [
+    { f: 1.0, y: hemY },
+    { f: 0.98, y: rimY },
+    { f: 0.66, y: topY - drop * 0.44 },
+    { f: 0.34, y: topY - drop * 0.12 },
+    { f: 0.07, y: topY },
+  ];
+  const rings: V3[][] = shape.map((s, l) => {
     const row: V3[] = [];
     for (let i = 0; i < segs; i++) {
       const a = (i / segs) * Math.PI * 2;
       let rr: number;
-      let y = topY - t * t * drop;
+      let y = s.y;
       if (han) {
-        // Scalloped rim: alternate segments pull in, so the edge is a row of
-        // petals rather than a circle.
-        rr = cr * t * (i % 2 === 0 ? 1.0 : 0.91);
+        // Scalloped edge: alternate segments pull in, so the hem is a row of
+        // petals rather than a circle. Only the two lowest rings scallop — a
+        // scallop carried up the slope reads as a crumpled shade.
+        rr = cr * s.f * (l <= 1 && i % 2 === 1 ? 0.91 : 1.0);
       } else {
         // Square plan: a radius of 1/max(|cos|,|sin|) traces a square exactly,
         // and at sixteen segments the four corners land on i = 2, 6, 10, 14
         // (45°, 135°, …) — the *diagonals*, not the edge midpoints at i = 0.
         // Getting that index wrong lifts the middle of each side instead and
         // the canopy comes out as a bat rather than a roof.
-        const sq = 1 / Math.max(Math.abs(Math.cos(a)), Math.abs(Math.sin(a)));
-        rr = cr * t * sq;
-        if (i % 4 === 2) y += t * t * drop * 0.55;
+        // Clamped at 1.2 — the corners are chamfered rather than square. An
+        // exact square reaches √2 r on its diagonals, which made the Chu canopy
+        // 40% wider corner to corner than the Han parasol for the same nominal
+        // radius, and the corner was the part that covered the wheels.
+        const sq = Math.min(SQ_CHAMFER, 1 / Math.max(Math.abs(Math.cos(a)), Math.abs(Math.sin(a))));
+        rr = cr * s.f * sq;
+        if (i % 4 === 2) y += drop * 0.5 * s.f;
       }
       row.push([Math.cos(a) * rr, y, cz + Math.sin(a) * rr]);
     }
-    rings.push(row);
-  }
-  const dome = P.prim.loft(rings, { capStart: false, capEnd: true, name: 'canopy' });
+    return row;
+  });
+  const dome = P.prim.loft(rings, { capStart: true, capEnd: true, name: 'canopy' });
   g.parts.push(
     P.mkPart(dome, 'cloth', 'cloth', 'root', {
       name: 'canopy',
@@ -972,53 +1090,6 @@ function canopy(ctx: UnitBuildContext, c: Car, han: boolean): PartGroup {
       mountBone: 'chariot.canopy',
     }),
   );
-
-  // Ribs 蓋弓 *under* the shade: eight radial for the round parasol, four along
-  // the diagonals for the square one, where the corner lift needs supporting.
-  //
-  // The tilt has to follow the cloth. The dome falls `drop` over `cr`, so its
-  // surface lies atan(drop/cr) *below* horizontal, and the rib is rotated about
-  // Z by π/2 + that angle. Rotating by π/2 − it instead — the obvious sign
-  // slip — leaves eight spars radiating upward out of the finial like a
-  // starburst, well clear of the canopy they are supposed to hold up.
-  const ribCount = han ? 8 : 4;
-  const ribLen = han ? cr * 0.99 : cr * 1.4;
-  const ribDrop = han ? Math.atan(drop / cr) : Math.atan((drop * 0.45) / (cr * 1.414));
-  const rib = P.prim.prism({
-    rx0: cr * 0.014,
-    rz0: cr * 0.011,
-    rx1: cr * 0.008,
-    rz1: cr * 0.007,
-    y0: 0,
-    y1: ribLen,
-    sides: 4,
-    name: 'canopyRib',
-  });
-  const ribMats: THREE.Matrix4[] = [];
-  const one = new THREE.Vector3(1, 1, 1);
-  for (let i = 0; i < ribCount; i++) {
-    const a = (i / ribCount) * Math.PI * 2 + (han ? 0 : Math.PI / 4);
-    // Build along +Y, tip it down to the canopy's own slope, then swing it
-    // around the mast. 'YXZ' applies Z first, so the tilt happens in the rib's
-    // own plane before the yaw carries it around; a plain XYZ order would shear.
-    ribMats.push(
-      new THREE.Matrix4().compose(
-        new THREE.Vector3(0, topY - cr * 0.05, cz),
-        new THREE.Quaternion().setFromEuler(new THREE.Euler(0, -a, Math.PI / 2 + ribDrop, 'YXZ')),
-        one,
-      ),
-    );
-  }
-  g.instanced.push({
-    geometry: rib,
-    cls: 'timber',
-    pigment: 'ochre',
-    boneHint: 'root',
-    rigid: true,
-    mountBone: 'chariot.canopy',
-    transforms: ribMats,
-    name: 'canopyRibs',
-  });
 
   // Finials: one for Han, five for Chu (centre plus a corner each).
   const finial = (at: V3, r: number, height: number) =>
@@ -1040,9 +1111,9 @@ function canopy(ctx: UnitBuildContext, c: Car, han: boolean): PartGroup {
       const a = Math.PI / 4 + (i / 4) * Math.PI * 2;
       finial(
         [
-          Math.cos(a) * cr * 1.4,
-          topY - drop * 0.45,
-          cz + Math.sin(a) * cr * 1.4,
+          Math.cos(a) * cr * SQ_CHAMFER * 0.98,
+          rimY + drop * 0.49,
+          cz + Math.sin(a) * cr * SQ_CHAMFER * 0.98,
         ],
         cr * 0.055,
         cr * 0.15,
@@ -1050,16 +1121,17 @@ function canopy(ctx: UnitBuildContext, c: Car, han: boolean): PartGroup {
     }
   }
 
-  // Corner tassels hanging off the rim — soft, and they break a large flat
-  // horizontal that would otherwise sit in one band of the ramp.
+  // Tassels at the four cardinal points of the hem — soft, and they carry the
+  // canopy's mass down into the band of the silhouette where the crew stand, so
+  // the piece tapers from wheels to canopy instead of from wheels to nothing.
   for (let i = 0; i < 4; i++) {
-    const a = (i / 4) * Math.PI * 2 + (han ? Math.PI / 4 : 0);
-    const rr = han ? cr * 0.96 : cr * 1.0;
+    const a = (i / 4) * Math.PI * 2;
+    const rr = cr * 0.94;
     mergeInto(
       g,
       P.trim.tassel({
-        at: [Math.cos(a) * rr, topY - drop * 0.94, cz + Math.sin(a) * rr],
-        length: cr * 0.3,
+        at: [Math.cos(a) * rr, hemY + cr * 0.02, cz + Math.sin(a) * rr],
+        length: cr * 0.34,
         r: cr * 0.07,
         strands: 5,
         boneHint: 'root',
@@ -1332,6 +1404,13 @@ function driver(ctx: UnitBuildContext, rig: Rig, c: Car, han: boolean): PartGrou
 // 車右 — the halberdier
 // ---------------------------------------------------------------------------
 
+/**
+ * The rake of the 車右's 戟, shared by the weapon and by the fist that holds it.
+ * Forward and a touch below horizontal — see the note at the weapon itself for
+ * what the old value collided with.
+ */
+const JI_ROT: V3 = [-1.62, 0, -0.16];
+
 interface CrewOpts {
   /** Where his feet stand, rig space. */
   at: V3;
@@ -1514,7 +1593,7 @@ function halberdier(ctx: UnitBuildContext, o: CrewOpts): { group: PartGroup; haf
       pose: 'fist',
     });
     // The 戟 is raked; the fist that holds it turns with it.
-    if (side === 'R') rotateFist(hand, 'R', [-1.15, 0, -0.3]);
+    if (side === 'R') rotateFist(hand, 'R', JI_ROT);
     else rotateFist(hand, 'L', [-1.4, 0, 0]);
     const grip = hand.points[`grip${side}`];
     if (grip) wrists[side] = [grip.x, grip.y, grip.z];
@@ -1558,20 +1637,37 @@ function halberdier(ctx: UnitBuildContext, o: CrewOpts): { group: PartGroup; haf
   }
 
   // -- 戟 -------------------------------------------------------------------
-  // Levelled forward over the team rather than carried upright: under a canopy
-  // only two thirds of a stature above the crew's heads there is no room for a
-  // vertical polearm, and a 戟 raked forward is the charging-chariot posture
-  // anyway. The rake is chosen so the head passes outside the canopy rim.
+  // Levelled forward over the team, and NOTHING CLAMPS IT — `weapons.ji` puts
+  // the haft exactly where this file asks and takes no view on what is already
+  // there. What was there was the chariot.
+  //
+  // The old rake of [-1.15, 0, -0.3] over a 1.50-stature haft gripped at 0.40
+  // sent the butt back to z = +0.42 h at y = 1.25 h, which is inside the Chu
+  // car's back panel (z = 0.36 h, y = 0.86 … 1.36 h), and threw the head up to
+  // y = 1.91 h and out to x = 0.69 h, where from the play camera it projected
+  // straight down the line of the draught pole and the yoke. Two chariots and
+  // two horses per rank did that, and the Chu back rank read as a mesh of
+  // sticks laid over the pieces rather than as pieces.
+  //
+  // JI_ROT is 3° below horizontal instead of 25° above it, the haft is 1.16
+  // statures instead of 1.50, and the grip has moved forward to 0.30 so less of
+  // it trails behind him. Measured, the whole weapon now occupies
+  // x 0.29 … 0.53 h, y 1.44 … 1.52 h, z -1.04 … +0.24 h. The butt stops 0.09 h
+  // short of the back rail instead of passing through the panel below it; the
+  // shaft crosses the 軾 front bar 0.06 h above it; the point stops a full
+  // stature short of the yoke and 0.13 h inboard of the side rail. Both ends are
+  // well inside the piece's own square — 0.22 world across the files against a
+  // 0.5 half-square, and 0.43 along them.
   const ji = P.weapons.ji({
     grip: wrists.R,
-    rot: [-1.15, 0, -0.3],
+    rot: JI_ROT,
     bone: 'handR',
     mountBone: o.mountBone,
-    length: L(m.height) * 1.5,
-    gripAt: 0.4,
-    shaftR: L(m.height) * 0.013,
-    bladeLength: L(m.height) * 0.24,
-    headLength: L(m.height) * 0.2,
+    length: L(m.height) * 1.16,
+    gripAt: 0.3,
+    shaftR: L(m.height) * 0.015,
+    bladeLength: L(m.height) * 0.2,
+    headLength: L(m.height) * 0.17,
   });
   const tip = ji.points.tip.clone();
   mergeInto(g, ji, P);
