@@ -8,36 +8,58 @@
  * they are built as deliberate opposites, on every axis at once:
  *
  *                    soldier                     advisor
- *   outline          narrow column               wide-based triangle
- *   dominant stroke  a diagonal haft             a vertical crown
+ *   outline          narrow column               wide-shouldered trapezoid,
+ *                                                narrow at the hem
+ *   dominant stroke  a diagonal haft             a vertical crown over a level
+ *                                                blade — two horizontals
  *   top of the head  low — a cone or a wrap      tall — a cap or a winged crown
- *   waist to hem     armour plates, hard edges   robe flare, folded cloth
+ *   waist to hem     armour plates, hard edges   one straight fall of cloth
  *
- * He is a court official, not a soldier: no lamellar anywhere on him. The robe
- * carries the silhouette — a flared hem, wide hanging sleeves, and above it a
- * crown that is the tallest headgear in the cast bar the general's.
+ * He is a court official, not a soldier: no lamellar anywhere on him. The
+ * SLEEVES carry the silhouette — carried clear of the body on both sides so the
+ * widest point of the figure is at the shoulder line — and above them a crown
+ * that is the tallest headgear in the cast bar the general's.
+ *
+ * That is worth stating plainly, because it is the axis this unit is graded on.
+ * `proportions.ts` contracts a taper of 0.78: silhouette width at a quarter of
+ * the height must be about three quarters of the width at three quarters of it.
+ * The general is contracted at 1.90 — the exact inverse. An advisor whose robe
+ * flares to a wide hem is a general at 55% scale, and a player has no reference
+ * for scale, so the two become the same piece. Everything below the sash is
+ * therefore kept narrow and everything at the shoulder is thrown wide.
  *
  * TWO COURTS, NOT ONE COURT IN TWO COLOURS
  * ----------------------------------------
  *   Han 仕: a tall lacquered 官帽 with a stiff horizontal bar across it — a T
- *           against the sky — a straight court robe whose hem is turned back on
- *           itself in one hard fold, a short 劍 held low in a parrying guard and
- *           a jade 璧 hung at the sash.
+ *           against the sky — a straight court robe with its hem turned back on
+ *           itself in one hard fold, and a short 劍 held LEVEL in both hands and
+ *           presented forward of the chest, which puts a second horizontal
+ *           directly under the first. A jade 璧 hangs at the sash.
  *   Chu 士: a taller crown that flares as it rises and throws two upswept wings
  *           past the top of it — a V — a robe cut into a swallow-tail hem that
- *           falls into two points behind the heels, and a ritual 鉞 held
- *           vertically like a staff of office.
+ *           forks behind the calves, and a ritual 鉞 held vertically like a
+ *           staff of office.
  *
- * A T and a V, a straight hem and a forked one, a low guard and a vertical
+ * A T and a V, a straight hem and a forked one, a level blade and a vertical
  * shaft. None of that is pigment, so all of it survives the silhouette pass.
+ *
+ * THE HEM STOPS AT THE CALF, AND THAT IS NOT A LICENCE TO SHORTEN THE ROBE
+ * -----------------------------------------------------------------------
+ * A robe whose hem reaches the base disc is a bollard: the figure's outline is
+ * the same width at the floor as at the shoulders and there is nothing at the
+ * bottom for the eye to stand it on. Han court figures are not painted that way
+ * either — the 直裾 hem clears the boot, and the boot and the white 絝 above it
+ * are part of the costume, not something hidden by it. So the robe still runs
+ * collar to below the knee (it is a robe, not a tunic) and the last sixth of the
+ * figure is leg: pale silk trouser, then a lacquered boot.
  *
  * WHAT IS NOT BUILT
  * -----------------
- * There is no torso and there are no legs under the robe. The robe bodice runs
+ * There is no torso and there are no thighs under the robe. The robe bodice runs
  * shoulder to waist and the skirt waist to hem, both closed solids, so a torso
  * inside them would be geometry nothing can ever see — 600 triangles of it, on
  * four figures. Only what shows is built: forearms out of the cuffs, hands,
- * head, and boot toes under the hem.
+ * head, and the shins and boots under the hem.
  */
 
 import * as THREE from 'three';
@@ -507,9 +529,17 @@ function hemFold(P: Lib, m: RigMetrics, hemY: number, rHem: number, folds: numbe
  * The hanging half of a court sleeve.
  *
  * `cloth.sleeve` wraps the arm; it cannot know that the cloth below the forearm
- * keeps going. This is that cloth: a panel dropped from the forearm, widening
- * and swinging back as it falls. On the raised arm it is most of what makes the
- * outline a triangle rather than a column.
+ * keeps going. This is that cloth: a curtain hung along the underside of the
+ * forearm, falling and bellying outward as it goes.
+ *
+ * "Outward" is the forearm's own horizontal normal, not a fixed +Z. That
+ * distinction is the whole function: with an arm hanging at the side the two
+ * directions coincide, but with the arms carried out in front — which is how the
+ * Han 仕 holds his 劍 — they are ninety degrees apart, and a drape that always
+ * sweeps backward stops being cloth hanging off an arm and becomes a slab
+ * standing on edge beside the figure. The middle of the curtain bellies further
+ * than its ends, so the section is an arc rather than a plane and the ramp puts
+ * two bands across it instead of one flat value.
  */
 function sleeveDrape(
   P: Lib,
@@ -520,21 +550,30 @@ function sleeveDrape(
   drop: number,
 ): Part {
   const rows = 4;
-  const cols = 3;
+  const cols = 4;
   const grid: V3[][] = [];
   const s = side === 'L' ? -1 : 1;
+
+  const axis = new THREE.Vector3(wrist.x - elbow.x, 0, wrist.z - elbow.z);
+  if (axis.lengthSq() < 1e-6) axis.set(0, 0, -1);
+  axis.normalize();
+  const out = new THREE.Vector3(-axis.z, 0, axis.x);
+  // Whichever of the two normals leaves the body on this side.
+  if (out.x * s < 0) out.negate();
+
   for (let r = 0; r < rows; r++) {
     const t = r / (rows - 1);
     const row: V3[] = [];
     for (let c = 0; c < cols; c++) {
       const u = c / (cols - 1);
-      // Runs from elbow to cuff across the panel, and falls with `t`.
-      const along = elbow.clone().lerp(wrist, 0.15 + u * 0.85);
-      const w = width * (0.62 + t * 0.9);
+      // Columns run elbow → cuff along the top edge; rows fall with `t`.
+      const along = elbow.clone().lerp(wrist, 0.12 + u * 0.88);
+      const w = width * (0.62 + t * 0.86);
+      const belly = w * (0.1 + t * 0.46) * (1 - Math.abs(u - 0.5) * 0.8);
       row.push([
-        along.x + s * w * 0.16,
+        along.x + out.x * belly,
         along.y - drop * (t * 0.72 + t * t * 0.28),
-        along.z + w * (0.1 + t * 0.5),
+        along.z + out.z * belly,
       ]);
     }
     grid.push(row);
@@ -674,28 +713,39 @@ function buildAdvisor(ctx: UnitBuildContext): PartGroup {
   const folds = 12 + (ctx.variant % 2);
 
   // --- the weapon, and the hands that hold it -----------------------------
-  // Han: 劍 low and forward in a parrying guard, point out past the left knee.
-  // Chu: 鉞 vertical at the right side, butt just clear of the board.
-  // The guard is angled across the body rather than straight out in front: a
-  // 劍 held forward puts the point half a square ahead of the figure, which
-  // wrecks the declared aspect and crowds the next piece on the board.
-  const swordDir = new THREE.Vector3(-0.62, -0.55, -0.56);
+  // Han 奉劍: the 劍 held level in BOTH hands and presented forward of the chest,
+  // hilt at the right, point past the left shoulder. Chu: 鉞 vertical at the
+  // right side, butt just clear of the board.
+  //
+  // The Han carry is what makes this unit an inverted trapezoid instead of a
+  // small general. Two hands out in front at chest height throw both elbows wide
+  // — and a court sleeve hangs from the elbow, so the widest point of the whole
+  // figure lands at the shoulder line and nothing below the sash comes near it.
+  // The old low parrying guard did the exact opposite: it put the point and the
+  // guard down beside the knee, which is where the general's cloak hem is, and
+  // the two silhouettes measured 4% apart. It is also the second horizontal on
+  // the figure, directly under the 官帽's bar — a double-barred T that no other
+  // piece in either army makes.
+  const swordDir = new THREE.Vector3(-1, 0.12, -0.26).normalize();
   // The 鉞 stays unrolled, so its crescent lies in the sagittal plane: broadside
   // from the side, a bare vertical shaft from the front. That split is
   // deliberate — the front view already carries the winged crown, and two big
   // shapes at the same height in the same view merge into one blob.
-  const aimR = han ? aim(swordDir, 0.5) : aim(UP);
+  const aimR = han ? aim(swordDir, 0.4) : aim(UP);
   const gripR = han
-    ? new THREE.Vector3(m.hipWidth * 0.72, m.waistY - m.torsoLen * 0.02, -m.chestDepth * 1.15)
+    ? new THREE.Vector3(m.hipWidth * 0.82, m.chestY + m.torsoLen * 0.22, -m.chestDepth * 1.72)
     : new THREE.Vector3(m.hipWidth * 1.0, m.waistY + m.torsoLen * 0.28, -m.chestDepth * 0.72);
 
-  // Off hand: Han raises it, palm out, in the formal 揖 gesture that opens the
-  // sleeve; Chu lets it hang, so his drape is one long vertical.
-  const aimL = han
-    ? aim(new THREE.Vector3(0.25, -0.42, -0.87).negate())
-    : aim(new THREE.Vector3(-0.12, -0.96, -0.25));
+  // Off hand: Han's flat palm supports the blade two thirds of the way along, so
+  // both sleeves open at the same height; Chu lets it hang, so his drape is one
+  // long vertical.
+  const aimL = han ? aimR : aim(new THREE.Vector3(-0.12, -0.96, -0.25));
   const wristLTarget = han
-    ? new THREE.Vector3(-m.hipWidth * 0.62, m.chestY + m.torsoLen * 0.06, -m.chestDepth * 1.25)
+    ? wristFor(
+        gripR.clone().addScaledVector(swordDir, m.height * 0.27).add(new THREE.Vector3(0, -m.handR * 1.2, 0)),
+        aimL,
+        m,
+      )
     : new THREE.Vector3(-m.hipWidth * 0.88, m.waistY - m.torsoLen * 0.28, -m.chestDepth * 0.5);
 
   const offsets: Partial<Record<BoneName, V3>> = {};
@@ -704,7 +754,10 @@ function buildAdvisor(ctx: UnitBuildContext): PartGroup {
     m,
     'R',
     wristFor(gripR, aimR, m),
-    han ? [0.85, -0.35, 0.55] : [0.9, -0.25, 0.75],
+    // Poles chosen to break both elbows OUTWARD. That is the whole silhouette:
+    // an elbow tucked at the ribs puts the sleeve inside the robe's own outline
+    // and the figure goes back to being a column.
+    han ? [1, -0.3, 0.42] : [0.9, -0.25, 0.75],
     offsets,
   );
   const wristL = poseArm(
@@ -712,7 +765,7 @@ function buildAdvisor(ctx: UnitBuildContext): PartGroup {
     m,
     'L',
     wristLTarget,
-    han ? [-0.7, -0.95, -0.15] : [-0.8, -0.5, 0.35],
+    han ? [-1, -0.3, 0.42] : [-0.8, -0.5, 0.35],
     offsets,
   );
   const rig = ctx.useRig({ offsets });
@@ -761,27 +814,51 @@ function buildAdvisor(ctx: UnitBuildContext): PartGroup {
     g.parts.push(...hand.parts);
     for (const k of Object.keys(hand.points)) g.points[k] = hand.points[k];
 
-    // Boot toes under the hem. No legs: the robe is a closed solid and they
-    // would be invisible geometry on four figures.
+    // Shin and boot under the hem. This is the only part of the figure below
+    // the sash that is *narrower* than the figure above it, so it is what stops
+    // the outline being a post: a pale silk 絝 over the calf, a dark boot under
+    // it, and daylight between the two legs.
     g.parts.push(
+      P.body.limb({
+        from: v3(B[`shin${S}` as BoneName]),
+        to: v3(B[`foot${S}` as BoneName]),
+        r0: m.shinR * 1.3,
+        r1: m.shinR * 0.88,
+        sides: 6,
+        squareness: 0.35,
+        boneHint: `shin${S}` as BoneName,
+        // Undyed silk. It shares the jade 璧's bucket, so the one high-key
+        // value on the figure below the collar costs no extra material pair.
+        cls: 'ivory',
+        pigment: 'shellWhite',
+        name: `shin${S}`,
+      }),
       ...P.body.boot({
         side: S,
         ankle: v3(B[`foot${S}` as BoneName]),
-        length: m.footLen,
-        width: m.footLen * 0.42,
-        shaft: 0.06,
+        length: m.footLen * 0.92,
+        width: m.footLen * 0.4,
+        shaft: 0.34,
       }).parts,
     );
   }
 
   // --- the robe -----------------------------------------------------------
-  const hemY = m.ankleY * 1.15;
+  // The hem clears the boot by most of the calf. Below it the silhouette is two
+  // legs; above it the robe is deliberately NARROW — a Han court robe falls
+  // straight from the sash, it does not flare, and the flare is what a general's
+  // cloak does. Between the straight hem and the sleeves carried out at the
+  // shoulder the figure is an inverted trapezoid, which is the one thing it has
+  // to be that a scaled-down general is not.
+  const hemY = m.ankleY + m.shinLen * (han ? 0.88 : 0.98);
   const shoulderY = m.shoulderY + m.torsoLen * 0.04;
   const waistY = m.waistY + m.torsoLen * 0.02;
-  const hemR = m.hipWidth * (han ? 1.52 : 1.66);
-  // The two rear points of the Chu hem fall as far as they can without going
-  // through the board: `robeSkirt` drops a vertex by at most 0.71 of `tail`.
-  const tail = han ? 0 : Math.max(0, (hemY - m.height * 0.008) / 0.71);
+  const hemR = m.hipWidth * (han ? 0.94 : 1.24);
+  // The two rear points of the Chu 燕尾 hem fall a quarter of a shin below the
+  // rest of it — enough to fork, not so far that the fork lands back in the
+  // lowest sixth of the figure and undoes the raised hem. `robeSkirt` drops a
+  // vertex by at most 0.71 of `tail`.
+  const tail = han ? 0 : m.shinLen * 0.24;
 
   const bodice = P.prim.loft(
     [
@@ -810,24 +887,30 @@ function buildAdvisor(ctx: UnitBuildContext): PartGroup {
   );
   if (han) g.parts.push(hemFold(P, m, hemY, hemR, folds, 0.8));
 
-  // Sleeves: wrapped over the arm, then dropped below it.
+  // Sleeves: wrapped over the arm, then dropped below it. Han's are the wider
+  // pair — his are the only sleeves in the cast carried out clear of the body on
+  // both sides at once, and they have to out-measure his own hem by a quarter or
+  // the inverted trapezoid is not there to read.
+  const cuffR = m.upperArmR * (han ? 4.4 : 3.4);
   g.parts.push(
     ...P.cloth.sleeves(
-      { r0: m.upperArmR * 2.0, r1: m.upperArmR * (han ? 3.9 : 3.4), folds: 8, length: 0.9 },
+      { r0: m.upperArmR * (han ? 2.2 : 2.0), r1: cuffR, folds: 8, length: 0.92 },
       { shoulder: v3(B.upperArmL), elbow: v3(B.foreArmL), wrist: v3(B.handL) },
       { shoulder: v3(B.upperArmR), elbow: v3(B.foreArmR), wrist: v3(B.handR) },
     ).parts,
   );
   for (const S of ['L', 'R'] as const) {
-    const raised = han && S === 'L';
+    // Han's carry is symmetric — both hands are on the 劍 — so both sleeves
+    // drop the same. Chu's off arm hangs, so only its drape is the long one.
+    const long = han || S === 'L';
     g.parts.push(
       sleeveDrape(
         P,
         S,
         B[`foreArm${S}` as BoneName],
         B[`hand${S}` as BoneName],
-        m.upperArmR * (raised ? 4.2 : 3.4),
-        m.torsoLen * (raised ? 0.86 : 0.6),
+        m.upperArmR * (han ? 2.9 : 3.4),
+        m.torsoLen * (long ? 0.68 : 0.6),
       ),
     );
   }
@@ -883,7 +966,7 @@ function buildAdvisor(ctx: UnitBuildContext): PartGroup {
   g.parts.push(
     apron(P, {
       topY: waistY - m.torsoLen * 0.06,
-      botY: hemY + m.legLen * (han ? 0.2 : 0.13),
+      botY: hemY + m.legLen * (han ? 0.1 : 0.06),
       rTop: m.waistWidth * 0.68,
       rBot: hemR,
       squash: 0.8,
@@ -893,13 +976,7 @@ function buildAdvisor(ctx: UnitBuildContext): PartGroup {
   );
   for (const S of ['L', 'R'] as const) {
     g.parts.push(
-      cuffBand(
-        P,
-        S,
-        B[`foreArm${S}` as BoneName],
-        B[`hand${S}` as BoneName],
-        m.upperArmR * (han ? 3.9 : 3.4),
-      ),
+      cuffBand(P, S, B[`foreArm${S}` as BoneName], B[`hand${S}` as BoneName], cuffR),
     );
   }
 

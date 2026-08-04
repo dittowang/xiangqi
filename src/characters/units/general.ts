@@ -101,7 +101,16 @@ function buildGeneral(ctx: UnitBuildContext): PartGroup {
   // --- 1. the dais --------------------------------------------------------
   // Built first because its height is the rig's origin: everything else is
   // authored relative to a skeleton whose feet stand on the top step.
-  const platformTop = han ? h * 0.24 : h * 0.27;
+  //
+  // NARROW AND TALL, NOT WIDE AND LOW. The dais used to be 0.74 world units
+  // across — three quarters of a board square, wider than the cloak above it and
+  // wider than the scene's own plinth. That made the widest thing in the whole
+  // silhouette a disc lying on the floor, which is the definition of a bollard:
+  // the outline is at its fattest where it meets the board and tapers upward
+  // from there, so the eye reads a post with a head rather than a man in a
+  // cloak. It is now a pedestal — the step under the feet is what carries the
+  // read, and a step reads from its *height* above the board, not its width.
+  const platformTop = han ? h * 0.27 : h * 0.3;
   mergeInto(g, han ? hanDais(ctx, h, platformTop) : chuPlinth(ctx, h, platformTop), P);
 
   // --- 2. the rig, lifted and posed ---------------------------------------
@@ -134,7 +143,11 @@ function buildGeneral(ctx: UnitBuildContext): PartGroup {
   // wants the same fist rotation as a point-up one: `sword({ reversed })` adds
   // the half-turn itself, and adding it here too would twist the hand off the
   // hilt for no visible gain.
-  const rHold: V3 = han ? [-0.13, 0, 0.52] : [CHU_SWORD_TILT, 0, 0.06];
+  // The Han 節 leans across the body (Z) but no longer forward (X). A staff
+  // pitched forward puts its head half a rig unit in front of the chest at crown
+  // height, which is exactly the band the taper contract measures the *narrow*
+  // end of the cone in — and a cone with a wide top is not a cone.
+  const rHold: V3 = han ? [0.06, 0, 0.52] : [CHU_SWORD_TILT, 0, 0.06];
   const lHold: V3 = han ? [0.3, 0, -0.2] : [0.12, 0, -0.12];
   rotateFist(fig, 'R', rHold);
   rotateFist(fig, 'L', lHold);
@@ -144,14 +157,17 @@ function buildGeneral(ctx: UnitBuildContext): PartGroup {
   const gripL = fig.points.gripL ?? B.handL;
 
   // --- 4. cloth under the harness -----------------------------------------
-  // robe = 0.6: a knee-length under-robe, visible below the armoured skirt.
-  const hemY = m.hipY - m.legLen * 0.62;
+  // robe = 0.6: an above-the-knee under-robe, visible below the armoured skirt
+  // and clear of the greaves. Three hard horizontals stack down the leg —
+  // plate skirt, robe hem, cloak hem — and below the last of them the outline is
+  // two greaved shins and two boots on a narrow pedestal.
+  const hemY = m.hipY - m.legLen * 0.44;
   g.parts.push(
     P.cloth.skirt({
       topY: m.waistY + m.torsoLen * 0.02,
       hemY,
       rTop: m.waistWidth * 0.62,
-      rHem: m.hipWidth * 1.02,
+      rHem: m.hipWidth * 1.22,
       squash: 0.84,
       folds: 11,
       foldDepth: 0.19,
@@ -189,17 +205,27 @@ function buildGeneral(ctx: UnitBuildContext): PartGroup {
 
   // The cloak. This is most of what makes the general wider than everyone else
   // without making him fat, and the two armies cut it differently.
+  //
+  // It is also THE cone. `proportions.ts` contracts a taper of 1.9 for this unit
+  // — silhouette width at a quarter of the height against width at three
+  // quarters — and the only thing on a general that can be twice as wide at the
+  // knee as at the crown is the cloak. So its hem is thrown wide and stopped at
+  // the knee: wide enough to be the widest thing on the piece by a clear margin,
+  // high enough that the two legs and the pedestal are still visible under it.
+  // Its backward sweep is deliberately restrained, because a cloak that reaches
+  // further behind the figure than the hem reaches sideways moves the bounding
+  // box off the man and puts the pedestal back at the edge of it.
   if (han) {
     g.parts.push(
       P.cloth.cloak({
         shoulderY: m.shoulderY + m.torsoLen * 0.06,
-        hemY: Math.max(platformTop + m.ankleY * 0.4, m.hipY - m.legLen * 0.92),
-        rTop: m.shoulderWidth * 0.6,
-        rHem: m.shoulderWidth * 1.02,
-        z: m.chestDepth * 0.46,
+        hemY: m.hipY - m.legLen * 0.5,
+        rTop: m.shoulderWidth * 0.62,
+        rHem: m.shoulderWidth * 2.0,
+        z: m.chestDepth * 0.16,
         folds: 7,
-        foldDepth: 0.22,
-        flare: 0.24,
+        foldDepth: 0.12,
+        flare: 0.04,
       }),
     );
   } else {
@@ -261,7 +287,8 @@ function buildGeneral(ctx: UnitBuildContext): PartGroup {
 function hanDais(ctx: UnitBuildContext, h: number, top: number): PartGroup {
   const P = ctx.parts;
   const g = P.emptyGroup();
-  const r = h * 0.56;
+  // Sized to sit *inside* the cloak's hem, not outside it. See `platformTop`.
+  const r = h * 0.245;
   const phase = Math.PI / 8;
 
   // Bottom step in plain timber, the two above it in army lacquer: the value
@@ -305,8 +332,10 @@ function hanDais(ctx: UnitBuildContext, h: number, top: number): PartGroup {
     g,
     P.rivets.rivetArc({
       centre: [0, top * 0.44, 0],
-      rx: r * 0.94,
-      rz: r * 0.94,
+      // On the face of the middle step, not proud of the plinth below it: the
+      // studs must never be the widest thing on the piece.
+      rx: r * 0.86,
+      rz: r * 0.86,
       count: 8,
       arcCentre: -Math.PI / 2,
       boneHint: 'root',
@@ -327,7 +356,7 @@ function hanDais(ctx: UnitBuildContext, h: number, top: number): PartGroup {
 function chuPlinth(ctx: UnitBuildContext, h: number, top: number): PartGroup {
   const P = ctx.parts;
   const g = P.emptyGroup();
-  const hw = h * 0.52;
+  const hw = h * 0.235;
   const hd = hw * 0.94;
 
   const box = P.prim.loft(
@@ -739,11 +768,14 @@ function swallowtailCloak(ctx: UnitBuildContext, rig: Rig, platformTop: number):
   const P = ctx.parts;
   const m = rig.metrics;
   const shoulderY = m.shoulderY + m.torsoLen * 0.08;
-  const hemY = Math.max(platformTop + m.ankleY * 0.3, m.hipY - m.legLen * 0.98);
+  // The centre-back of the notch, not the lowest point: the two corners hang a
+  // quarter of the drop below this. Both stay clear of the knee, so the greaves
+  // and boots are still the bottom of the silhouette.
+  const hemY = m.hipY - m.legLen * 0.42;
   const drop = shoulderY - hemY;
   const rTop = m.shoulderWidth * 0.64;
-  const rHem = m.shoulderWidth * 1.24;
-  const z0 = m.chestDepth * 0.48;
+  const rHem = m.shoulderWidth * 2.05;
+  const z0 = m.chestDepth * 0.2;
 
   const rows = 5;
   const folds = 6;
@@ -757,11 +789,15 @@ function swallowtailCloak(ctx: UnitBuildContext, rig: Rig, platformTop: number):
       const u = c / (cols - 1);
       const a = (u - 0.5) * Math.PI * 0.98;
       const fold = (c % 2 === 0 ? 1 : -1) * 0.24 * rr * t;
-      // Swallowtail: |u-0.5| drives the hem down, so the centre back lifts into
-      // a notch and the outer corners hang into two points.
-      const tail = (1 - Math.pow(1 - Math.abs(u - 0.5) * 2, 1.6)) * drop * 0.34;
-      const y = shoulderY - drop * t + tail * t * t;
-      row.push([Math.sin(a) * rr, y, z0 + Math.cos(a) * rr * 0.44 + fold + t * t * drop * 0.3]);
+      // Swallowtail: |u-0.5| drives the hem DOWN, so the centre back lifts into
+      // a notch and the outer corners hang into two points. Those two corners
+      // are also the widest pair of vertices on the whole figure, so where they
+      // land vertically is what the taper measurement reads as the bottom of the
+      // cone — they are deliberately dropped into the lower quarter of the
+      // silhouette rather than left level with the notch.
+      const tail = (1 - Math.pow(1 - Math.abs(u - 0.5) * 2, 1.6)) * drop * 0.24;
+      const y = shoulderY - drop * t - tail * t * t;
+      row.push([Math.sin(a) * rr, y, z0 + Math.cos(a) * rr * 0.44 + fold + t * t * drop * 0.08]);
     }
     grid.push(row);
   }
@@ -884,9 +920,9 @@ function backStandard(g: PartGroup, ctx: UnitBuildContext, rig: Rig, han: boolea
   const h = m.height;
 
   const at: V3 = [
-    B.spine02.x + (han ? m.chestWidth * 0.44 : 0),
+    B.spine02.x + (han ? m.chestWidth * 0.4 : 0),
     B.spine02.y - m.torsoLen * (han ? 0.2 : 0.3),
-    B.spine02.z + m.chestDepth * (han ? 0.72 : 0.86),
+    B.spine02.z + m.chestDepth * (han ? 0.58 : 0.7),
   ];
   g.attach.push({ name: 'back', bone: 'spine02', position: at });
 
@@ -898,11 +934,19 @@ function backStandard(g: PartGroup, ctx: UnitBuildContext, rig: Rig, han: boolea
       // Han's 旌 is deliberately the smaller of the two: his silhouette already
       // spends its height on the plume, and a banner big enough to compete with
       // the crown turns the commander into a standard-bearer.
-      poleLength: h * (han ? 0.74 : 0.82),
-      poleR: h * 0.014,
+      poleLength: h * (han ? 0.72 : 0.78),
+      // A SHAFT HAS TO SURVIVE THE RASTERISER. At h*0.014 the pole was about
+      // 0.010 world units thick — one pixel and a bit at the default camera —
+      // while the shadow it casts is a solid dark line two or three pixels wide,
+      // so on a captured still the banner floated over its own shadow with
+      // nothing holding it up. This is the width at which the lit shaft is
+      // wider than the shadow under it and reads as a pole. It is also why the
+      // pole is hexagonal rather than round: at this size the facet break down
+      // its length is what tells the eye it is a solid object and not a line.
+      poleR: h * 0.03,
       bannerHeight: h * (han ? 0.21 : 0.31),
-      bannerWidth: h * (han ? 0.24 : 0.3),
-      lean: han ? 0.36 : 0.1,
+      bannerWidth: h * (han ? 0.2 : 0.3),
+      lean: han ? 0.18 : 0.1,
       fly: han ? -0.55 : 0.45,
       boneHint: 'spine02',
       clothPigment: 'accent',

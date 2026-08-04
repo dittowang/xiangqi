@@ -644,10 +644,10 @@ function buildSoldier(ctx: UnitBuildContext): PartGroup {
   const sashTail = m.torsoLen * (0.26 + 0.14 * (variant % 3));
   const helmTaper = 1 + rng.range(-0.06, 0.08);
   const shieldScale = 1 + rng.range(-0.08, 0.08);
-  // 41° forward for the Han thrust, 32° back for the Chu shoulder carry. Both
+  // 31° forward for the Han thrust, 32° back for the Chu shoulder carry. Both
   // are past the angle at which the haft stops reading as "vertical, roughly" —
   // that is the point of them.
-  const rake = (han ? -0.68 : 0.56) + rng.range(-0.05, 0.05);
+  const rake = (han ? -0.55 : 0.56) + rng.range(-0.05, 0.05);
 
   // --- the carry, before any geometry exists -----------------------------
   // TWO HANDS OR ONE. The Han 兵 grips his 矛 with both, out and forward of the
@@ -658,10 +658,21 @@ function buildSoldier(ctx: UnitBuildContext): PartGroup {
   // arm silhouette as well as by haft angle, and it keeps a left elbow out of
   // the stomach — which is where a two-handed grip on a back-raked haft puts
   // it, whatever pole vector the IK is given.
+  //
+  // THE GRIP SITS WHERE IT BALANCES THE HAFT ABOUT THE FIGURE, not where the
+  // hand looks most comfortable in isolation. A raked polearm is the longest
+  // thing on a conscript by a wide margin, so it — not the body — decides where
+  // the unit's bounding box is centred, and a box centred half a foot behind the
+  // heels makes a figure standing squarely on its own intersection *measure* as
+  // if it were leaning off it. Han's rear hand therefore closes just behind the
+  // hip so the point runs forward and the butt trails back by the same amount;
+  // Chu's closes in front of the hip so the 戈 head rides back over the shoulder
+  // with the butt swung forward. Both keep the diagonal — it is the same angle —
+  // and both put the figure in the middle of its own square.
   const twoHanded = han;
   const anchor = han
-    ? new THREE.Vector3(m.hipWidth * 0.8, m.waistY - m.torsoLen * 0.24, -m.hipDepth * 0.3)
-    : new THREE.Vector3(m.hipWidth * 0.86, m.waistY + m.torsoLen * 0.16, m.hipDepth * 0.5);
+    ? new THREE.Vector3(m.hipWidth * 0.8, m.waistY - m.torsoLen * 0.24, m.hipDepth * 0.18)
+    : new THREE.Vector3(m.hipWidth * 0.86, m.waistY + m.torsoLen * 0.16, -m.hipDepth * 0.34);
   const weaponLen = m.height * (han ? 0.86 : 0.95);
   const c = fitCarry(
     ctx.rig.bindWorld,
@@ -760,7 +771,12 @@ function buildSoldier(ctx: UnitBuildContext): PartGroup {
   }
 
   // --- what he wears ------------------------------------------------------
-  const hemY = m.hipY - m.legLen * (han ? 0.3 : 0.34);
+  // THE TUNIC STOPS ABOVE THE KNEE. A conscript's whole lower silhouette is two
+  // legs, and legs are the only thing in this cast that make a base narrower
+  // than the body above it — a hem that falls past the calf turns him into a
+  // post whatever is modelled underneath. Everything below `hemY` is shin,
+  // puttee and boot, and it is deliberately more than a third of his height.
+  const hemY = m.hipY - m.legLen * (han ? 0.4 : 0.38);
   g.parts.push(
     P.cloth.skirt({
       topY: m.waistY + m.torsoLen * 0.04,
@@ -827,12 +843,14 @@ function buildSoldier(ctx: UnitBuildContext): PartGroup {
 
     // The skirt flares hard: it is what turns the lower half from a slab into a
     // bell standing on two legs, and the flare is the difference between an
-    // armoured man and a box with a head.
+    // armoured man and a box with a head. It also ends *above* the tunic hem,
+    // so the eye reads plate → cloth → bare shin → boot as three separate
+    // horizontal breaks on the way down instead of one lacquered tube.
     const skirt = P.lamellar.skirtArmour({
       topY: m.waistY - m.torsoLen * 0.14,
-      bottomY: m.kneeY + m.shinLen * 0.16,
+      bottomY: m.hipY - m.legLen * 0.34,
       rxTop: m.hipWidth * 0.64,
-      rxBottom: m.hipWidth * 1.04,
+      rxBottom: m.hipWidth * 1.26,
       depthRatio: 0.84,
       rows: 3,
       perRow: 14,
