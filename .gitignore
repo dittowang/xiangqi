@@ -11,3 +11,5 @@ captures/
 test-results/
 playwright-report/
 .tsbuildinfo
+# Subsystem briefs handed to the build agents — working notes, not source.
+.briefs/
