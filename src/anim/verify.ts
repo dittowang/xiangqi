@@ -36,12 +36,12 @@ import type {
   UnitInstance,
 } from '@core/contracts.ts';
 import { bus } from '@core/bus.ts';
-import { sq } from '@core/coords.ts';
+import { fileOf, rankOf, sq, worldX, worldZ } from '@core/coords.ts';
 import { PieceType, Side, UNIT_KEY, type UnitKey } from '@core/types.ts';
 import { createCharacters } from '@characters/index.ts';
 import { UNIT_KEYS_IN_VALUE_ORDER } from '@characters/proportions.ts';
 import { buildClipSet, clipKeyFor, type NormalisedClip } from './clips.ts';
-import { chainReach, makeChain, solveTwoBoneRaw, stanceWeight } from './ik.ts';
+import { solveTwoBoneRaw, stanceWeight } from './ik.ts';
 import { Animator, createAnimator } from './controller.ts';
 import { PigmentField } from './pigment.ts';
 import { Choreography } from './choreography.ts';
@@ -65,6 +65,8 @@ function note(msg: string): void {
   notes.push(msg);
 }
 const f = (v: number, n = 4): string => (Number.isFinite(v) ? v.toFixed(n) : String(v));
+const worldXOf = (s: number): number => worldX(fileOf(s));
+const worldZOf = (s: number): number => worldZ(rankOf(s));
 
 // ---------------------------------------------------------------------------
 // Stubs
@@ -686,6 +688,124 @@ function verifyPosing(factory: ReturnType<typeof createCharacters>): void {
   check(worstMatrix < 4.2, `a joint ended ${f(worstMatrix, 3)} world units from its root`);
 }
 
+
+// ---------------------------------------------------------------------------
+// 4b. Sequencing: do joints actually lead and lag?
+// ---------------------------------------------------------------------------
+
+/** Time at which a bone's track reaches its peak angular speed, seconds. */
+function peakTime(clip: THREE.AnimationClip, bone: string): number {
+  const track = clip.tracks.find((t) => t.name === `${bone}.quaternion`);
+  if (!track) return NaN;
+  const v = track.values;
+  const t = track.times;
+  let best = 0;
+  let bestT = 0;
+  const qa = new THREE.Quaternion();
+  const qb = new THREE.Quaternion();
+  for (let i = 1; i < t.length; i++) {
+    qa.set(v[(i - 1) * 4], v[(i - 1) * 4 + 1], v[(i - 1) * 4 + 2], v[(i - 1) * 4 + 3]);
+    qb.set(v[i * 4], v[i * 4 + 1], v[i * 4 + 2], v[i * 4 + 3]);
+    const dot = Math.min(1, Math.abs(qa.dot(qb)));
+    const speed = (2 * Math.acos(dot)) / Math.max(1e-9, t[i] - t[i - 1]);
+    if (speed > best) {
+      best = speed;
+      bestT = (t[i] + t[i - 1]) * 0.5;
+    }
+  }
+  return bestT;
+}
+
+/** Peak-to-peak rotation of a bone over a clip, radians. */
+function excursion(clip: THREE.AnimationClip, bone: string): number {
+  const track = clip.tracks.find((t) => t.name === `${bone}.quaternion`);
+  if (!track) return 0;
+  const v = track.values;
+  const qa = new THREE.Quaternion();
+  const qb = new THREE.Quaternion();
+  let max = 0;
+  for (let i = 0; i < v.length / 4; i++) {
+    qa.set(v[i * 4], v[i * 4 + 1], v[i * 4 + 2], v[i * 4 + 3]);
+    for (let j = i + 1; j < v.length / 4; j++) {
+      qb.set(v[j * 4], v[j * 4 + 1], v[j * 4 + 2], v[j * 4 + 3]);
+      const a = 2 * Math.acos(Math.min(1, Math.abs(qa.dot(qb))));
+      if (a > max) max = a;
+    }
+  }
+  return max;
+}
+
+function verifySequencing(): void {
+  console.log('\n=== sequencing: does the chain lead and lag? ===');
+  // A strike must drive from the hips, reach the shoulder, then the elbow, then
+  // the wrist. If those peaks are simultaneous the figure is a mannequin being
+  // rotated, whatever the amplitudes look like.
+  console.log('  strike: time of peak angular speed, per joint (seconds into the strike)');
+  for (const key of UNIT_KEYS_IN_VALUE_ORDER) {
+    const set = buildClipSet(key, GAIT_FOR[key]);
+    const strike = set.get(clipKeyFor(key, 'attackStrike'))!.clip;
+    const chain = ['pelvis', 'spine02', 'upperArmR', 'foreArmR', 'handR'];
+    const times = chain.map((b) => peakTime(strike, b));
+    // A bone that barely moves has no meaningful peak: the 象 fights with its
+    // trunk and the 俥 with its wheels, and neither uses its wrist at all.
+    const moves = chain.map((b) => excursion(strike, b) > 0.02);
+    console.log(
+      `  ${key.padEnd(9)} ` +
+        chain.map((b, i) => `${b} ${moves[i] ? f(times[i], 3) : '  —  '}`).join('  '),
+    );
+    // Hips before shoulders, shoulders before the hand. Elbow ordering varies
+    // with the weapon — a parry's elbow leads its shoulder — so it is reported
+    // rather than asserted.
+    if (moves[0] && moves[1]) {
+      check(
+        !(times[0] > times[1] + 1e-6),
+        `${key}: the shoulder leads the hips in the strike (${f(times[0], 3)} vs ${f(times[1], 3)})`,
+      );
+    }
+    if (moves[4] && moves[1]) {
+      check(
+        times[4] >= times[1] - 1e-6,
+        `${key}: the hand peaks before the chest (${f(times[4], 3)} vs ${f(times[1], 3)})`,
+      );
+    }
+    if (moves[2] && moves[1]) {
+      check(
+        times[2] >= times[1] - 1e-6,
+        `${key}: the shoulder peaks before the chest (${f(times[2], 3)} vs ${f(times[1], 3)})`,
+      );
+    }
+  }
+
+  // A walk's transverse rotation must run hips → chest → head, not in lockstep.
+  // Peak *speed* of a near-sinusoid falls at its zero crossing, and the chest
+  // counter-rotates against the pelvis, so a 0.06-cycle lag shows up here as
+  // 0.5 − 0.06. What matters is that the three numbers are distinct.
+  console.log('\n  march: peak-speed phase through the torso (chest is anti-phase to the pelvis)');
+  const march = buildClipSet('soldier', 'march');
+  const move = march.get(clipKeyFor('soldier', 'move'))!;
+  const order = ['pelvis', 'spine02', 'head'];
+  const mt = order.map((b) => peakTime(move.clip, b) / move.duration);
+  console.log(`  ${order.map((b, i) => `${b} ${f(mt[i], 3)}`).join('   ')}`);
+  check(
+    Math.abs(mt[0] - mt[1]) > 1e-3 && Math.abs(mt[1] - mt[2]) > 1e-3,
+    'the march moves the pelvis, chest and head in lockstep',
+  );
+
+  // An idle must not be one sine applied to everything. Different bones must
+  // have visibly different excursions, and the head must not simply copy the
+  // chest.
+  console.log('\n  idle: peak-to-peak rotation per bone (degrees)');
+  const idle = march.get(clipKeyFor('soldier', 'idle'))!;
+  const bones = ['pelvis', 'spine01', 'spine02', 'neck', 'head', 'upperArmR', 'shinL'];
+  const exc = bones.map((b) => (excursion(idle.clip, b) * 180) / Math.PI);
+  console.log(`  ${bones.map((b, i) => `${b} ${f(exc[i], 2)}`).join('   ')}`);
+  const idlePeaks = bones.map((b) => peakTime(idle.clip, b) / idle.duration);
+  const distinct = new Set(idlePeaks.map((v) => Math.round(v * 40))).size;
+  console.log(`  distinct peak times: ${distinct} of ${bones.length}`);
+  check(distinct >= 4, `the idle drives ${bones.length} bones from ${distinct} distinct phases`);
+  check(Math.max(...exc) > 0 && Math.max(...exc) < 8, 'the idle is not low-amplitude');
+}
+
 // ---------------------------------------------------------------------------
 // 5. Pigment
 // ---------------------------------------------------------------------------
@@ -873,6 +993,40 @@ async function verifyChoreography(factory: ReturnType<typeof createCharacters>):
   check(!choreo.busy, 'aborting left a sequence running');
   check(pigment.liveCount === 0, 'aborting left pigment in flight');
 
+  // --- an ordinary move, through the choreographer -------------------------
+  // The straight-line measurements above drive the animator directly. This one
+  // goes through `walk()`, including the 馬's two-leg path and the turn between
+  // its legs, which is where a gait most often comes apart.
+  const rider = factory.create(Side.Red, PieceType.Horse, 0);
+  const riderAnim = createAnimator(rider, { ground: () => 0 });
+  animators.set(rider, riderAnim);
+  const hFrom = sq(1, 9);
+  const hTo = sq(2, 7);
+  let walkDone = false;
+  const wp = choreo.walk(rider, hFrom, hTo).then(() => {
+    walkDone = true;
+  });
+  let hoofArc = 0;
+  let walked = 0;
+  const prevPos = rider.root.position.clone();
+  for (let i = 0; i < 60 * 4; i++) {
+    choreo.update(dt);
+    for (const a of animators.values()) a.update(dt);
+    walked += rider.root.position.distanceTo(prevPos);
+    prevPos.copy(rider.root.position);
+  }
+  await wp;
+  hoofArc = walked;
+  const endSq = new THREE.Vector3(worldXOf(hTo), 0, worldZOf(hTo));
+  const arrival = rider.root.position.distanceTo(endSq);
+  console.log(`  walk (馬 ${hFrom}→${hTo}): path length ${f(hoofArc, 4)} world units, arrival error ${f(arrival, 9)}`);
+  check(walkDone, 'walk() never resolved');
+  check(arrival < 1e-6, `the horse missed its square by ${f(arrival, 6)}`);
+  // The two-leg path is one orthogonal square plus one diagonal, so it is
+  // strictly longer than the straight line between the squares.
+  check(hoofArc > endSq.distanceTo(new THREE.Vector3(worldXOf(hFrom), 0, worldZOf(hFrom))) + 0.1,
+    'the 馬 slid diagonally instead of stepping orthogonally then diagonally');
+
   // Ranged: the 砲 never leaves its square until the target is clear.
   const cannon = factory.create(Side.Red, PieceType.Cannon, 0);
   const victim = factory.create(Side.Black, PieceType.Soldier, 0);
@@ -907,6 +1061,10 @@ async function verifyChoreography(factory: ReturnType<typeof createCharacters>):
   check(movedEarly < 1e-6, 'the 砲 left its square during the exchange');
   check(rangedDone, 'the ranged capture never resolved');
 
+  note('the 象 and 俥 attack peaks read as simultaneous in the table above because');
+  note('their tip motion is on mount bones (trunk segments, wheels), not on the');
+  note('humanoid chain the table samples.');
+
   off1();
   off2();
   off3();
@@ -916,6 +1074,166 @@ async function verifyChoreography(factory: ReturnType<typeof createCharacters>):
   defender.dispose();
   cannon.dispose();
   victim.dispose();
+  rider.dispose();
+}
+
+
+// ---------------------------------------------------------------------------
+// 7. Set pieces: formation, finale, and scrubbing
+// ---------------------------------------------------------------------------
+
+async function verifySetPieces(factory: ReturnType<typeof createCharacters>): Promise<void> {
+  console.log('\n=== set pieces ===');
+  const camera = new StubCamera();
+  const audio = new StubAudio();
+  const pigment = new PigmentField({ ground: () => 0 });
+  const animators = new Map<UnitInstance, Animator>();
+  const choreo = new Choreography({
+    camera,
+    audio: audio as unknown as never,
+    pigment,
+    animatorFor: (u) => animators.get(u),
+    ground: () => 0,
+  });
+
+  // A half army: one of each type per side, standing on plausible squares.
+  const units: UnitInstance[] = [];
+  const homes: THREE.Vector3[] = [];
+  const layout: [PieceType, number][] = [
+    [PieceType.Chariot, 0],
+    [PieceType.Horse, 1],
+    [PieceType.Elephant, 2],
+    [PieceType.Advisor, 3],
+    [PieceType.General, 4],
+    [PieceType.Cannon, 1],
+    [PieceType.Soldier, 0],
+  ];
+  layout.forEach(([type, file], i) => {
+    for (const side of [Side.Red, Side.Black] as const) {
+      const u = factory.create(side, type, 0);
+      const rank = side === Side.Red ? 9 : 0;
+      const s = sq(file + (i % 3), rank);
+      u.root.position.set(worldXOf(s), 0, worldZOf(s));
+      units.push(u);
+      homes.push(u.root.position.clone());
+      animators.set(u, createAnimator(u, { ground: () => 0, variant: i }));
+    }
+  });
+
+  // --- formation ----------------------------------------------------------
+  let formationDone = false;
+  const dt = 1 / 60;
+  const fp = choreo.formation(units, () => false).then(() => {
+    formationDone = true;
+  });
+  let startedOffBoard = 0;
+  for (let i = 0; i < 60 * 14; i++) {
+    choreo.update(dt);
+    for (const a of animators.values()) a.update(dt);
+    if (i === 1) {
+      for (let k = 0; k < units.length; k++) {
+        startedOffBoard = Math.max(startedOffBoard, units[k].root.position.distanceTo(homes[k]));
+      }
+    }
+  }
+  await fp;
+  let worstHome = 0;
+  for (let k = 0; k < units.length; k++) {
+    worstHome = Math.max(worstHome, units[k].root.position.distanceTo(homes[k]));
+  }
+  console.log(`  formation: units ${units.length}, marched in from ${f(startedOffBoard, 2)} world units off-board`);
+  console.log(`  formation: worst arrival error ${f(worstHome, 9)} world units, resolved ${formationDone}`);
+  check(startedOffBoard > 3, 'the formation did not start off-board');
+  check(worstHome < 1e-6, `a unit missed its square by ${f(worstHome, 5)}`);
+  check(formationDone, 'the formation never resolved');
+
+  // --- skip ---------------------------------------------------------------
+  for (let k = 0; k < units.length; k++) units[k].root.position.copy(homes[k]);
+  let skipDone = false;
+  let skipFrames = 0;
+  let stoppedAt = -1;
+  const sp = choreo.formation(units, () => skipFrames > 12).then(() => {
+    skipDone = true;
+  });
+  for (let i = 0; i < 60 * 14; i++) {
+    skipFrames++;
+    choreo.update(dt);
+    for (const a of animators.values()) a.update(dt);
+    if (stoppedAt < 0 && !choreo.busy) stoppedAt = skipFrames;
+  }
+  await sp;
+  let skipHome = 0;
+  for (let k = 0; k < units.length; k++) {
+    skipHome = Math.max(skipHome, units[k].root.position.distanceTo(homes[k]));
+  }
+  console.log(`  formation: skip honoured at frame ${stoppedAt}, worst error ${f(skipHome, 9)}`);
+  check(skipDone && stoppedAt > 0 && stoppedAt < 40, 'the skip did not take effect promptly');
+  check(skipHome < 1e-6, 'the skip left units off their squares');
+
+  // --- finale -------------------------------------------------------------
+  let finaleDone = false;
+  const fin = choreo
+    .finale({ kind: 'checkmate', winner: Side.Red, reason: '將死' }, units)
+    .then(() => {
+      finaleDone = true;
+    });
+  for (let i = 0; i < 60 * 9; i++) {
+    choreo.update(dt);
+    for (const a of animators.values()) a.update(dt);
+  }
+  await fin;
+  const gongs = audio.cues.filter((c) => c === 'gong').length;
+  console.log(`  finale: resolved ${finaleDone}, gongs ${gongs}, cues ${audio.cues.length}`);
+  check(finaleDone, 'the finale never resolved');
+  check(gongs === 1, `expected one gong, got ${gongs}`);
+
+  // A raised weapon must not become a statue. `victory` chains into a breathing
+  // hold, so the winner is still moving a full six seconds after the raise.
+  const winner = units.find((u) => u.meta.side === Side.Red)!;
+  const wa = animators.get(winner)!;
+  const p0 = new THREE.Vector3();
+  let holdMotion = 0;
+  winner.root.updateMatrixWorld(true);
+  p0.setFromMatrixPosition(winner.bones.head.matrixWorld);
+  for (let i = 0; i < 90; i++) {
+    wa.update(dt);
+    const p1 = new THREE.Vector3().setFromMatrixPosition(winner.bones.head.matrixWorld);
+    holdMotion = Math.max(holdMotion, p0.distanceTo(p1));
+  }
+  console.log(`  finale: head travel during the victory hold ${f(holdMotion, 5)} world units over 1.5 s`);
+  check(holdMotion > 1e-4, 'the victory hold is a frozen pose, not a held one');
+
+  // --- scrubbing ----------------------------------------------------------
+  // `seekCapture` must be a pure function of t: the harness holds a frame there
+  // and a critic compares it against the same frame from another run.
+  const atk = units[0];
+  const def = units[1];
+  const ctx = {
+    attackerSq: sq(0, 9),
+    defenderSq: sq(0, 6),
+    attackerType: atk.meta.type,
+    defenderType: def.meta.type,
+    ranged: false,
+  };
+  const sample = (t: number): string => {
+    choreo.seekCapture(atk, def, ctx, t);
+    atk.root.updateMatrixWorld(true);
+    const p = new THREE.Vector3().setFromMatrixPosition(atk.bones.handR.matrixWorld);
+    return `${p.x.toFixed(6)},${p.y.toFixed(6)},${p.z.toFixed(6)}|${pigment.liveCount}`;
+  };
+  const at40a = sample(0.4);
+  const at40b = sample(0.4);
+  const at70 = sample(0.7);
+  console.log(`  seekCapture(0.40) ${at40a}`);
+  console.log(`  seekCapture(0.40) ${at40b}   (repeat)`);
+  console.log(`  seekCapture(0.70) ${at70}`);
+  check(at40a === at40b, 'seekCapture is not reproducible');
+  check(at40a !== at70, 'seekCapture returns the same frame at different t');
+
+  choreo.abort();
+  for (const a of animators.values()) a.dispose();
+  for (const u of units) u.dispose();
+  pigment.dispose();
 }
 
 // ---------------------------------------------------------------------------
@@ -935,8 +1253,10 @@ async function main(): Promise<void> {
   if (only('--ik')) verifyIk();
   if (only('--contact')) verifyContact(factory);
   if (only('--pose')) verifyPosing(factory);
+  if (only('--seq')) verifySequencing();
   if (only('--pigment')) verifyPigment(factory);
   if (only('--choreo')) await verifyChoreography(factory);
+  if (only('--setpiece')) await verifySetPieces(factory);
 
   console.log('');
   for (const n of notes) console.log(`  note  ${n}`);

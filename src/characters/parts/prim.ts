@@ -406,19 +406,24 @@ export function bevelSlab(o: SlabOpts): THREE.BufferGeometry {
   const zb = z0;
   const zf = z0 + o.d + (o.crown ?? 0);
   const b = new MeshBuilder();
+  // Both rings run counter-clockwise seen from +Z, which is what makes the
+  // front face, the four bevel walls and the back cap all come out pointing
+  // away from the solid. They used to run the other way, and every slab in the
+  // project — every lamellar plate, every stud, the brow, the nose, the palm —
+  // was a correctly-shaped, correctly-normalled, inside-out box.
   const B: V3[] = [
-    [hw, -hh, zb],
     [-hw, -hh, zb],
-    [-hw, hh, zb],
+    [hw, -hh, zb],
     [hw, hh, zb],
+    [-hw, hh, zb],
   ];
   const F: V3[] = [
-    [fw, -fh, zf],
     [-fw, -fh, zf],
-    [-fw, fh, zf],
+    [fw, -fh, zf],
     [fw, fh, zf],
+    [-fw, fh, zf],
   ];
-  b.quad(F[0], F[1], F[2], F[3], [1, 0], [0, 0], [0, 1], [1, 1]);
+  b.quad(F[0], F[1], F[2], F[3], [0, 0], [1, 0], [1, 1], [0, 1]);
   for (let i = 0; i < 4; i++) {
     const j = (i + 1) % 4;
     b.quad(B[i], B[j], F[j], F[i]);

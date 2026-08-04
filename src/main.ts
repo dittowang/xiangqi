@@ -120,6 +120,16 @@ const characters = createCharacters({
   // 534 draw calls because 44 instanced sets refuse to fold. At 64 they all
   // fold, at identical triangle count, and the board lands at 226.
   bakeInstancesBelow: 64,
+  // Merge ACROSS material buckets into one geometry per unit, drawn with the
+  // atlas material that reads class, pigment and outline profile per vertex.
+  // Doing it here rather than post-hoc in the renderer avoids duplicating the
+  // cast's vertex data: the factory owns the source geometries and can free
+  // them. Measured on the real cast: 295 meshes and 25 materials -> 32 and 1,
+  // 590 draw calls -> 64, at identical triangle count.
+  // `skinned` is deliberately ignored: three compiles USE_SKINNING per object,
+  // so one atlas material serves both skinned and rigid meshes without splitting
+  // the batch.
+  atlasMaterial: () => pipeline.materials.getAtlas({}),
 });
 
 /** Everything that is a figure lives here, so silhouette mode can find it. */
@@ -312,11 +322,14 @@ const collapses = new Map<number, ReturnType<typeof collapseToAtlas>>();
 function dressUnit(view: PieceView): void {
   const prev = collapses.get(view.id);
   if (prev) disposeCollapse(prev);
+  // The factory already merged this unit to a single atlas mesh, so the
+  // renderer-side collapse has nothing left to merge — it now only builds the
+  // matching BackSide hull, which is still ours to attach.
   collapses.set(
     view.id,
-    // Per-figure value variation so a rank of five soldiers is not a xerox;
-    // the atlas reads it per fragment, so it costs no extra material.
     collapseToAtlas(view.unit.root, pipeline.materials, {
+      // Per-figure value variation so a rank of five soldiers is not a xerox;
+      // the atlas reads it per fragment, so it costs no extra material.
       variation: ((view.id * 37) % 16) / 16,
     }),
   );
@@ -552,6 +565,13 @@ const api: XqTestApi = {
 };
 
 window.__XQ = api;
+
+/**
+ * Live handles for diagnosis. The test API is already a debug surface, and
+ * chasing "the draw calls are there but nothing is on screen" without being
+ * able to walk the scene graph from the console is needlessly hard.
+ */
+(window as unknown as Record<string, unknown>).__DBG = { scene, stage, rig, match, pipeline, characters };
 
 // Keep the unused-but-intentional bindings honest for the type checker.
 void hudVisible;

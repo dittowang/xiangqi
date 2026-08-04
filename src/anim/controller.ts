@@ -68,7 +68,7 @@ import {
   type IkContext,
   type TwoBoneChain,
 } from './ik.ts';
-import { CANTER, CLIP, FADE, GAIT, IK, LUMBER, ROLL, type GaitName } from './timing.ts';
+import { CANTER, CLIP, FADE, GAIT, IK, LUMBER, ROLL, WALK, type GaitName } from './timing.ts';
 
 // ===========================================================================
 // Module-level scratch. Nothing in `update()` allocates.
@@ -87,8 +87,8 @@ const _up = new THREE.Vector3(0, 1, 0);
 const _root3 = new Float64Array(3);
 const _rootAcc = new Float64Array(3);
 const _trunk = { curl: 0, sweep: 0 };
-
-const HALF_PI = Math.PI * 0.5;
+/** Hoisted: an array literal inside a per-frame loop is a per-frame allocation. */
+const SIDES = ['L', 'R'] as const;
 
 // ===========================================================================
 // Hand constraints
@@ -160,14 +160,23 @@ interface LegRig {
   foot: THREE.Object3D;
   lock: FootLock;
   contact: number;
-  /** Bind offset of the ankle from the root, rig space — the neutral stance. */
-  neutral: THREE.Vector3;
   /** Signed lateral offset of the ankle from its own hip at bind, rig units. */
   lateral: number;
 }
 
 /** How long a closing step takes when a walk stops mid-swing. */
 const CLOSE_STEP_SECONDS = 0.21;
+
+/** One resolved quadruped leg chain, with its place in the footfall order. */
+interface QuadLeg {
+  upper: THREE.Object3D;
+  mid: THREE.Object3D | null;
+  lower: THREE.Object3D | null;
+  contact: number;
+  duty: number;
+  /** A fore leg's knee is a wrist and folds backward; a hind hock folds forward. */
+  fore: boolean;
+}
 
 // ===========================================================================
 // Animator
@@ -179,6 +188,11 @@ export class Animator implements UnitAnimator {
   private readonly mixer: THREE.AnimationMixer;
   private readonly clips: ClipSet;
   private readonly actions = new Map<string, THREE.AnimationAction>();
+  /** The same actions as a flat array, so the per-frame blend never iterates a Map. */
+  private readonly layers: { action: THREE.AnimationAction; clip: NormalisedClip }[] = [];
+  /** Wheel bones, resolved once. `Object.keys` in an update path is a per-frame array. */
+  private readonly wheels: THREE.Object3D[] = [];
+  private wheelRadius = 0;
   private readonly ikCtx: IkContext;
 
   private readonly key: UnitKey;
@@ -199,6 +213,20 @@ export class Animator implements UnitAnimator {
   private readonly gazeTip: THREE.Object3D;
   private trunkChain: AimChain | null = null;
   private trunkBones: THREE.Object3D[] = [];
+  /**
+   * The mount's bones, resolved once. Every one of these used to be a template
+   * literal built inside `update()`; a string per bone per frame per unit is
+   * exactly the sort of garbage the frame budget cannot afford.
+   */
+  private readonly quadLegs: QuadLeg[] = [];
+  private mountSpine: THREE.Object3D | null = null;
+  private mountNeck: THREE.Object3D | null = null;
+  private mountHead: THREE.Object3D | null = null;
+  private mountBody: THREE.Object3D | null = null;
+  private mountBeam: THREE.Object3D | null = null;
+  private readonly mountTail: THREE.Object3D[] = [];
+  private readonly mountEars: THREE.Object3D[] = [];
+  private mountSpineBaseY = 0;
 
   private state: AnimState = 'idle';
   private stateKey: string;
@@ -233,6 +261,9 @@ export class Animator implements UnitAnimator {
   private audio: AudioEngine | null;
   private footstepGain: number;
   private frozen = false;
+  private idleOffset = 0;
+  private phaseOffset = 0;
+  private gaitSource: 'travel' | 'time' = 'travel';
 
   /** Contact-solver correction: persists between frames and decays. */
   private readonly rootCorrection = new THREE.Vector3();
@@ -293,7 +324,6 @@ export class Animator implements UnitAnimator {
       foot: b[`foot${side}` as BoneName],
       lock: makeFootLock(),
       contact: side === 'L' ? this.plan.contactL : this.plan.contactR,
-      neutral: this.bind.get(`foot${side}`)!.clone().sub(this.bindRoot),
       lateral: this.bind.get(`foot${side}`)!.x - this.bind.get(`thigh${side}`)!.x,
     });
     this.legs = { L: mkLeg('L'), R: mkLeg('R') };
@@ -318,6 +348,7 @@ export class Animator implements UnitAnimator {
     );
 
     this.setupTrunk();
+    this.setupMount();
 
     // The bone a seated rider's legs are held against.
     const anchorName =
@@ -341,23 +372,154 @@ export class Animator implements UnitAnimator {
       action.enabled = true;
       action.setEffectiveWeight(0);
       this.actions.set(k, action);
+      this.layers.push({ action, clip: n });
     }
+
+    for (const name of Object.keys(unit.mountBones)) {
+      if (!name.includes('wheel')) continue;
+      const bone = unit.mountBones[name];
+      this.wheels.push(bone);
+      const r = (bone.userData?.radius as number | undefined) ?? 0;
+      if (r > this.wheelRadius) this.wheelRadius = r;
+    }
+
+    // Deterministic phase offsets, drawn from the unit's variant rather than a
+    // clock, so five soldiers in a rank are out of step with each other and are
+    // still byte-identical between runs. The two multipliers are the golden
+    // ratio and its conjugate: successive variants land as far apart on the
+    // cycle as it is possible for them to land.
+    const variant = opts.variant ?? 0;
+    this.idleOffset = ((((variant * 0.3819660112) % 1) + 1) % 1) * CLIP.idle;
+    this.phaseOffset = (((variant * 0.6180339887) % 1) + 1) % 1;
 
     this.stateKey = clipKeyFor(this.key, 'idle');
     const idle = this.actions.get(this.stateKey)!;
     idle.setEffectiveWeight(1);
-    // A deterministic phase offset, drawn from the unit's variant rather than a
-    // clock, so five soldiers in a rank are out of step with each other and are
-    // still byte-identical between runs.
-    const variant = opts.variant ?? 0;
-    idle.time = (((variant * 0.3819660112) % 1) + 1) % 1 * CLIP.idle;
+    idle.time = this.idleOffset;
     idle.play();
-    this.gaitPhase = (((variant * 0.6180339887) % 1) + 1) % 1;
+    this.gaitPhase = this.phaseOffset;
+  }
+
+  /**
+   * Return the figure to a clean rest: bind pose, idle at its own phase offset,
+   * every damped follower and every foot lock discharged.
+   *
+   * The harness contract is that a frame captured after `step()` is
+   * *deterministic*, and an animator carries a lot of state that is a function
+   * of history rather than of the clock — root corrections, foot locks, the
+   * turn lag, the look-at weight. Scrubbing a capture to the same `t` twice has
+   * to give the same frame, so a scrub resets through here first.
+   */
+  reset(): void {
+    for (const a of this.actions.values()) {
+      a.stop();
+      a.paused = false;
+      a.setEffectiveWeight(0);
+      a.setEffectiveTimeScale(1);
+      a.time = 0;
+    }
+    for (const name of BONE_ORDER) {
+      this.unit.bones[name].quaternion.identity();
+    }
+    this.unit.bones.root.position.copy(this.bindRoot);
+    this.rootCorrection.set(0, 0, 0);
+    this.deckOffset.set(0, 0, 0);
+    this.travel = 0;
+    this.gaitPhase = this.phaseOffset;
+    this.wheelAngle = 0;
+    this.attackProgress = 0;
+    this.frozen = false;
+    this.handTarget.L = null;
+    this.handTarget.R = null;
+    this.lookTarget = null;
+    this.lookWeight = 0;
+    this.trunkTarget = null;
+    this.chestYaw = this.yaw;
+    this.headYaw = this.yaw;
+    this.yawTarget = this.yaw;
+    for (const side of SIDES) {
+      const lock = this.legs[side].lock;
+      lock.locked = false;
+      lock.primed = false;
+      lock.weight = 0;
+      lock.closing = 1;
+      lock.heelOff = 0;
+      lock.world.set(0, 0, 0);
+      lock.from.set(0, 0, 0);
+      lock.to.set(0, 0, 0);
+    }
+    this.state = 'idle';
+    this.stateKey = clipKeyFor(this.key, 'idle');
+    const idle = this.actions.get(this.stateKey)!;
+    idle.enabled = true;
+    idle.setEffectiveWeight(1);
+    idle.time = this.idleOffset;
+    idle.play();
+    this.unit.root.updateMatrixWorld(true);
+    updateIkContext(this.ikCtx, this.unit.root);
+    this.unit.skeleton.update();
   }
 
   // -------------------------------------------------------------------------
   // Mount wiring
   // -------------------------------------------------------------------------
+
+  /** Resolve every mount bone the frame loop touches, once. */
+  private setupMount(): void {
+    const mb = this.unit.mountBones;
+    const quad = (prefix: string, contact: number, duty: number, fore: boolean): void => {
+      const b1 = mb[`${prefix}01`];
+      if (!b1) return;
+      this.quadLegs.push({
+        upper: b1,
+        mid: mb[`${prefix}02`] ?? null,
+        lower: mb[`${prefix}03`] ?? null,
+        contact,
+        duty,
+        fore,
+      });
+    };
+    switch (this.unit.meta.mount) {
+      case 'horse':
+        // Right lead: left hind, then the diagonal pair, then the leading right
+        // fore, then suspension. That order is what makes it a canter and not a
+        // trot, and it is the first thing anyone who rides will check.
+        quad('horse.legHL', CANTER.hindL, CANTER.duty, false);
+        quad('horse.legHR', CANTER.hindR, CANTER.duty, false);
+        quad('horse.legFL', CANTER.foreL, CANTER.duty, true);
+        quad('horse.legFR', CANTER.foreR, CANTER.duty, true);
+        this.mountSpine = mb['horse.spine'] ?? null;
+        this.mountNeck = mb['horse.neck'] ?? null;
+        this.mountHead = mb['horse.head'] ?? null;
+        for (const n of ['horse.tail01', 'horse.tail02', 'horse.tail03']) {
+          if (mb[n]) this.mountTail.push(mb[n]);
+        }
+        break;
+      case 'elephant':
+        // Lateral sequence: hind then fore on the same side, never in
+        // suspension. Three feet are on the ground at every instant.
+        quad('elephant.legHL', LUMBER.hindL, LUMBER.duty, false);
+        quad('elephant.legFL', LUMBER.foreL, LUMBER.duty, true);
+        quad('elephant.legHR', LUMBER.hindR, LUMBER.duty, false);
+        quad('elephant.legFR', LUMBER.foreR, LUMBER.duty, true);
+        this.mountSpine = mb['elephant.spine'] ?? null;
+        this.mountNeck = mb['elephant.neck'] ?? null;
+        this.mountHead = mb['elephant.head'] ?? null;
+        for (const n of ['elephant.earL', 'elephant.earR']) {
+          if (mb[n]) this.mountEars.push(mb[n]);
+        }
+        break;
+      case 'chariot':
+        this.mountBody = mb['chariot.body'] ?? null;
+        break;
+      case 'trebuchet':
+        this.mountBeam = mb['treb.beam'] ?? null;
+        break;
+      default:
+        break;
+    }
+    if (this.mountSpine) this.mountSpineBaseY = this.mountSpine.position.y;
+  }
 
   private setupTrunk(): void {
     const bones: THREE.Object3D[] = [];
@@ -550,6 +712,18 @@ export class Animator implements UnitAnimator {
     this.travel += distance;
   }
 
+  /**
+   * Where a locomotion cycle's phase comes from.
+   *
+   * `'travel'` is the shipping mode and the only one the game uses: phase
+   * advances by distance covered, so a hoof or a wheel can never disagree with
+   * the ground. `'time'` exists for the capture harness, which needs to watch a
+   * unit walk on the spot in a showcase where nothing is moving it.
+   */
+  setGaitSource(source: 'travel' | 'time'): void {
+    this.gaitSource = source;
+  }
+
   setGroundHeight(fn: ((x: number, z: number) => number) | null): void {
     this.ground = fn;
   }
@@ -624,6 +798,10 @@ export class Animator implements UnitAnimator {
       this.gaitPhase = wrap01(this.gaitPhase + this.travel / this.strideWorld);
       this.spinWheels(this.travel);
       this.travel = 0;
+    } else if (this.gaitSource === 'time' && this.state === 'move') {
+      const d = (dt / this.plan.cycle) * this.strideWorld;
+      this.gaitPhase = wrap01(this.gaitPhase + dt / this.plan.cycle);
+      this.spinWheels(d);
     }
     if (this.state === 'move') {
       const c = this.clips.get(this.stateKey);
@@ -675,10 +853,10 @@ export class Animator implements UnitAnimator {
     _rootAcc[1] = 0;
     _rootAcc[2] = 0;
     let total = 0;
-    for (const [k, action] of this.actions) {
+    for (let i = 0; i < this.layers.length; i++) {
+      const { action, clip: c } = this.layers[i];
       const w = action.getEffectiveWeight();
       if (w <= 1e-4 || !action.isRunning()) continue;
-      const c = this.clips.get(k) as NormalisedClip;
       sampleRoot(c.root, action.time, _root3);
       _rootAcc[0] += _root3[0] * w;
       _rootAcc[1] += _root3[1] * w;
@@ -701,13 +879,15 @@ export class Animator implements UnitAnimator {
     // is left keeps a stale dip from persisting after the feet let go.
     this.rootCorrection.multiplyScalar(Math.exp(-9 * dt));
 
-    // Turn lag: hips lead, chest follows, head follows the chest.
-    this.yaw = damp(this.yaw, this.yawTarget, 12, dt);
+    // Turn lag: hips lead, chest follows, head follows the chest. The rates are
+    // the reciprocals of the lags in the timing table, so a lag of 75 ms is
+    // literally 75 ms of following.
+    this.yaw = damp(this.yaw, this.yawTarget, WALK.turnRate * 2.6, dt);
     if (Math.abs(this.yawTarget - this.yaw) > 1e-5) {
       this.unit.root.rotation.y = this.yaw;
     }
-    this.chestYaw = damp(this.chestYaw, this.yaw, 13.3, dt);
-    this.headYaw = damp(this.headYaw, this.chestYaw, 7.4, dt);
+    this.chestYaw = damp(this.chestYaw, this.yaw, 1 / WALK.turnSpineLag, dt);
+    this.headYaw = damp(this.headYaw, this.chestYaw, 1 / WALK.turnHeadLag, dt);
     const chestLag = clamp(this.chestYaw - this.yaw, -0.42, 0.42);
     const headLag = clamp(this.headYaw - this.chestYaw, -0.3, 0.3);
     if (Math.abs(chestLag) > 1e-4) {
@@ -734,20 +914,11 @@ export class Animator implements UnitAnimator {
    * chariot at twice the ground speed, which is a skid that grows without bound.
    */
   private spinWheels(distance: number): void {
-    let radius = 0;
-    for (const name of Object.keys(this.unit.mountBones)) {
-      if (!name.includes('wheel')) continue;
-      const r = (this.unit.mountBones[name].userData?.radius as number | undefined) ?? 0;
-      if (r > radius) radius = r;
-    }
-    if (!(radius > 0)) return;
+    if (!(this.wheelRadius > 0)) return;
     // Rolling forward is −Z, so the wheel's top goes forward: a negative
     // rotation about the axle, which lies along X.
-    this.wheelAngle -= distance / (radius * this.scale);
-    for (const name of Object.keys(this.unit.mountBones)) {
-      if (!name.includes('wheel')) continue;
-      this.unit.mountBones[name].rotation.x = this.wheelAngle;
-    }
+    this.wheelAngle -= distance / (this.wheelRadius * this.scale);
+    for (let i = 0; i < this.wheels.length; i++) this.wheels[i].rotation.x = this.wheelAngle;
   }
 
   private driveMount(dt: number): void {
@@ -778,19 +949,8 @@ export class Animator implements UnitAnimator {
    * folds backward while the hind hock folds forward. Getting that one sign
    * wrong is what makes a procedural horse look like a dog walking backward.
    */
-  private driveQuadLeg(
-    prefix: string,
-    phase: number,
-    contact: number,
-    duty: number,
-    fore: boolean,
-    amp: number,
-  ): void {
-    const mb = this.unit.mountBones;
-    const b1 = mb[`${prefix}01`];
-    if (!b1) return;
-    const b2 = mb[`${prefix}02`];
-    const b3 = mb[`${prefix}03`];
+  private driveQuadLeg(leg: QuadLeg, phase: number, amp: number): void {
+    const { upper: b1, mid: b2, lower: b3, contact, duty, fore } = leg;
     let p = phase - contact;
     p -= Math.floor(p);
     const stance = p < duty;
@@ -810,68 +970,64 @@ export class Animator implements UnitAnimator {
   }
 
   private driveHorse(): void {
-    const mb = this.unit.mountBones;
-    const ph = this.gaitPhase;
     const moving = this.state === 'move';
     const amp = moving ? 1 : 0.06;
-    const phase = moving ? ph : 0.5;
-    // Right lead: left hind, then the diagonal pair, then the leading right
-    // fore, then suspension. This sequence is the canter.
-    this.driveQuadLeg('horse.legHL', phase, CANTER.hindL, CANTER.duty, false, amp);
-    this.driveQuadLeg('horse.legHR', phase, CANTER.hindR, CANTER.duty, false, amp);
-    this.driveQuadLeg('horse.legFL', phase, CANTER.foreL, CANTER.duty, true, amp);
-    this.driveQuadLeg('horse.legFR', phase, CANTER.foreR, CANTER.duty, true, amp);
+    const phase = moving ? this.gaitPhase : 0.5;
+    for (let i = 0; i < this.quadLegs.length; i++) {
+      this.driveQuadLeg(this.quadLegs[i], phase, amp);
+    }
 
     const rock = Math.sin(Math.PI * 2 * (phase + CANTER.pitchPhase));
-    const spine = mb['horse.spine'];
-    if (spine) {
-      spine.rotation.x = CANTER.pitchAmplitude * amp * rock;
-      spine.position.y =
-        (spine.userData.baseY ??= spine.position.y) + CANTER.rise * amp * -Math.cos(Math.PI * 2 * (phase - 0.2)) * this.height * 0.4;
+    if (this.mountSpine) {
+      // The rocking-horse pitch, and the rise that goes with it.
+      this.mountSpine.rotation.x = CANTER.pitchAmplitude * amp * rock;
+      this.mountSpine.position.y =
+        this.mountSpineBaseY +
+        CANTER.rise * amp * -Math.cos(Math.PI * 2 * (phase - 0.2)) * this.height * 0.4;
     }
-    const neck = mb['horse.neck'];
-    if (neck) neck.rotation.x = -0.42 * CANTER.pitchAmplitude * amp * rock - 0.05 * amp;
-    const head = mb['horse.head'];
+    if (this.mountNeck) {
+      this.mountNeck.rotation.x = -0.42 * CANTER.pitchAmplitude * amp * rock - 0.05 * amp;
+    }
     // The head is the last link and swings against the neck: a cantering horse
     // nods, and the nod lags the barrel by a quarter of a stride.
-    if (head) head.rotation.x = 0.5 * CANTER.pitchAmplitude * amp * Math.sin(Math.PI * 2 * (phase + CANTER.pitchPhase - 0.25));
-    for (let i = 1; i <= 3; i++) {
-      const t = mb[`horse.tail0${i}`];
-      if (t) {
-        t.rotation.x = 0.1 * amp * Math.sin(Math.PI * 2 * (phase - 0.1 * i)) + 0.05;
-        t.rotation.z = 0.07 * amp * Math.sin(Math.PI * 2 * (phase - 0.14 * i) * 0.5);
-      }
+    if (this.mountHead) {
+      this.mountHead.rotation.x =
+        0.5 * CANTER.pitchAmplitude * amp * Math.sin(Math.PI * 2 * (phase + CANTER.pitchPhase - 0.25));
+    }
+    for (let i = 0; i < this.mountTail.length; i++) {
+      const t = this.mountTail[i];
+      const k = i + 1;
+      t.rotation.x = 0.1 * amp * Math.sin(Math.PI * 2 * (phase - 0.1 * k)) + 0.05;
+      t.rotation.z = 0.07 * amp * Math.sin(Math.PI * 2 * (phase - 0.14 * k) * 0.5);
     }
   }
 
   private driveElephant(): void {
-    const mb = this.unit.mountBones;
     const moving = this.state === 'move';
     const amp = moving ? 1 : 0.05;
     const phase = moving ? this.gaitPhase : 0.25;
-    // Lateral sequence: hind then fore on the same side. Never in suspension.
-    this.driveQuadLeg('elephant.legHL', phase, LUMBER.hindL, LUMBER.duty, false, amp * 0.55);
-    this.driveQuadLeg('elephant.legFL', phase, LUMBER.foreL, LUMBER.duty, true, amp * 0.55);
-    this.driveQuadLeg('elephant.legHR', phase, LUMBER.hindR, LUMBER.duty, false, amp * 0.55);
-    this.driveQuadLeg('elephant.legFR', phase, LUMBER.foreR, LUMBER.duty, true, amp * 0.55);
+    for (let i = 0; i < this.quadLegs.length; i++) {
+      this.driveQuadLeg(this.quadLegs[i], phase, amp * 0.55);
+    }
 
     const sway = Math.sin(Math.PI * 4 * phase);
-    const spine = mb['elephant.spine'];
-    if (spine) {
-      spine.rotation.z = LUMBER.sway * amp * sway;
-      spine.rotation.x = 0.018 * amp * Math.sin(Math.PI * 8 * phase);
+    if (this.mountSpine) {
+      this.mountSpine.rotation.z = LUMBER.sway * amp * sway;
+      this.mountSpine.rotation.x = 0.018 * amp * Math.sin(Math.PI * 8 * phase);
     }
-    const neck = mb['elephant.neck'];
-    if (neck) neck.rotation.z = -0.5 * LUMBER.sway * amp * Math.sin(Math.PI * 4 * phase - 0.5);
-    const head = mb['elephant.head'];
-    if (head) {
-      head.rotation.z = -0.35 * LUMBER.sway * amp * Math.sin(Math.PI * 4 * phase - 0.9);
-      head.rotation.x = 0.02 * amp * Math.sin(Math.PI * 4 * phase - 1.2);
+    // The roll runs up the animal with a lag at every joint, so the head is
+    // still going one way as the shoulder starts back the other.
+    if (this.mountNeck) {
+      this.mountNeck.rotation.z = -0.5 * LUMBER.sway * amp * Math.sin(Math.PI * 4 * phase - 0.5);
     }
-    for (const side of ['earL', 'earR'] as const) {
-      const ear = mb[`elephant.${side}`];
-      // Ears trail the head by a fifth of a cycle and never quite still.
-      if (ear) ear.rotation.y = (side === 'earL' ? 1 : -1) * (0.09 + 0.13 * amp * Math.sin(Math.PI * 4 * phase - 1.3));
+    if (this.mountHead) {
+      this.mountHead.rotation.z = -0.35 * LUMBER.sway * amp * Math.sin(Math.PI * 4 * phase - 0.9);
+      this.mountHead.rotation.x = 0.02 * amp * Math.sin(Math.PI * 4 * phase - 1.2);
+    }
+    for (let i = 0; i < this.mountEars.length; i++) {
+      // Ears trail the head and are never quite still.
+      this.mountEars[i].rotation.y =
+        (i === 0 ? 1 : -1) * (0.09 + 0.13 * amp * Math.sin(Math.PI * 4 * phase - 1.3));
     }
 
     this.driveTrunk();
@@ -898,7 +1054,7 @@ export class Animator implements UnitAnimator {
   }
 
   private driveChariot(): void {
-    const body = this.unit.mountBones['chariot.body'];
+    const body = this.mountBody;
     if (!body) return;
     const moving = this.state === 'move';
     const ph = this.gaitPhase;
@@ -916,7 +1072,7 @@ export class Animator implements UnitAnimator {
   }
 
   private driveTrebuchet(): void {
-    const beam = this.unit.mountBones['treb.beam'];
+    const beam = this.mountBeam;
     if (!beam) return;
     // The beam is driven straight off attack progress: the crew's haul and the
     // beam's whip are the same event and must not be able to drift apart.
@@ -931,7 +1087,7 @@ export class Animator implements UnitAnimator {
   // -------------------------------------------------------------------------
 
   private solveHands(): void {
-    for (const side of ['L', 'R'] as const) {
+    for (const side of SIDES) {
       const explicit = this.handTarget[side];
       if (explicit) {
         toRig(this.ikCtx, explicit, _v);
@@ -1000,7 +1156,7 @@ export class Animator implements UnitAnimator {
   // -------------------------------------------------------------------------
 
   private releaseFeet(): void {
-    for (const side of ['L', 'R'] as const) {
+    for (const side of SIDES) {
       const lock = this.legs[side].lock;
       lock.locked = false;
       lock.weight = 0;
@@ -1018,7 +1174,7 @@ export class Animator implements UnitAnimator {
    * arc a normal swing would have used.
    */
   private beginClosingStep(): void {
-    for (const side of ['L', 'R'] as const) {
+    for (const side of SIDES) {
       const leg = this.legs[side];
       const lock = leg.lock;
       if (!lock.primed || lock.locked) continue;
@@ -1060,7 +1216,7 @@ export class Animator implements UnitAnimator {
     const moving = this.state === 'move';
     const grounded = this.state !== 'hit' && !dying;
 
-    for (const side of ['L', 'R'] as const) {
+    for (const side of SIDES) {
       const leg = this.legs[side];
       const w = moving
         ? stanceWeight(this.gaitPhase, leg.contact, this.plan.duty)
@@ -1077,7 +1233,7 @@ export class Animator implements UnitAnimator {
       this.unit.bones.root.updateMatrixWorld(true);
     }
 
-    for (const side of ['L', 'R'] as const) {
+    for (const side of SIDES) {
       const leg = this.legs[side];
       if (leg.lock.weight <= 0.001) continue;
       toRig(this.ikCtx, leg.lock.world, _v);
@@ -1091,7 +1247,7 @@ export class Animator implements UnitAnimator {
       solveTwoBone(leg.chain, this.ikCtx, _v, 1);
     }
     this.unit.bones.root.updateMatrixWorld(true);
-    for (const side of ['L', 'R'] as const) {
+    for (const side of SIDES) {
       const leg = this.legs[side];
       if (leg.lock.weight <= 0.001) continue;
       this.levelFoot(leg.foot, leg.lock.weight);
@@ -1304,7 +1460,7 @@ export class Animator implements UnitAnimator {
     let moved = false;
     _v4.set(0, 0, 0);
     let totalW = 0;
-    for (const side of ['L', 'R'] as const) {
+    for (const side of SIDES) {
       const leg = this.legs[side];
       if (leg.lock.weight <= 0.02) continue;
       rigPosition(this.ikCtx, leg.chain.a, _v2);
@@ -1372,7 +1528,7 @@ export class Animator implements UnitAnimator {
     } else {
       this.mountDelta.set(0, 0, 0);
     }
-    for (const side of ['L', 'R'] as const) {
+    for (const side of SIDES) {
       const leg = this.legs[side];
       _v.copy(this.bind.get(`foot${side}`)!).add(this.mountDelta);
       solveTwoBone(leg.chain, this.ikCtx, _v, 1);

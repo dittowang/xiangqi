@@ -88,6 +88,7 @@ export type {
 export {
   chainReach,
   clampRotation,
+  heelOffAmount,
   makeAimChain,
   makeChain,
   makeFootLock,

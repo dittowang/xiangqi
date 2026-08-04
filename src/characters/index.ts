@@ -4,8 +4,19 @@
  * Everything another module needs is here. `main.ts` wires it in three lines:
  *
  *     import { createCharacters } from '@characters/index.ts';
- *     const characters = createCharacters({ materials: pipeline.materials });
+ *     const characters = createCharacters({
+ *       materials: pipeline.materials,   // GongbiMaterials, injected
+ *       bakeInstancesBelow: 64,          // fold small instance sets into the mesh
+ *       atlasMaterial: pipeline.rampMaterial,  // one material for the whole cast
+ *     });
  *     await characters.prewarm();
+ *
+ * `atlasMaterial` is the one that matters for performance: with it, each unit is
+ * a single merged mesh drawn with a single material, and a 32-unit board is 32
+ * meshes / 64 draw calls / 1 material instead of 295 / 590 / 25. The merge has
+ * to happen here rather than downstream, because the `UnitInstance` owns and
+ * disposes its geometry — anything that merges afterwards has to keep a second
+ * copy of the whole cast's vertex data alive.
  *
  * and then asks for units:
  *
@@ -85,17 +96,15 @@ export type {
 //
 // Types with no line here still resolve to the generic fallback figure in
 // `fallback.ts`; `createCharacters()` reports which through its `onWarn` sink.
-
-import './units/horse.ts';
-import './units/elephant.ts';
-
-import './units/general.ts';
-import './units/chariot.ts';
+// All seven have landed, so the fallback is now only a safety net.
 
 import './units/soldier.ts';
 import './units/advisor.ts';
-
+import './units/general.ts';
 import './units/cannon.ts';
+import './units/horse.ts';
+import './units/elephant.ts';
+import './units/chariot.ts';
 
 import { createCharacterFactory, registeredUnits, type Factory, type FactoryOptions } from './factory.ts';
 import { fallbackUnit } from './fallback.ts';

@@ -776,11 +776,14 @@ const trunkSweepAttack: AttackFn = (p, a) => {
  */
 const parryRiposteAttack: AttackFn = (p, a, c) => {
   const parry = curve(a, [[0, 0], [0.55, 0.94, 'outQuint'], [1, 1, 'outQuad'], [1.14, 0.92, 'linear'], [1.46, 0, 'outQuint'], [2, -0.12, 'outCubic']]);
-  const thrust = curve(a, [[0, 0], [1.1, 0, 'linear'], [1.5, 0.9, 'outQuint'], [1.7, 1], [2, 0.72, 'outCubic']]);
+  // Three curves, not one: the body goes first, the shoulder follows it, the
+  // blade arrives after that. A riposte with a single curve is a pose change.
+  const thrust = curve(a, [[0, 0], [1.06, 0, 'linear'], [1.42, 0.9, 'outQuint'], [1.62, 1], [2, 0.72, 'outCubic']]);
+  const armDrive = curve(a, [[0, 0], [1.16, 0, 'linear'], [1.52, 0.88, 'outQuint'], [1.74, 1], [2, 0.7, 'outCubic']]);
 
   // Blade up across the body on the parry, then dropped onto the line.
-  add(p, 'upperArmR', 0.26 * parry + 0.42 * thrust, -0.18 * parry, -0.62 * parry + 0.12 * thrust);
-  add(p, 'foreArmR', 1.0 * parry + 0.16 - 0.86 * thrust, 0.2 * parry, 0);
+  add(p, 'upperArmR', 0.26 * parry + 0.42 * armDrive, -0.18 * parry, -0.62 * parry + 0.12 * armDrive);
+  add(p, 'foreArmR', 1.0 * parry + 0.16 - 0.86 * curve(a, [[0, 0], [1.24, 0, 'linear'], [1.6, 0.9, 'outQuint'], [1.8, 1], [2, 0.72, 'outCubic']]), 0.2 * parry, 0);
   add(p, 'handR', curve(a, [[0, 0], [1, -0.1], [1.56, -0.12, 'linear'], [1.88, 0.16, 'outQuint'], [2, 0.09]]));
   // Off hand out for balance, palm down — a fencer's shape, not a fist.
   add(p, 'upperArmL', 0.1 - 0.34 * parry, 0, 0.44 * parry);
@@ -821,8 +824,11 @@ const closeStrikeAttack: AttackFn = (p, a, c) => {
   add(p, 'neck', 0, 0.14 * load - 0.12 * drive, 0);
   add(p, 'head', 0.03 * load, 0.16 * load - 0.14 * drive, 0);
 
-  add(p, 'upperArmR', -0.16 * load + 0.38 * drive, 0, -0.24 * load - 0.06 * drive);
-  add(p, 'foreArmR', 0.42 + 0.5 * load - 0.4 * drive);
+  // The 節 leaves after the hips have already turned: a general's power is in
+  // the sequence, not in the swing.
+  const armDrive = curve(a, [[0, 0], [1.18, 0, 'linear'], [1.46, 0.74, 'outQuint'], [1.7, 1], [2, 0.66, 'outCubic']]);
+  add(p, 'upperArmR', -0.16 * load + 0.38 * armDrive, 0, -0.24 * load - 0.06 * armDrive);
+  add(p, 'foreArmR', 0.42 + 0.5 * load - 0.4 * curve(a, [[0, 0], [1.26, 0, 'linear'], [1.54, 0.78, 'outQuint'], [1.78, 1], [2, 0.68, 'outCubic']]));
   add(p, 'handR', curve(a, [[0, 0], [1, -0.08], [1.5, -0.1, 'linear'], [1.84, 0.14, 'outQuint'], [2, 0.08]]));
   add(p, 'upperArmL', 0.2 * load + 0.1 * drive, 0, 0.26 * load);
   add(p, 'foreArmL', 0.3 + 0.34 * load);

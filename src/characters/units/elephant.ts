@@ -45,7 +45,7 @@ import * as THREE from 'three';
 import type { BoneName } from '@core/contracts.ts';
 import { PieceType, Side } from '@core/types.ts';
 import { registerUnit, type UnitBuildContext } from '@characters/factory.ts';
-import type { InstancedPart, Part, PartGroup, PartPigment, V3 } from '@characters/parts/types.ts';
+import type { InstancedPart, PartGroup, PartPigment, V3 } from '@characters/parts/types.ts';
 import type { Rig, RigOptions } from '@characters/rig.ts';
 
 // ---------------------------------------------------------------------------
@@ -223,8 +223,6 @@ interface Beast {
   seatBone: string;
   /** Tip of the trunk in bind pose. */
   trunkTip: V3;
-  /** Base of the head dome, for headgear and goad targets. */
-  headTop: V3;
 }
 
 function buildBeast(ctx: UnitBuildContext, d: Dims): Beast {
@@ -523,7 +521,6 @@ function buildBeast(ctx: UnitBuildContext, d: Dims): Beast {
     seatZ,
     seatBone,
     trunkTip,
-    headTop: [0, headTopY, headZ],
   };
 }
 
@@ -1690,7 +1687,5 @@ function merge(dst: PartGroup, src: PartGroup): void {
   dst.attach.push(...src.attach);
   for (const k of Object.keys(src.points)) dst.points[k] = src.points[k];
 }
-
-void (null as unknown as Part);
 
 registerUnit(PieceType.Elephant, buildElephant);

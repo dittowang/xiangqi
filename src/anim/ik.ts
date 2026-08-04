@@ -60,7 +60,6 @@ export interface IkContext {
   scale: number;
 }
 
-const _m = new THREE.Matrix4();
 const _pos = new THREE.Vector3();
 const _quat = new THREE.Quaternion();
 const _scaleV = new THREE.Vector3();

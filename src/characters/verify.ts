@@ -749,17 +749,31 @@ function partCases(): PartCase[] {
 
 function verifyParts(): void {
   console.log('\n== PARTS ==');
-  console.log(rule());
+  console.log(rule(104));
   console.log(
-    pad('group', 10) + pad('part', 24) + pad('tris', 8, true) + pad('geoms', 7, true) + pad('inst', 6, true) + '  status',
+    pad('group', 10) +
+      pad('part', 24) +
+      pad('tris', 8, true) +
+      pad('geoms', 7, true) +
+      pad('inst', 6, true) +
+      pad('closed', 8, true) +
+      pad('open', 7, true) +
+      pad('outward', 9, true) +
+      '  status',
   );
-  console.log(rule());
+  console.log(rule(104));
 
   let total = 0;
+  let closedCount = 0;
+  let openCount = 0;
   for (const c of partCases()) {
     let tris = 0;
     let geoms = 0;
     let inst = 0;
+    let closedGeoms = 0;
+    let openGeoms = 0;
+    let openEdgeTotal = 0;
+    let outwardMin = 1;
     let status = 'ok';
     try {
       const r = c.run();
@@ -770,11 +784,41 @@ function verifyParts(): void {
             ? { parts: [r], instanced: [], points: {}, bones: [], attach: [] }
             : r;
       for (const p of group.parts) {
-        assertFinite(p.geometry, `${c.group}/${c.name}/${p.name ?? '?'}`);
+        const label = `${c.group}/${c.name}/${p.name ?? '?'}`;
+        assertFinite(p.geometry, label);
+        const a = auditGeometry(p.geometry);
+        if (a.badWinding > 0) {
+          fail(`${label}: ${a.badWinding}/${a.triangles} triangles wound against their normal`);
+        }
+        if (a.closed) {
+          closedGeoms++;
+          if (a.volume <= 0) {
+            fail(
+              `${label}: closed solid with negative volume ${a.volume.toExponential(2)} — it is inside out`,
+            );
+          }
+        } else {
+          openGeoms++;
+          openEdgeTotal += a.openEdges;
+        }
+        outwardMin = Math.min(outwardMin, a.outwardFrac);
         geoms++;
       }
       for (const p of group.instanced) {
-        assertFinite(p.geometry, `${c.group}/${c.name}/${p.name ?? '?'}`);
+        const label = `${c.group}/${c.name}/${p.name ?? '?'}`;
+        assertFinite(p.geometry, label);
+        const a = auditGeometry(p.geometry);
+        if (a.badWinding > 0) {
+          fail(`${label}: ${a.badWinding}/${a.triangles} instanced triangles wound against their normal`);
+        }
+        if (a.closed && a.volume <= 0) {
+          fail(`${label}: closed instance geometry is inside out`);
+        }
+        if (a.closed) closedGeoms++;
+        else {
+          openGeoms++;
+          openEdgeTotal += a.openEdges;
+        }
         inst += p.transforms.length;
         for (const t of p.transforms) {
           if (!t.elements.every((e) => Number.isFinite(e))) {
@@ -793,12 +837,25 @@ function verifyParts(): void {
       status = 'THREW';
       fail(`${c.group}/${c.name}: ${(err as Error).message}`);
     }
+    closedCount += closedGeoms;
+    openCount += openGeoms;
     console.log(
-      pad(c.group, 10) + pad(c.name, 24) + pad(tris, 8, true) + pad(geoms, 7, true) + pad(inst, 6, true) + `  ${status}`,
+      pad(c.group, 10) +
+        pad(c.name, 24) +
+        pad(tris, 8, true) +
+        pad(geoms, 7, true) +
+        pad(inst, 6, true) +
+        pad(closedGeoms, 8, true) +
+        pad(openEdgeTotal, 7, true) +
+        pad(outwardMin < 1 ? outwardMin.toFixed(2) : '1.00', 9, true) +
+        `  ${status}`,
     );
   }
-  console.log(rule());
-  console.log(`${pad('', 34)}${pad(total, 8, true)}  triangles across all part cases`);
+  console.log(rule(104));
+  console.log(
+    `${pad('', 34)}${pad(total, 8, true)}  triangles; ` +
+      `${closedCount} closed solids audited, ${openCount} open surfaces`,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -950,7 +1007,14 @@ function verifyUnits(): void {
     console.log(`  NOTE: still using the generic fallback figure: ${fallingBack.join(', ')}`);
   }
   const materials = stubMaterials();
-  const factory = createCharacters({ materials, onWarn: (m) => warnings.push(m) });
+  // main.ts ships with bakeInstancesBelow: 64 — the render author measured that
+  // folding small instance sets into the merged mesh beats instancing them, so
+  // the verification must measure the configuration that actually runs.
+  const factory = createCharacters({
+    materials,
+    bakeInstancesBelow: 64,
+    onWarn: (m) => warnings.push(m),
+  });
 
   console.log(rule(110));
   console.log(
@@ -973,6 +1037,7 @@ function verifyUnits(): void {
 
   let grand = 0;
   let grandMeshes = 0;
+  let windingAudited = 0;
   const units: ReturnType<typeof factory.create>[] = [];
 
   for (const key of UNIT_KEYS_IN_VALUE_ORDER) {
@@ -1008,7 +1073,22 @@ function verifyUnits(): void {
         const g = sm.geometry;
         check(!!g.getAttribute('skinIndex'), `${key}: skinned mesh without skinIndex`);
         check(!!g.getAttribute('aSmoothNormal'), `${key}: skinned mesh without aSmoothNormal`);
+        check(!!g.getAttribute('aMaterial'), `${key}: skinned mesh without aMaterial`);
         assertFinite(g, `${key}/${sm.name}`);
+        const a = auditGeometry(g);
+        if (a.badWinding > 0) {
+          fail(`${key}/${sm.name}: ${a.badWinding}/${a.triangles} triangles wound against their normal`);
+        }
+        windingAudited += a.triangles;
+      }
+      for (const pr of u.props) {
+        const g = (pr as THREE.Mesh).geometry as THREE.BufferGeometry | undefined;
+        if (!g) continue;
+        const a = auditGeometry(g);
+        if (a.badWinding > 0) {
+          fail(`${key}/${pr.name}: ${a.badWinding}/${a.triangles} prop triangles wound against their normal`);
+        }
+        windingAudited += a.triangles;
       }
       if (spec.mount !== 'none' && spec.mount !== 'platform') {
         check(
@@ -1043,6 +1123,56 @@ function verifyUnits(): void {
   console.log(
     `  all 14 built: ${grand} triangles, ${grandMeshes} meshes, ${materials.count()} materials`,
   );
+  console.log(`  winding audited across ${windingAudited} built triangles`);
+
+  // The same cast built in atlas mode: one merged mesh per unit, one material
+  // for everything. This is the configuration the renderer's ramp shader wants,
+  // and the merge happens here so nobody downstream has to duplicate vertex
+  // data to get it.
+  {
+    const atlasMat = new THREE.MeshBasicMaterial();
+    atlasMat.name = 'atlas';
+    const af = createCharacters({
+      materials,
+      bakeInstancesBelow: 64,
+      atlasMaterial: atlasMat,
+      onWarn: () => {},
+    });
+    let am = 0;
+    let at = 0;
+    const seen = new Set<THREE.Material>();
+    const built: ReturnType<typeof af.create>[] = [];
+    for (const key of UNIT_KEYS_IN_VALUE_ORDER) {
+      for (const side of [Side.Red, Side.Black] as const) {
+        const u = af.create(side, typeOf(key), 0);
+        built.push(u);
+        const per = BOARD_COUNT[key];
+        am += (u.skinned.length + u.props.length) * per;
+        at += u.meta.triangles * per;
+        for (const m of u.skinned) seen.add(m.material as THREE.Material);
+        for (const p of u.props) {
+          const mm = (p as THREE.Mesh).material as THREE.Material | undefined;
+          if (mm) seen.add(mm);
+        }
+        check(
+          u.skinned.length === 1,
+          `${key}: atlas mode produced ${u.skinned.length} skinned meshes, expected 1`,
+        );
+        for (const sm of u.skinned) {
+          const a = auditGeometry(sm.geometry);
+          if (a.badWinding > 0) fail(`${key} atlas mesh: ${a.badWinding} triangles wound against their normal`);
+          check(!!sm.geometry.getAttribute('aMaterial'), `${key}: atlas mesh without aMaterial`);
+        }
+      }
+    }
+    console.log(
+      `\n  atlas mode (one material injected): 32-unit board = ${am} meshes ` +
+        `(${am * 2} draw calls with the outline pass), ${(at / 1000).toFixed(1)}k triangles, ` +
+        `${seen.size} material(s)`,
+    );
+    for (const u of built) u.dispose();
+    af.dispose();
+  }
 
   // Attachment sockets and wheel radii — the two things other subsystems break on.
   console.log('\n  attachment sockets and published mount data');
@@ -1117,6 +1247,17 @@ function verifyUnits(): void {
   check(after.geometries === 0, `dispose() leaked ${after.geometries} geometries`);
   factory.dispose();
 }
+
+/** A full board: 5 soldiers, 1 general, 2 of everything else, per side. */
+const BOARD_COUNT: Record<UnitKey, number> = {
+  soldier: 5,
+  advisor: 2,
+  general: 1,
+  cannon: 2,
+  horse: 2,
+  elephant: 2,
+  chariot: 2,
+};
 
 function estimateBoard(units: ReturnType<Awaited<ReturnType<typeof createCharacters>>['create']>[]): number {
   // A full board: 5 soldiers, 2 each of everything else, 1 general, per side.

@@ -156,6 +156,28 @@ knees and `footL/R` to place the ankles. Do **not** offset `thighL/R` for a
 seated pose — that moves the hip joint too. The fallback's `strideOffsets()`
 does exactly this and is worth copying.
 
+### Orientation is guaranteed, not your problem
+
+Five inside-out-geometry bugs were found and fixed in the shared library. The
+guarantees you can now rely on:
+
+- **`prim.loft()` is ring-order independent.** It measures the orientation of
+  the stack and reverses the rings if they were wound the other way, so a skirt
+  lofted waist-to-hem, a hoof lofted downward and a canopy lofted apex-to-rim
+  all come out solid-side-out. `sweep()` and `hardLathe()` go through it, so
+  they inherit the fix.
+- **`prim.shell({ flip: true })` is safe.** `flip` chooses which side of the
+  authored surface the thickness is added to; it now reverses the winding of
+  every face as well as the offset direction, so both settings produce a
+  correctly-oriented solid.
+- **`prim.bevelSlab()` faces outward.** Both rings run counter-clockwise seen
+  from +Z. This is the lamellar plate, so it was every plate in the game.
+- **`vehicle.spokedWheel()` fans its spokes** about X, in the wheel plane.
+- **`prim.mirrorX()` re-winds.** Never mirror by negating X yourself.
+
+If you build geometry by hand with `MeshBuilder`, `verify.ts` will tell you if
+you got the winding wrong — see §8.
+
 ---
 
 ## 3. Skinning — what the factory does with `boneHint`
@@ -231,19 +253,19 @@ computes `Δθ = Δs / (radius · scale)`; without it, wheels skid.
 
 ## 5. Triangle budgets
 
-| unit | budget | fallback uses | headroom |
+| unit | budget | shipped cast (worst army) | headroom |
 |---|---|---|---|
-| soldier | 9 000 | 4 302 | 52% |
-| advisor | 11 000 | 2 090 | 81% |
-| general | 16 000 | 8 266 | 48% |
-| cannon | 24 000 | 3 190 | 87% |
-| horse | 20 000 | 5 435 | 73% |
-| elephant | 26 000 | 3 956 | 85% |
-| chariot | 32 000 | 6 950 | 78% |
+| soldier | 9 000 | 4 258 | 53% |
+| advisor | 11 000 | 2 428 | 78% |
+| general | 16 000 | 8 682 | 46% |
+| cannon | 24 000 | 10 104 | 58% |
+| horse | 20 000 | 8 577 | 57% |
+| elephant | 26 000 | 5 940 | 77% |
+| chariot | 32 000 | 10 214 | 68% |
 
 The factory warns through `onWarn` when you exceed your budget. It does not
-stop you — but the perf author's 900 k board total is not negotiable, and a full
-board of fallback figures is currently **146 k**.
+stop you — but the perf author's 900 k board total is not negotiable, and a
+full board of the current cast is **194 k**.
 
 Costs to budget against, measured:
 
@@ -271,23 +293,30 @@ Costs to budget against, measured:
 
 ### Draw calls — read this
 
-The factory merges every part into one mesh per `(MaterialClass, PigmentName)`
-pair. **The number of distinct material/pigment pairs you use is the number of
-draw calls your unit costs**, and it doubles under the outline pass. The
-fallback figures use 8–13 pairs each, plus 0–6 `InstancedMesh` props; a full
-board of them is **475 meshes / 950 draw calls with the outline pass**, against
-a 260-draw-call budget. Every pair you can avoid is worth roughly 2 draw calls ×
-however many of your unit are on the board.
+`main.ts` runs the factory with `atlasMaterial` set, which collapses each unit
+to **one merged mesh drawn with one material** — `aMaterial` carries the
+material class and pigment per vertex and the renderer's ramp shader decodes it.
+Measured on the shipped cast: a 32-unit board is **32 meshes, 64 draw calls,
+1 material**. That is the configuration that runs.
+
+Without an atlas material the factory falls back to one mesh per
+`(MaterialClass, PigmentName)` pair — the current cast uses 7–12 pairs per unit,
+giving **295 meshes / 590 draw calls** for a board against a 260 budget. So the
+pair count still matters if the atlas path is ever turned off, and it always
+costs vertex-attribute variety even when it does not cost a draw call.
 
 Practical rules:
 
 - Prefer an existing pair over a new one. `iron`+`metal` and `gold`+`metal` are
   two different materials; pick one and stay with it.
-- Do not reach for `'accent'` on a single 40-triangle detail. That is a whole
-  draw call for a tassel.
-- Instance sets of **24 or more** stay `InstancedMesh`; smaller ones are baked
-  into the mesh they share a material with. So a 15-plate pauldron is free, and
-  a 60-plate cuirass row is one call.
+- `cuirass()` and `skirtArmour()` take `cordPigment` / `cordCls`. The default
+  lacing pigment is `'accent'`, which is a whole extra pair for a few hundred
+  triangles of cord — set it to `'lacquer'` and the lacing folds into the plate
+  bucket.
+- `main.ts` passes `bakeInstancesBelow: 64`, so instance sets under 64 are baked
+  into the mesh they share a material with. Sets of 64 or more stay their own
+  `InstancedMesh` — which the atlas cannot merge, so a very large plate array
+  costs a draw call. Nothing in the current cast hits that.
 
 ---
 
@@ -393,9 +422,9 @@ Crest `style`: `none | plume | hornPair | fanCrest | standardSocket | buyao`.
 | function | returns | signature |
 |---|---|---|
 | `lamellarPlate` | `BufferGeometry` | `({ w, h, d, bevel?, crown?, backFace? })` — one plate, 12 tris |
-| `lamellarBand` | `PartGroup` | `({ rows: LamellarRow[], plate, boneHint, pigment?, cls?, cord?, cordPigment?, cordScale?, name? })` — the general primitive |
-| `cuirass` | `PartGroup` | `({ fromY, toY, rx0, rx1, depthRatio?, rows?, perRow?, lowerBone?, upperBone?, cord?, pigment?, thickness? })` |
-| `skirtArmour` | `PartGroup` | `({ topY, bottomY, rxTop, rxBottom, depthRatio?, rows?, perRow?, frontGap?, pigment?, bone?, cord? })` |
+| `lamellarBand` | `PartGroup` | `({ rows: LamellarRow[], plate, boneHint, pigment?, cls?, cord?, cordPigment?, cordCls?, cordScale?, name? })` — the general primitive |
+| `cuirass` | `PartGroup` | `({ fromY, toY, rx0, rx1, depthRatio?, rows?, perRow?, lowerBone?, upperBone?, cord?, cordPigment?, cordCls?, pigment?, thickness? })` |
+| `skirtArmour` | `PartGroup` | `({ topY, bottomY, rxTop, rxBottom, depthRatio?, rows?, perRow?, frontGap?, pigment?, bone?, cord?, cordPigment?, cordCls? })` |
 | `pauldron` | `PartGroup` | `({ side, shoulder, r, rows?, perRow?, pigment? })` |
 | `tubeArmour` | `PartGroup` | `({ bone, from, to, r, rows?, perRow?, pigment?, arc?, facing? })` — bracers, greaves |
 | `neckGuard` | `PartGroup` | `({ y, r, height, count?, pigment? })` |
@@ -527,7 +556,21 @@ npx tsc --noEmit                            # zero errors in src/characters
 npx tsx src/characters/verify.ts            # zero FAILs, and read the warnings
 npx tsx src/characters/verify.ts --units    # your triangle count, mesh count,
                                             # measured size vs declared target
+npx tsx src/characters/verify.ts --parts    # per-part winding and closure audit
 ```
+
+`verify.ts` audits every triangle it can reach — yours included, both as
+individual parts and as the merged unit mesh:
+
+- **winding vs stored normal** must agree on every triangle (hard fail);
+- **closed solids must have positive signed volume** — this is what catches a
+  form built inside out, which no amount of staring at a wireframe will show
+  (hard fail);
+- open-edge counts and centroid agreement are reported, not asserted, because
+  an open sheet legitimately has faces pointing both ways.
+
+It found five inside-out bugs in the shared library that had passed every other
+check. If it flags something in your unit, it is right.
 
 Then, honestly: does a flat black render of your unit read as *that piece*, next
 to the other six, at board distance? If it does not, no amount of detail on it

@@ -55,6 +55,8 @@ import {
   FORMATION,
   FORMATION_ORDER,
   FRAME,
+  PIGMENT,
+  PROJECTILE,
   RANGED,
   WALK,
   walkSeconds,
@@ -106,9 +108,17 @@ class Sequence {
     if (this.time >= this.duration) this.complete();
   }
 
-  /** Fire every unfired mark, run the tick at the end, and settle. */
+  /**
+   * Fire every unfired mark, run the tick at the end, and settle.
+   *
+   * `done` is set *first*, before anything is run. A tick is allowed to end its
+   * own sequence — that is how a skip works — and it will be called once more
+   * from here; without the flag already set, that call re-enters `complete` and
+   * the stack unwinds itself into the ground.
+   */
   complete(): void {
     if (this.done) return;
+    this.done = true;
     for (const m of this.marks) {
       if (!m.fired) {
         m.fired = true;
@@ -117,7 +127,6 @@ class Sequence {
     }
     this.time = this.duration;
     if (this.tick) this.tick(this.duration, 0);
-    this.done = true;
     this.finish();
     this.resolve();
   }
@@ -142,10 +151,11 @@ export interface ChoreographyOptions {
   ground?: ((x: number, z: number) => number) | null;
 }
 
+// Scratch for values consumed inside the frame they are written in. Anything a
+// *mark* reads seconds later must be owned by that sequence instead — module
+// scratch would have been overwritten by whatever ran in between.
 const _a = new THREE.Vector3();
-const _b = new THREE.Vector3();
 const _dir = new THREE.Vector3();
-const _prev = new THREE.Vector3();
 const _look = new THREE.Vector3();
 
 /** Attack sound per unit. Each unit's weapon has its own voice. */
@@ -199,7 +209,9 @@ export class Choreography implements Choreographer {
     if (this.running.length > 0) {
       // Copy the length up front: a mark may start another sequence.
       const n = this.running.length;
-      for (let i = 0; i < n; i++) this.running[i].advance(dt);
+      // A mark may start another sequence (fine — it runs next frame) or abort
+      // everything (which empties the list under us), so the index is checked.
+      for (let i = 0; i < n && i < this.running.length; i++) this.running[i].advance(dt);
       for (let i = this.running.length - 1; i >= 0; i--) {
         if (this.running[i].done) this.running.splice(i, 1);
       }
@@ -329,7 +341,6 @@ export class Choreography implements Choreographer {
     const total = travelTime + WALK.settle;
 
     this.place(unit, path[0].x, path[0].z);
-    _prev.copy(unit.root.position);
     let lastS = 0;
 
     const marks: Mark[] = [
@@ -358,7 +369,6 @@ export class Choreography implements Choreographer {
       lastS = s;
       anim?.reportTravel(moved);
       if (moved > 1e-6) anim?.setFacing(this.yawTo(_dir.x, _dir.z));
-      _prev.copy(unit.root.position);
     };
 
     const finish = (): void => {
@@ -412,12 +422,14 @@ export class Choreography implements Choreographer {
     const def = this.animatorFor(defender);
     const cc = this.busContext(attacker, defender, ctx);
 
-    this.squareWorld(ctx.attackerSq, _a);
-    this.squareWorld(ctx.defenderSq, _b);
-    _dir.copy(_b).sub(_a);
-    const gap = Math.max(1e-4, _dir.length());
-    _dir.multiplyScalar(1 / gap);
-    const yaw = this.yawTo(_dir.x, _dir.z);
+    // Owned by this sequence: its marks read these long after other work has
+    // run through the module scratch.
+    const A = this.squareWorld(ctx.attackerSq, new THREE.Vector3());
+    const B = this.squareWorld(ctx.defenderSq, new THREE.Vector3());
+    const D = B.clone().sub(A);
+    const gap = Math.max(1e-4, D.length());
+    D.multiplyScalar(1 / gap);
+    const yaw = this.yawTo(D.x, D.z);
     const H = CAPTURE_HOLD;
 
     // A chariot does not stop in front of what it kills, so it covers almost
@@ -438,8 +450,7 @@ export class Choreography implements Choreographer {
     const knock = new THREE.Vector3();
 
     atk?.setFacing(yaw, true);
-    const defYaw = this.yawTo(-_dir.x, -_dir.z);
-    def?.setFacing(defYaw, true);
+    def?.setFacing(this.yawTo(-D.x, -D.z), true);
 
     const marks: Mark[] = [
       mark(CAPTURE.approachStart, () => {
@@ -448,14 +459,14 @@ export class Choreography implements Choreographer {
         // update, and awaiting it with the clock stalled would deadlock.
         void this.camera.pushToCapture(ctx.attackerSq, ctx.defenderSq);
         atk?.play('move', 0.18);
-        _look.copy(_b);
+        _look.copy(B);
         _look.y += defender.meta.size[1] * 0.62;
         atk?.setLookTarget(_look);
         if (attacker.meta.type === PieceType.Elephant) atk?.setTrunkTarget(_look);
-        _look.copy(_a);
+        _look.copy(A);
         _look.y += attacker.meta.size[1] * 0.62;
         def?.setLookTarget(_look);
-        this.audio.play('armourShift', { gain: 0.4, pan: clamp(_a.x / 6, -1, 1) });
+        this.audio.play('armourShift', { gain: 0.4, pan: clamp(A.x / 6, -1, 1) });
       }),
       mark(CAPTURE.windupStart, () => {
         atk?.play('attackWindup');
@@ -469,7 +480,7 @@ export class Choreography implements Choreographer {
         atk?.play('attackStrike');
         this.audio.play(ATTACK_CUE[attacker.meta.key], {
           gain: 0.78,
-          pan: clamp(_a.x / 6, -1, 1),
+          pan: clamp(A.x / 6, -1, 1),
         });
       }),
       mark(CAPTURE.contact, () => {
@@ -479,10 +490,10 @@ export class Choreography implements Choreographer {
         bus.emit('fx:flash', { strength: CAPTURE.flash, colour: band('shellWhite', 3) });
         bus.emit('camera:impulse', {
           strength: CAPTURE.impulse,
-          direction: [_dir.x, 0.35, _dir.z],
+          direction: [D.x, 0.35, D.z],
         });
-        this.camera.impulse(CAPTURE.impulse, _dir);
-        this.audio.play('bladeStrike', { gain: 0.95, pan: clamp(_b.x / 6, -1, 1) });
+        this.camera.impulse(CAPTURE.impulse, D);
+        this.audio.play('bladeStrike', { gain: 0.95, pan: clamp(B.x / 6, -1, 1) });
         // Frozen time. The bodies stop; the flash and the camera do not.
         atk?.freeze(true);
         def?.freeze(true);
@@ -490,15 +501,15 @@ export class Choreography implements Choreographer {
       mark(tHoldEnd, () => {
         atk?.freeze(false);
         def?.freeze(false);
-        def?.setHitDirection(_dir);
+        def?.setHitDirection(D);
         def?.play('hit');
-        knock.copy(_dir).multiplyScalar(CAPTURE.knockback);
-        this.audio.play('armourShift', { gain: 0.7, pan: clamp(_b.x / 6, -1, 1), delay: 0.03 });
+        knock.copy(D).multiplyScalar(CAPTURE.knockback);
+        this.audio.play('armourShift', { gain: 0.7, pan: clamp(B.x / 6, -1, 1), delay: 0.03 });
       }),
       mark(tKnockEnd, () => {
         def?.play('death');
         def?.setLookTarget(null);
-        this.audio.play('bodyFall', { gain: 0.8, pan: clamp(_b.x / 6, -1, 1), delay: 0.09 });
+        this.audio.play('bodyFall', { gain: 0.8, pan: clamp(B.x / 6, -1, 1), delay: 0.09 });
       }),
       mark(CAPTURE.contact + CAPTURE.recover + H, () => {
         atk?.play('idle', 0.32);
@@ -507,7 +518,7 @@ export class Choreography implements Choreographer {
       }),
       mark(tDisperse, () => {
         bus.emit('capture:beat', { ...cc, beat: 3 });
-        _look.copy(_dir).multiplyScalar(0.8);
+        _look.copy(D).multiplyScalar(0.8);
         _look.y = 0.7;
         this.pigment.burstUnit(defender, _look, `${ctx.attackerSq}:${ctx.defenderSq}`);
         this.camera.release();
@@ -523,14 +534,14 @@ export class Choreography implements Choreographer {
       if (t <= CAPTURE.contact) {
         const u = clamp(t / CAPTURE.contact, 0, 1);
         const s = this.travelEase(u) * gap * approachFrac;
-        attacker.root.position.set(_a.x + _dir.x * s, startY, _a.z + _dir.z * s);
+        attacker.root.position.set(A.x + D.x * s, startY, A.z + D.z * s);
         const moved = Math.max(0, s - lastApproach);
         lastApproach = s;
         atk?.reportTravel(moved);
       } else if (t >= tKnockEnd) {
         const u = clamp((t - tKnockEnd) / Math.max(1e-4, tDisperseEnd - tKnockEnd), 0, 1);
         const s = gap * (approachFrac + (1 - approachFrac) * this.travelEase(u));
-        attacker.root.position.set(_a.x + _dir.x * s, startY, _a.z + _dir.z * s);
+        attacker.root.position.set(A.x + D.x * s, startY, A.z + D.z * s);
         const moved = Math.max(0, s - lastFinish - gap * approachFrac);
         lastFinish = s - gap * approachFrac;
         atk?.reportTravel(moved);
@@ -541,9 +552,9 @@ export class Choreography implements Choreographer {
         const u = clamp((t - tHoldEnd) / Math.max(1e-4, tKnockEnd - tHoldEnd), 0, 1);
         const e = 1 - (1 - u) * (1 - u) * (1 - u);
         defender.root.position.set(
-          _b.x + knock.x * e,
+          B.x + knock.x * e,
           defender.root.position.y,
-          _b.z + knock.z * e,
+          B.z + knock.z * e,
         );
       }
     };
@@ -554,7 +565,7 @@ export class Choreography implements Choreographer {
       atk?.setLookTarget(null);
       atk?.setTrunkTarget(null);
       def?.setLookTarget(null);
-      this.place(attacker, _b.x, _b.z);
+      this.place(attacker, B.x, B.z);
       atk?.setFacing(yaw, true);
       atk?.play('idle', FADE_SNAP);
       defender.root.visible = false;
@@ -580,14 +591,14 @@ export class Choreography implements Choreographer {
     const def = this.animatorFor(defender);
     const cc = this.busContext(attacker, defender, ctx);
 
-    this.squareWorld(ctx.attackerSq, _a);
-    this.squareWorld(ctx.defenderSq, _b);
-    _dir.copy(_b).sub(_a);
-    const gap = Math.max(1e-4, _dir.length());
-    _dir.multiplyScalar(1 / gap);
-    const yaw = this.yawTo(_dir.x, _dir.z);
+    const A = this.squareWorld(ctx.attackerSq, new THREE.Vector3());
+    const B = this.squareWorld(ctx.defenderSq, new THREE.Vector3());
+    const D = B.clone().sub(A);
+    const gap = Math.max(1e-4, D.length());
+    D.multiplyScalar(1 / gap);
+    const yaw = this.yawTo(D.x, D.z);
     atk?.setFacing(yaw, true);
-    def?.setFacing(this.yawTo(-_dir.x, -_dir.z), true);
+    def?.setFacing(this.yawTo(-D.x, -D.z), true);
 
     const H = CAPTURE_HOLD;
     // Everything after impact runs on the melee clock, shifted so that the
@@ -612,7 +623,7 @@ export class Choreography implements Choreographer {
         bus.emit('capture:beat', { ...cc, beat: 1 });
         void this.camera.pushToCapture(ctx.attackerSq, ctx.defenderSq);
         atk?.play('attackWindup');
-        _look.copy(_b);
+        _look.copy(B);
         _look.y += defender.meta.size[1] * 0.6;
         atk?.setLookTarget(_look);
       }),
@@ -624,30 +635,30 @@ export class Choreography implements Choreographer {
         // stone leaves the sling and not the middle of the square.
         const socket = attacker.attach.muzzle;
         if (socket) socket.getWorldPosition(muzzle);
-        else muzzle.set(_a.x, _a.y + attacker.meta.size[1] * 0.8, _a.z);
-        impactPoint.set(_b.x, _b.y + defender.meta.size[1] * 0.45, _b.z);
+        else muzzle.set(A.x, A.y + attacker.meta.size[1] * 0.8, A.z);
+        impactPoint.set(B.x, B.y + defender.meta.size[1] * 0.45, B.z);
         this.pigment.launch(muzzle, impactPoint, RANGED.flight, () => {});
-        this.audio.play('trebuchetRelease', { gain: 0.85, pan: clamp(_a.x / 6, -1, 1) });
+        this.audio.play('trebuchetRelease', { gain: 0.85, pan: clamp(A.x / 6, -1, 1) });
       }),
       mark(RANGED.impact, () => {
         bus.emit('capture:beat', { ...cc, beat: 2 });
         bus.emit('fx:flash', { strength: CAPTURE.flash * 0.86, colour: band('shellWhite', 3) });
         bus.emit('camera:impulse', {
           strength: CAPTURE.impulse,
-          direction: [_dir.x, 0.42, _dir.z],
+          direction: [D.x, 0.42, D.z],
         });
-        this.camera.impulse(CAPTURE.impulse, _dir);
-        this.audio.play('trebuchetImpact', { gain: 0.95, pan: clamp(_b.x / 6, -1, 1) });
+        this.camera.impulse(CAPTURE.impulse, D);
+        this.audio.play('trebuchetImpact', { gain: 0.95, pan: clamp(B.x / 6, -1, 1) });
         // The stone bursts into pigment where it lands, before the body does.
-        _look.copy(_dir).multiplyScalar(1.1);
+        _look.copy(D).multiplyScalar(1.1);
         _look.y = 0.9;
         this.pigment.burst({
           origin: impactPoint,
-          extent: _bExtent.set(0.12, 0.12, 0.12),
+          extent: new THREE.Vector3(0.12, 0.12, 0.12),
           pigment: 'stone',
-          count: 74,
+          count: PROJECTILE.burstChips,
           impulse: _look,
-          force: 1.35,
+          force: PROJECTILE.burstSpeed / PIGMENT.speed,
           seed: `stone:${ctx.attackerSq}:${ctx.defenderSq}`,
         });
         atk?.freeze(true);
@@ -656,19 +667,19 @@ export class Choreography implements Choreographer {
       mark(tHoldEnd, () => {
         atk?.freeze(false);
         def?.freeze(false);
-        def?.setHitDirection(_dir);
+        def?.setHitDirection(D);
         def?.play('hit');
-        knock.copy(_dir).multiplyScalar(CAPTURE.knockback * 1.2);
+        knock.copy(D).multiplyScalar(CAPTURE.knockback * 1.2);
       }),
       mark(tKnockEnd, () => {
         def?.play('death');
-        this.audio.play('bodyFall', { gain: 0.8, pan: clamp(_b.x / 6, -1, 1), delay: 0.07 });
+        this.audio.play('bodyFall', { gain: 0.8, pan: clamp(B.x / 6, -1, 1), delay: 0.07 });
         atk?.play('idle', 0.36);
         atk?.setLookTarget(null);
       }),
       mark(tDisperse, () => {
         bus.emit('capture:beat', { ...cc, beat: 3 });
-        _look.copy(_dir).multiplyScalar(0.7);
+        _look.copy(D).multiplyScalar(0.7);
         _look.y = 0.75;
         this.pigment.burstUnit(defender, _look, `${ctx.attackerSq}:${ctx.defenderSq}`);
         this.camera.release();
@@ -681,7 +692,7 @@ export class Choreography implements Choreographer {
       }),
       mark(tTravel + travelTime, () => {
         atk?.play('idle');
-        this.audio.play('pieceLand', { gain: 0.6, pan: clamp(_b.x / 6, -1, 1) });
+        this.audio.play('pieceLand', { gain: 0.6, pan: clamp(B.x / 6, -1, 1) });
       }),
     ];
 
@@ -689,12 +700,12 @@ export class Choreography implements Choreographer {
       if (t > tHoldEnd && t < tKnockEnd + 0.9) {
         const u = clamp((t - tHoldEnd) / Math.max(1e-4, tKnockEnd - tHoldEnd), 0, 1);
         const e = 1 - (1 - u) * (1 - u) * (1 - u);
-        defender.root.position.set(_b.x + knock.x * e, defender.root.position.y, _b.z + knock.z * e);
+        defender.root.position.set(B.x + knock.x * e, defender.root.position.y, B.z + knock.z * e);
       }
       if (t >= tTravel) {
         const u = clamp((t - tTravel) / Math.max(1e-4, travelTime), 0, 1);
         const s = this.travelEase(u) * gap;
-        this.place(attacker, _a.x + _dir.x * s, _a.z + _dir.z * s);
+        this.place(attacker, A.x + D.x * s, A.z + D.z * s);
         atk?.reportTravel(Math.max(0, s - lastS));
         lastS = s;
       }
@@ -705,7 +716,7 @@ export class Choreography implements Choreographer {
       def?.freeze(false);
       atk?.setLookTarget(null);
       def?.setLookTarget(null);
-      this.place(attacker, _b.x, _b.z);
+      this.place(attacker, B.x, B.z);
       atk?.play('idle', FADE_SNAP);
       defender.root.visible = false;
     };
@@ -916,8 +927,10 @@ export class Choreography implements Choreographer {
     defender.root.visible = true;
     const atk = this.animatorFor(attacker);
     const def = this.animatorFor(defender);
-    atk?.play('idle', 0);
-    def?.play('idle', 0);
+    // A scrub must not inherit anything from whatever ran before it — root
+    // corrections, foot locks and damped followers are all functions of history.
+    atk?.reset();
+    def?.reset();
     void this.capture(attacker, defender, ctx);
     const seq = this.running[this.running.length - 1];
     if (!seq) return;
@@ -938,7 +951,6 @@ export class Choreography implements Choreographer {
 /** A fade of zero: used only by `finish()` paths, which must not interpolate. */
 const FADE_SNAP = 0;
 
-const _bExtent = new THREE.Vector3();
 
 export function createChoreographer(opts: ChoreographyOptions): Choreography {
   return new Choreography(opts);

@@ -141,6 +141,23 @@ export interface FactoryOptions {
    * calls for memory, lower it (0) to keep every instance set instanced.
    */
   bakeInstancesBelow?: number;
+  /**
+   * Collapse every unit to a **single** merged mesh drawn with this one
+   * material, instead of one mesh per (class, pigment) pair.
+   *
+   * `aMaterial` already carries the class and pigment on every vertex, so a
+   * ramp shader that decodes it needs no material split at all — and the split
+   * is what put a full board at ~475 meshes against a 260-draw-call budget.
+   * The renderer supplies the material; `characters` merges. Doing the merge
+   * here rather than downstream matters for memory: a consumer that merges
+   * afterwards cannot free the originals, because the `UnitInstance` owns and
+   * disposes them, so the whole cast's vertex data ends up in CPU memory twice.
+   *
+   * Instance sets large enough to survive `bakeInstancesBelow` stay their own
+   * `InstancedMesh` — they cannot be merged into anything — but they are drawn
+   * with this material too, so the material count still collapses to one.
+   */
+  atlasMaterial?: THREE.Material | ((skinned: boolean) => THREE.Material);
 }
 
 interface MeshGroupKey {
@@ -155,6 +172,7 @@ export class Factory implements CharacterFactory {
   private readonly fallback: UnitBuilder | undefined;
   private readonly warn: (m: string) => void;
   private readonly bakeBelow: number;
+  private readonly atlas: ((skinned: boolean) => THREE.Material) | null;
 
   private geometryCount = 0;
   private triangleTotal = 0;
@@ -167,6 +185,8 @@ export class Factory implements CharacterFactory {
     this.fallback = opts.fallback;
     this.warn = opts.onWarn ?? ((m) => console.warn(`[characters] ${m}`));
     this.bakeBelow = opts.bakeInstancesBelow ?? 24;
+    const am = opts.atlasMaterial;
+    this.atlas = am ? (typeof am === 'function' ? am : () => am) : null;
   }
 
   create(side: Side, type: PieceType, variant = 0): UnitInstance {
@@ -330,15 +350,18 @@ export class Factory implements CharacterFactory {
       }
 
       const inv = (bindWorld.get(host) ?? IDENTITY).clone().invert();
-      const mat = this.material({
-        cls: p.cls,
-        pigment,
-        variation,
-        ...(p.noSilk ? { noSilk: true } : {}),
-      });
+      const mat = this.atlas
+        ? this.trackMaterial(this.atlas(false))
+        : this.material({
+            cls: p.cls,
+            pigment,
+            variation,
+            ...(p.noSilk ? { noSilk: true } : {}),
+          });
       // Instanced geometry is shared between bands, so it may already carry
       // smooth normals from an earlier band; adding them twice is wasteful.
       if (!p.geometry.getAttribute('aSmoothNormal')) addSmoothNormals(p.geometry);
+      if (!p.geometry.getAttribute('aMaterial')) tagMaterial(p.geometry, p.cls, pigment);
       const mesh = new THREE.InstancedMesh(p.geometry, mat, p.transforms.length);
       mesh.name = `${spec.key}:${p.name ?? 'instanced'}`;
       mesh.castShadow = true;
@@ -360,22 +383,21 @@ export class Factory implements CharacterFactory {
       triangles += triangleCount(p.geometry) * p.transforms.length;
     }
 
-    // --- merge each bucket into one skinned mesh ----------------------------
+    // --- merge ---------------------------------------------------------------
+    // Tagging happens per source geometry rather than per merged bucket, so the
+    // same tagged geometries can be merged either per bucket or all together.
     for (const bucket of buckets.values()) {
-      if (bucket.geoms.length === 0) continue;
-      const merged = addSmoothNormals(mergeGeometryList(bucket.geoms));
-      tagMaterial(merged, bucket.key.cls, bucket.key.pigment);
+      for (const g of bucket.geoms) {
+        if (!g.getAttribute('aMaterial')) tagMaterial(g, bucket.key.cls, bucket.key.pigment);
+      }
+    }
+
+    const addSkinned = (geoms: THREE.BufferGeometry[], mat: THREE.Material, name: string) => {
+      const merged = addSmoothNormals(mergeGeometryList(geoms));
       owned.add(merged);
       this.geometryCount++;
-      const mat = this.material({
-        cls: bucket.key.cls,
-        pigment: bucket.key.pigment,
-        skinned: true,
-        variation,
-        ...(bucket.key.noSilk ? { noSilk: true } : {}),
-      });
       const mesh = new THREE.SkinnedMesh(merged, mat);
-      mesh.name = `${spec.key}:${bucket.key.cls}:${bucket.key.pigment}`;
+      mesh.name = name;
       mesh.castShadow = true;
       mesh.receiveShadow = true;
       // Explicit identity bind matrix: the geometry is authored in the same
@@ -385,6 +407,29 @@ export class Factory implements CharacterFactory {
       root.add(mesh);
       skinned.push(mesh);
       triangles += triangleCount(merged);
+    };
+
+    if (this.atlas) {
+      const all: THREE.BufferGeometry[] = [];
+      for (const bucket of buckets.values()) all.push(...bucket.geoms);
+      if (all.length > 0) {
+        addSkinned(all, this.trackMaterial(this.atlas(true)), `${spec.key}:atlas`);
+      }
+    } else {
+      for (const bucket of buckets.values()) {
+        if (bucket.geoms.length === 0) continue;
+        addSkinned(
+          bucket.geoms,
+          this.material({
+            cls: bucket.key.cls,
+            pigment: bucket.key.pigment,
+            skinned: true,
+            variation,
+            ...(bucket.key.noSilk ? { noSilk: true } : {}),
+          }),
+          `${spec.key}:${bucket.key.cls}:${bucket.key.pigment}`,
+        );
+      }
     }
 
     // --- attachment sockets -------------------------------------------------
@@ -556,7 +601,10 @@ export class Factory implements CharacterFactory {
   }
 
   private material(req: MaterialRequest): THREE.Material {
-    const m = this.materials.get(req);
+    return this.trackMaterial(this.materials.get(req));
+  }
+
+  private trackMaterial(m: THREE.Material): THREE.Material {
     this.materialsSeen.add(m);
     return m;
   }

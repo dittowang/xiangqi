@@ -231,10 +231,6 @@ interface Steed {
   reinR: V3;
   /** Top of the cantle — the guidon socket and the back of the seat. */
   cantle: V3;
-  /** Poll, muzzle and croup, for anyone aiming a camera or an effect. */
-  poll: V3;
-  muzzle: V3;
-  croup: V3;
 }
 
 /**
@@ -733,9 +729,6 @@ function buildSteed(ctx: UnitBuildContext, d: Dims): Steed {
     reinL: bit.left,
     reinR: bit.right,
     cantle,
-    poll: pollP,
-    muzzle: muzzleP,
-    croup: [0, croupY + W * 0.19, L * 0.4],
   };
 }
 
