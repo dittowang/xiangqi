@@ -161,10 +161,35 @@ export class Match {
     bus.emit('eval', { cp: this.evalRedPov(), mateIn: null });
   }
 
-  /** Reconcile the view against the model. The only path that adds or removes. */
-  sync(): void {
+  /**
+   * Reconcile the view against the model. The only path that adds or removes.
+   *
+   * `moved` relocates an existing figure rather than destroying and rebuilding
+   * it. Without it every move would cost a 20-70ms unit build and would throw
+   * away the animator's state mid-stride — a hitch on exactly the frame the
+   * player is watching.
+   */
+  sync(moved?: { from: number; to: number }): void {
     const board = this.pos.board;
     const seen = new Set<number>();
+
+    if (moved) {
+      const mover = this.views.get(moved.from);
+      if (mover) {
+        // The destination's occupant, if any, has already been taken.
+        const taken = this.views.get(moved.to);
+        if (taken && taken !== mover) {
+          this.captured.push(taken);
+          this.opts.board.bases.remove(taken.id);
+          taken.unit.root.removeFromParent();
+          this.views.delete(moved.to);
+        }
+        this.views.delete(moved.from);
+        mover.square = moved.to;
+        this.views.set(moved.to, mover);
+        this.opts.board.bases.setSquare(mover.id, moved.to);
+      }
+    }
 
     // Retire figures whose square no longer holds the piece they represent.
     for (const [square, view] of [...this.views]) {
@@ -265,7 +290,7 @@ export class Match {
 
   /** Called once the choreography has settled. Reconciles and adjudicates. */
   settle(move: Move, side: Side, notation: string): void {
-    this.sync();
+    this.sync({ from: moveFrom(move), to: moveTo(move) });
     this.opts.board.setLastMove(moveFrom(move), moveTo(move));
     bus.emit('move:end', { move, side, ply: this.ply, notation });
 

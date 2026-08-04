@@ -30,6 +30,8 @@ import type { DebugFlag, NamedPose, XqFrameStats, XqTestApi } from '@core/testap
 import { START_FEN } from '@core/testapi.ts';
 import { BOARD_HALF_X, BOARD_HALF_Z, facingY, worldToSquare } from '@core/coords.ts';
 import {
+  PieceType,
+  pieceType,
   type Difficulty,
   type Move,
   Side,
@@ -46,8 +48,14 @@ import { createCharacters, unitsStillFallingBack } from '@characters/index.ts';
 import { createEngineClient, legalTargets, findLegalMove } from '@engine/index.ts';
 import { getSealGlyph, glyphToShapes } from '@ui/seal.ts';
 import { createAudioEngine, pieceDetune } from '@ui/audio.ts';
+import {
+  createAnimator,
+  createChoreographer,
+  createPigmentField,
+  type Animator,
+} from '@anim/index.ts';
 import { FrameMonitor } from '@perf/instrument.ts';
-import { QualityGovernor } from '@perf/governor.ts';
+import { QUALITY, QualityGovernor } from '@perf/governor.ts';
 
 // ---------------------------------------------------------------------------
 // 1. Renderer
@@ -159,6 +167,51 @@ const match = new Match({
   humanSide: saved?.humanSide ?? Side.Red,
 });
 const saver = new SaveScheduler();
+
+// ---------------------------------------------------------------------------
+// 7. Animation
+// ---------------------------------------------------------------------------
+
+/** Hard-edged pigment chips. Budgeted and pooled; never allocates per capture. */
+const pigment = createPigmentField({
+  budget: governorSettingsParticleBudget(),
+  ground: rig.heightAt,
+});
+scene.add(pigment.group);
+
+/** One animator per figure, keyed by the unit's root so lookup is identity. */
+const animators = new Map<THREE.Object3D, Animator>();
+
+const choreographer = createChoreographer({
+  camera: rig.director,
+  audio,
+  pigment,
+  animatorFor: (unit) => animators.get(unit.root),
+  ground: rig.heightAt,
+});
+
+function animatorFor(view: PieceView): Animator {
+  let a = animators.get(view.unit.root);
+  if (!a) {
+    a = createAnimator(view.unit, {
+      ground: rig.heightAt,
+      audio,
+      // Deterministic phase offset from the piece id, so a rank of five
+      // soldiers does not breathe and step in lockstep. Never from a clock.
+      variant: view.id,
+    });
+    animators.set(view.unit.root, a);
+    a.play('idle', 0);
+  }
+  return a;
+}
+
+function retireAnimator(unit: { root: THREE.Object3D }): void {
+  const a = animators.get(unit.root);
+  if (!a) return;
+  a.dispose();
+  animators.delete(unit.root);
+}
 
 // ---------------------------------------------------------------------------
 // Bus wiring
@@ -280,15 +333,32 @@ function deselect(): void {
  */
 async function playMove(move: Move): Promise<void> {
   const side = match.sideToMove;
+  const from = moveFrom(move);
+  const to = moveTo(move);
+  // Take both figures BEFORE the model moves: apply() only mutates the model,
+  // and the view map is not reconciled until settle(), so this is the one
+  // window where both the mover and its victim are still addressable.
+  const mover = match.views.get(from);
+  const capturedView = match.views.get(to);
+
   const applied = match.apply(move);
   if (!applied) return;
 
   match.animating = true;
-  if (applied.capture) {
-    await rig.director.pushToCapture(applied.capture.attackerSq, applied.capture.defenderSq);
-    pipeline.flash(0.85, '#F2E9D6');
-    audio.play('bladeStrike', { pan: panFor(applied.capture.defenderSq) });
-    rig.director.release();
+  if (applied.capture && mover) {
+    const defender = capturedView;
+    if (defender) {
+      await choreographer.capture(mover.unit, defender.unit, {
+        attackerSq: applied.capture.attackerSq,
+        defenderSq: applied.capture.defenderSq,
+        attackerType: pieceType(applied.capture.attacker),
+        defenderType: pieceType(applied.capture.defender),
+        ranged: applied.capture.ranged,
+      });
+      retireAnimator(defender.unit);
+    }
+  } else if (mover) {
+    await choreographer.walk(mover.unit, from, to);
   }
   match.animating = false;
 
@@ -345,6 +415,11 @@ const governor = new QualityGovernor(startTier, (q: QualitySettings) => {
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, q.maxPixelRatio));
 });
 
+/** Particle budget for the tier we booted at; the governor may revise it. */
+function governorSettingsParticleBudget(): number {
+  return QUALITY[startTier].particleBudget;
+}
+
 let booted = false;
 let firstFrameResolve: (() => void) | null = null;
 const firstFrame = new Promise<void>((res) => (firstFrameResolve = res));
@@ -356,7 +431,10 @@ async function boot(): Promise<void> {
     console.warn('[characters] still using the generic fallback figure:', stillFallback.join(', '));
   }
   await match.begin(saved?.moves);
-  for (const view of match.views.values()) dressUnit(view);
+  for (const view of match.views.values()) {
+    dressUnit(view);
+    animatorFor(view).play('idle', 0);
+  }
   rig.setPhase('development', 0);
   booted = true;
   bus.emit('match:start', { difficulty: match.difficulty, resumed: !!saved?.moves.length });
@@ -378,6 +456,10 @@ function frame(nowMs: number): void {
   monitor.begin(nowMs);
 
   rig.update(dt);
+  // Animators before the choreographer: it reads their settled state to decide
+  // when a beat has landed.
+  for (const a of animators.values()) a.update(dt);
+  choreographer.update(dt);
   audio.update(dt);
   saver.update(dt);
   if (booted) governor.update(dt, monitor.percentile(0.95));
@@ -460,7 +542,10 @@ const api: XqTestApi = {
     match.moves.length = 0;
     match.notation.length = 0;
     match.sync();
-    for (const view of match.views.values()) dressUnit(view);
+    for (const view of match.views.values()) {
+      dressUnit(view);
+      animatorFor(view).play('idle', 0);
+    }
     rig.setPhase('development', 0);
     await stepOnce(0);
   },
@@ -491,7 +576,26 @@ const api: XqTestApi = {
   // methods, deliberately: the harness probes for their presence to decide
   // whether to capture or to skip with a reason, and deleting them would turn
   // "56 shots skipped, here is why" into "the harness crashed".
-  seekCapture: async () => {},
+  seekCapture: async (from, to, t) => {
+    const attacker = match.views.get(from);
+    const defender = match.views.get(to);
+    if (!attacker || !defender) return;
+    animatorFor(attacker);
+    animatorFor(defender);
+    choreographer.seekCapture(
+      attacker.unit,
+      defender.unit,
+      {
+        attackerSq: from,
+        defenderSq: to,
+        attackerType: attacker.type,
+        defenderType: defender.type,
+        ranged: attacker.type === PieceType.Cannon,
+      },
+      t,
+    );
+    await stepOnce(0);
+  },
   seekFormation: async () => {},
   seekUnitState: async () => {},
 

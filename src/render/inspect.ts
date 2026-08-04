@@ -17,6 +17,8 @@
  * attributed to the system that produced it rather than guessed at.
  */
 
+export {};
+
 const spec = (m: string): string => m;
 
 const CHROME = '/opt/pw-browsers/chromium-1194/chrome-linux/chrome';
