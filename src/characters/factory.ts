@@ -269,13 +269,19 @@ export class Factory implements CharacterFactory {
     let triangles = 0;
 
     // --- material buckets ---------------------------------------------------
+    // Keyed on (class, pigment) only. `noSilk` deliberately does NOT split a
+    // bucket: it is a small opt-out for tiny props, and splitting a material on
+    // it would double the draw calls of every unit that has one ferrule on it.
+    // A bucket asks for `noSilk` only when every part in it wanted it.
     const buckets = new Map<string, { key: MeshGroupKey; geoms: THREE.BufferGeometry[] }>();
     const bucketFor = (p: { cls: Part['cls']; pigment: PigmentName; noSilk?: boolean }) => {
-      const k = `${p.cls}|${p.pigment}|${p.noSilk ? 1 : 0}`;
+      const k = `${p.cls}|${p.pigment}`;
       let b = buckets.get(k);
       if (!b) {
         b = { key: { cls: p.cls, pigment: p.pigment, noSilk: !!p.noSilk }, geoms: [] };
         buckets.set(k, b);
+      } else if (!p.noSilk) {
+        b.key.noSilk = false;
       }
       return b;
     };
@@ -358,6 +364,7 @@ export class Factory implements CharacterFactory {
     for (const bucket of buckets.values()) {
       if (bucket.geoms.length === 0) continue;
       const merged = addSmoothNormals(mergeGeometryList(bucket.geoms));
+      tagMaterial(merged, bucket.key.cls, bucket.key.pigment);
       owned.add(merged);
       this.geometryCount++;
       const mat = this.material({
@@ -602,6 +609,62 @@ const IDENTITY = new THREE.Matrix4();
 function capitalise(s: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
+
+/**
+ * Stamp `aMaterial` on a geometry: `classIndex * 16 + pigmentIndex`, one float
+ * per vertex.
+ *
+ * Nothing in `characters` reads it. It is here because the draw-call arithmetic
+ * for this project does not close under one-material-per-(class, pigment): a
+ * full board is roughly 500 meshes, and doubling that for the inverted-hull
+ * outline pass puts it well past the 260-call budget. The way out is a single
+ * ramp shader that looks its parameters up per vertex instead of per material,
+ * and this attribute is exactly what such a shader needs. Emitting it costs
+ * four bytes a vertex and means the renderer can adopt that path without
+ * `characters` changing at all.
+ *
+ * Decode: `cls = MATERIAL_CLASS_ORDER[floor(aMaterial / 16)]`,
+ *         `pigment = PIGMENT_ORDER[mod(aMaterial, 16)]`.
+ */
+function tagMaterial(g: THREE.BufferGeometry, cls: Part['cls'], pigment: PigmentName): void {
+  const ci = MATERIAL_CLASS_ORDER.indexOf(cls);
+  const pi = PIGMENT_ORDER.indexOf(pigment);
+  const code = Math.max(0, ci) * 16 + Math.max(0, pi);
+  const n = (g.getAttribute('position') as THREE.BufferAttribute).count;
+  const arr = new Float32Array(n);
+  arr.fill(code);
+  g.setAttribute('aMaterial', new THREE.Float32BufferAttribute(arr, 1));
+}
+
+/** Encoding order for `aMaterial`. Frozen: the renderer decodes against it. */
+export const MATERIAL_CLASS_ORDER: readonly Part['cls'][] = [
+  'lacquer',
+  'cloth',
+  'leather',
+  'gold',
+  'ivory',
+  'timber',
+  'stone',
+  'silk',
+  'flesh',
+  'hair',
+  'iron',
+];
+
+export const PIGMENT_ORDER: readonly PigmentName[] = [
+  'azurite',
+  'malachite',
+  'cinnabar',
+  'ochre',
+  'gamboge',
+  'shellWhite',
+  'ink',
+  'inkLacquer',
+  'gold',
+  'indigo',
+  'vermilionDeep',
+  'stone',
+];
 
 /** Construct the factory. `main.ts` calls this once, after the renderer exists. */
 export function createCharacterFactory(opts: FactoryOptions): Factory {
