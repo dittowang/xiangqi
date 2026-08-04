@@ -75,7 +75,7 @@
  */
 
 import * as THREE from 'three';
-import type { BoneName } from '@core/contracts.ts';
+import { BONE_ORDER, type BoneName } from '@core/contracts.ts';
 import { PieceType, Side } from '@core/types.ts';
 import { registerUnit, type UnitBuildContext } from '@characters/factory.ts';
 import type { InstancedPart, PartGroup, PartPigment, V2, V3 } from '@characters/parts/types.ts';
@@ -1611,10 +1611,37 @@ interface CrewLook {
 }
 
 /**
- * One dressed artillerist. Hooded — that is the 砲's crown tag and it does not
- * move — in a short tunic under a light two-row harness, with puttees, boots
- * and a 環首刀 at the hip. Built from explicit parts rather than `body.figure`
- * so every pigment lands in a bucket this unit already pays for.
+ * A crewman's bind pose with his standing point taken back off him, so the whole
+ * figure can be built in his own local space — feet at the origin, on the
+ * machine's centre line — and stood where he works afterwards with a single
+ * `transformGroup`.
+ *
+ * This is not a tidiness measure, it is the only space `crewFigure` can safely
+ * be built in. `buildRig` folds the *vertical* origin into `metrics` but adds
+ * the *horizontal* origin to `bindWorld` at the very end, so a figure built
+ * from both at once is built in two different spaces: everything sized from
+ * `metrics` — torso, neck, skirt, sash, cape, harness, hood — is centred on
+ * x = z = 0, and everything placed from `bindWorld` — arms, legs, hands, boots,
+ * puttees, scabbard — is out at the standing point. The man then renders as a
+ * pair of legs and two arms beside the sled with his torso a metre away inside
+ * the frame. Rebase the bind pose and both halves land in one space; the
+ * translation afterwards carries geometry, published grip points and `crew.*`
+ * bone rest positions together.
+ */
+function localBind(B: Bind, origin: V3): Bind {
+  const d = new THREE.Vector3(origin[0], 0, origin[2]);
+  const out = {} as Bind;
+  for (const b of BONE_ORDER) out[b] = B[b].clone().sub(d);
+  return out;
+}
+
+/**
+ * One dressed artillerist, built in his own local space — see `localBind`, and
+ * pass a rebased bind pose or he comes apart. Hooded — that is the 砲's crown
+ * tag and it does not move — in a short tunic under a light two-row harness,
+ * with puttees, boots and a 環首刀 at the hip. Built from explicit parts rather
+ * than `body.figure` so every pigment lands in a bucket this unit already pays
+ * for.
  */
 function crewFigure(P: Parts, m: Metrics, B: Bind, look: CrewLook): PartGroup {
   const v = (p: THREE.Vector3): V3 => [p.x, p.y, p.z];
@@ -1971,25 +1998,44 @@ const buildCannon = (ctx: UnitBuildContext): PartGroup => {
   // rig builder is deterministic, so rebuilding crew A's rig afterwards gives
   // back exactly the skeleton his geometry was authored against.
   const probeB = ctx.useRig({ origin: L.crewB });
-  const gripB =
-    rope.fixedL ?? haulGrip(probeB.metrics, L.crewB, -1, probeB.metrics.shoulderY + 0.02 * h);
+  // "Reduced scale": the second man is built a hair smaller so the pair reads
+  // as two people rather than one mesh used twice.
+  const sc = 0.93;
+  // A *machine-fixed* grip — the Chu capstan bars — is geometry crew B does not
+  // own and is not scaled with him, so his bind pose has to be solved against
+  // the grip pre-divided by his reduction. Skip this and the 7% shrink about his
+  // feet drags both fists that fraction of the way back toward his standing
+  // point, which on the Chu bar is a whole fist's width: the bar ends up beside
+  // his hand instead of through it. A haul rope needs none of this — it is
+  // routed through the grip points his fists actually publish, afterwards.
+  const preScale = (p: V3): V3 => [
+    L.crewB[0] + (p[0] - L.crewB[0]) / sc,
+    p[1] / sc,
+    L.crewB[2] + (p[2] - L.crewB[2]) / sc,
+  ];
+  const gripB = rope.fixedL
+    ? { high: preScale(rope.fixedL.high), low: preScale(rope.fixedL.low) }
+    : haulGrip(probeB.metrics, L.crewB, -1, probeB.metrics.shoulderY + 0.02 * h);
   const offB: Offsets = {
     ...braceOffsets(probeB, L.crewB, L.chu ? 0.15 : 0.85),
     ...gripOffsets(probeB, gripB, -1),
   };
   const rigB = ctx.useRig({ origin: L.crewB, offsets: offB });
-  const crewB = crewFigure(P, rigB.metrics, rigB.bindWorld, look);
+  // Built in his own space, then stood on his feet beside the sled — the rig is
+  // already out there, only the geometry has to be brought to it. See
+  // `localBind`; handing `crewFigure` a raw `bindWorld` scatters the man.
+  const bindB = localBind(rigB.bindWorld, L.crewB);
+  const crewB = crewFigure(P, rigB.metrics, bindB, look);
   bakeOntoCrewBones(crewB);
-  crewB.bones.push(...crewBoneSpecs(rigB.bindWorld));
-  // "Reduced scale": the second man is built a hair smaller so the pair reads
-  // as two people rather than one mesh used twice.
-  const sc = 0.93;
+  crewB.bones.push(...crewBoneSpecs(bindB));
+  // He is still standing on his own origin here, so the reduction is about his
+  // feet and needs no re-centring; the translation then puts him on the ground
+  // beside the sled.
   P.transformGroup(
     crewB,
     new THREE.Matrix4()
       .makeTranslation(L.crewB[0], 0, L.crewB[2])
-      .multiply(new THREE.Matrix4().makeScale(sc, sc, sc))
-      .multiply(new THREE.Matrix4().makeTranslation(-L.crewB[0], 0, -L.crewB[2])),
+      .multiply(new THREE.Matrix4().makeScale(sc, sc, sc)),
   );
   const gripBL = crewB.points.gripL.clone();
   const gripBR = crewB.points.gripR.clone();
@@ -2011,7 +2057,12 @@ const buildCannon = (ctx: UnitBuildContext): PartGroup => {
     ...gripOffsets(probeA, gripA, 1),
   };
   const rigA = ctx.useRig({ origin: L.crewA, offsets: offA });
-  const crewA = crewFigure(P, rigA.metrics, rigA.bindWorld, look);
+  const crewA = crewFigure(P, rigA.metrics, localBind(rigA.bindWorld, L.crewA), look);
+  // Same rebasing, same reason. Crew A is skinned rather than baked, so this
+  // has to happen before the factory solves his weights against `rigA` — a
+  // torso sitting a metre from every bone it is supposed to belong to gets
+  // whatever the distance field falls back to.
+  P.transformGroup(crewA, new THREE.Matrix4().makeTranslation(L.crewA[0], 0, L.crewA[2]));
 
   const merged = P.mergeGroups(g, crewB, crewA);
   g.parts = merged.parts;
