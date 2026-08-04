@@ -43,7 +43,23 @@ describe('perft from the standard opening', () => {
   it('depth 1 = 44', () => expect(perft(pos, 1)).toBe(44));
   it('depth 2 = 1920', () => expect(perft(pos, 2)).toBe(1920));
   it('depth 3 = 79666', () => expect(perft(pos, 3)).toBe(79666));
-  it('depth 4 = 3290240', { timeout: 120_000 }, () => expect(perft(pos, 4)).toBe(3290240));
+  /**
+   * Split by root move and yielded between them. A single 3.3-million-node call
+   * blocks the event loop for long enough that the test runner's own progress
+   * channel times out and reports a spurious unhandled error; summing the
+   * divide is the same tree, one root move at a time.
+   */
+  it('depth 4 = 3290240', { timeout: 180_000 }, async () => {
+    const p = new Position(START_FEN);
+    let total = 0;
+    for (const { move } of perftDivide(p, 1)) {
+      p.makeMove(move);
+      total += perft(p, 3);
+      p.unmakeMove();
+      await new Promise((r) => setTimeout(r, 0));
+    }
+    expect(total).toBe(3290240);
+  });
 
   it('the position is unchanged after a deep perft', () => {
     const p = new Position(START_FEN);

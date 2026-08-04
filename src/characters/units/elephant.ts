@@ -648,13 +648,20 @@ function buildEars(ctx: UnitBuildContext, d: Dims, g: PartGroup, headZ: number, 
         // two hard corners either side of the head instead of blending into
         // one hexagonal blob, and from the side its top edge breaks the
         // otherwise flat topline.
-        const flare = 0.55 + Math.sin(Math.min(1, t * 1.05) * Math.PI) * 0.78;
+        // A PLATEAU, not a bump. Raising the exponent flattens the top of the
+        // flare curve, so the ear's outer margin is a long near-vertical edge
+        // with tapered corners — a plate standing off the head — instead of a
+        // lens that melts into the body's own outline. The notch is applied in
+        // both x and z so the margin reads as scalloped from the front as well
+        // as from the side.
+        const flare =
+          0.6 + 0.7 * Math.pow(Math.max(0, Math.sin(Math.min(1, t * 1.1) * Math.PI)), 0.45);
         const fold = r === 0 ? -L * 0.035 * u : 0;
-        const scallop = c === cols - 1 ? Math.sin(t * 8.5) * S * 0.03 : 0;
+        const notch = c === cols - 1 ? Math.sin(t * 8.5) : 0;
         row.push([
-          s * (HW * 0.56 + u * HW * flare),
+          s * (HW * 0.56 + u * HW * flare + notch * S * 0.022),
           base + S * (0.42 - t * 0.78) - u * S * 0.06,
-          headZ + L * (u * 0.26) + scallop + t * L * 0.035 + fold,
+          headZ + L * (u * 0.26) + notch * S * 0.03 + t * L * 0.035 + fold,
         ]);
       }
       grid.push(row);

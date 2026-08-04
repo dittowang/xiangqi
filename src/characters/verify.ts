@@ -85,6 +85,141 @@ function stubMaterials(): GongbiMaterials & { count(): number } {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Winding and normal audit
+// ---------------------------------------------------------------------------
+
+export interface GeometryAudit {
+  triangles: number;
+  /** Triangles whose stored normal disagrees with their vertex winding. */
+  badWinding: number;
+  /** Directed edges with no opposing twin — zero means a closed manifold. */
+  openEdges: number;
+  closed: boolean;
+  /** Divergence-theorem volume. Positive on a correctly wound closed solid. */
+  volume: number;
+  /** Fraction of faces whose normal points away from the mesh centroid. */
+  outwardFrac: number;
+}
+
+/**
+ * The check that catches inside-out geometry.
+ *
+ * Three independent tests, because each catches a different failure:
+ *
+ *  1. **Winding vs stored normal.** Every builder here computes a flat normal
+ *     from the vertex order, so the two must agree exactly. They disagree when
+ *     something has post-processed positions without re-ordering triangles —
+ *     a mirror that negated X, a matrix with a negative determinant.
+ *
+ *  2. **Closure.** Every directed edge in a closed solid must have exactly one
+ *     twin running the other way. An unmatched edge means a hole, and a hole in
+ *     an inverted-hull outline is a hole in the contour.
+ *
+ *  3. **Signed volume.** On a closed solid this is the rigorous form of "the
+ *     normals point away from the middle": it is positive when the surface is
+ *     wound outward and negative when the solid is inside out. This is what
+ *     catches a whole loft or shell built the wrong way round, which tests 1
+ *     and 2 both pass happily.
+ *
+ * The centroid-agreement fraction is reported rather than asserted, because an
+ * open sheet legitimately has faces pointing both ways.
+ */
+export function auditGeometry(g: THREE.BufferGeometry): GeometryAudit {
+  const pos = g.getAttribute('position') as THREE.BufferAttribute;
+  const nor = g.getAttribute('normal') as THREE.BufferAttribute | undefined;
+  const tris = pos.count / 3;
+  const P = pos.array as ArrayLike<number>;
+
+  let cx = 0;
+  let cy = 0;
+  let cz = 0;
+  for (let i = 0; i < pos.count; i++) {
+    cx += P[i * 3];
+    cy += P[i * 3 + 1];
+    cz += P[i * 3 + 2];
+  }
+  cx /= pos.count || 1;
+  cy /= pos.count || 1;
+  cz /= pos.count || 1;
+
+  const edges = new Map<string, number>();
+  const key = (a: number, b: number): string => {
+    const q = (i: number) =>
+      `${Math.round(P[i * 3] * 1e5)},${Math.round(P[i * 3 + 1] * 1e5)},${Math.round(P[i * 3 + 2] * 1e5)}`;
+    return `${q(a)}|${q(b)}`;
+  };
+
+  let badWinding = 0;
+  let outward = 0;
+  let volume = 0;
+
+  for (let t = 0; t < tris; t++) {
+    const i0 = t * 3;
+    const i1 = t * 3 + 1;
+    const i2 = t * 3 + 2;
+    const ax = P[i0 * 3];
+    const ay = P[i0 * 3 + 1];
+    const az = P[i0 * 3 + 2];
+    const bx = P[i1 * 3];
+    const by = P[i1 * 3 + 1];
+    const bz = P[i1 * 3 + 2];
+    const gx = P[i2 * 3];
+    const gy = P[i2 * 3 + 1];
+    const gz = P[i2 * 3 + 2];
+
+    const ux = bx - ax;
+    const uy = by - ay;
+    const uz = bz - az;
+    const vx = gx - ax;
+    const vy = gy - ay;
+    const vz = gz - az;
+    let nx = uy * vz - uz * vy;
+    let ny = uz * vx - ux * vz;
+    let nz = ux * vy - uy * vx;
+    const len = Math.hypot(nx, ny, nz);
+    if (len > 1e-12) {
+      nx /= len;
+      ny /= len;
+      nz /= len;
+      if (nor) {
+        const d = nx * nor.getX(i0) + ny * nor.getY(i0) + nz * nor.getZ(i0);
+        if (d < 0.99) badWinding++;
+      }
+      const fx = (ax + bx + gx) / 3 - cx;
+      const fy = (ay + by + gy) / 3 - cy;
+      const fz = (az + bz + gz) / 3 - cz;
+      if (nx * fx + ny * fy + nz * fz > 0) outward++;
+    }
+    // Divergence theorem: 6V = Σ a · (b × c)
+    volume += (ax * (by * gz - bz * gy) + ay * (bz * gx - bx * gz) + az * (bx * gy - by * gx)) / 6;
+
+    for (const [p, q] of [
+      [i0, i1],
+      [i1, i2],
+      [i2, i0],
+    ]) {
+      const k = key(p, q);
+      edges.set(k, (edges.get(k) ?? 0) + 1);
+    }
+  }
+
+  let openEdges = 0;
+  for (const [k] of edges) {
+    const [a, b] = k.split('|');
+    if (!edges.has(`${b}|${a}`)) openEdges++;
+  }
+
+  return {
+    triangles: tris,
+    badWinding,
+    openEdges,
+    closed: openEdges === 0 && tris > 0,
+    volume,
+    outwardFrac: tris > 0 ? outward / tris : 1,
+  };
+}
+
 function pad(s: string | number, n: number, right = false): string {
   const t = String(s);
   return right ? t.padStart(n) : t.padEnd(n);

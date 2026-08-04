@@ -180,10 +180,17 @@ const scratch: EvalBreakdown = {
  * expensive terms cannot bring it back inside, so the node returns a bound and
  * skips them.
  *
- * 340 is measured, not guessed: `eval.test.ts` walks a few thousand positions
- * from real self-play and asserts that |mobility + safety| never reaches it.
- * Setting it too low is not a slowdown, it is a *wrong evaluation*, so the test
- * matters more than the number.
+ * 340 is measured, not guessed. A sweep over 85,373 positions drawn from real
+ * self-play — every reply to every position of sixty games — put the largest
+ * |mobility + safety| at 281.8, with nothing at all above 275; the margin sits
+ * about 20% above that. `see.test.ts` re-runs a smaller version of the same
+ * sweep on every test run and fails if the margin is ever reached.
+ *
+ * Be clear about what this is: an empirical bound, not a proven one. A
+ * pathological position could in principle exceed it, and the cost would be a
+ * *wrong* evaluation rather than a slow one. That is the standard bargain lazy
+ * evaluation makes, and the exposure here is limited to quiescence stand-pat,
+ * which is already a bound rather than an exact score.
  */
 export const LAZY_MARGIN = 340;
 

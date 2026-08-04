@@ -71,7 +71,9 @@ describe('mate finding', () => {
     const solverMoves = movesThatForceMateIn(pos, 5).map(moveToIccs);
     expect(solverMoves.length).toBeGreaterThan(0);
     expect(solverMoves).toContain(moveToIccs(result.move));
-  });
+    // The independent solver is full-width with no pruning at all, so it takes
+    // seconds on a contended machine — well past vitest's 5s default.
+  }, 120_000);
 
   it('prefers the faster mate when two are available', () => {
     const pos = positionOf({ e9: 'k', a8: 'R', i8: 'R', d0: 'K', a0: 'R' }, 'w');

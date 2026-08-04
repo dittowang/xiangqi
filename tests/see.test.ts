@@ -156,7 +156,7 @@ describe('see', () => {
     expect(pos.keyLo).toBe(key);
   });
 
-  it('agrees with a brute-force swap-off over a real game', () => {
+  it('agrees with a brute-force swap-off over a real game', async () => {
     // Play a short game and check every capture against an independent,
     // deliberately slow recomputation of the same exchange.
     const searcher = new Searcher(16);
@@ -174,9 +174,10 @@ describe('see', () => {
         maxDepth: 3, timeMs: 0, nodeLimit: 2000, pickSeed: ply,
       });
       pos.makeMove(r.move);
+      if (ply % 10 === 0) await new Promise((res) => setTimeout(res, 0));
     }
     expect(checked).toBeGreaterThan(100);
-  }, 120_000);
+  }, 180_000);
 });
 
 /**
@@ -243,7 +244,7 @@ describe('incremental evaluation terms', () => {
     return { mg, eg, soldier, phase };
   }
 
-  it('stay exact across a two-ply exhaustive make/unmake walk', () => {
+  it('stay exact across a two-ply exhaustive make/unmake walk', async () => {
     const pos = new Position(START_FEN);
     const check = () => {
       const want = recompute(pos);
@@ -264,8 +265,19 @@ describe('incremental evaluation terms', () => {
       }
     };
     check();
-    walk(2);
-  }, 120_000);
+    // One root move at a time, yielding in between so the runner's progress
+    // channel does not time out on a single long synchronous block.
+    const roots = new MoveList();
+    generateLegalMoves(pos, roots);
+    for (const m of roots.toArray()) {
+      pos.makeMove(m);
+      check();
+      walk(1);
+      pos.unmakeMove();
+      check();
+      await new Promise((r) => setTimeout(r, 0));
+    }
+  }, 180_000);
 
   it('the PST sum matches a full re-parse of the same position', () => {
     // Replaying the FEN rebuilds every term from scratch, so an incremental

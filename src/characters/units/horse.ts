@@ -258,7 +258,7 @@ function buildSteed(ctx: UnitBuildContext, d: Dims): Steed {
   const chestY = barrelAt(d, -L * 0.3).y;
   const seatY = barrelAt(d, -L * 0.04).y + barrelAt(d, -L * 0.04).ry + W * 0.072;
   const pollP: V3 = [0, W * 1.175, -L * 0.615];
-  const muzzleP: V3 = [0, W * 0.845, -L * 0.86];
+  const muzzleP: V3 = [0, W * 0.955, -L * 0.9];
 
   g.bones.push(
     {
@@ -389,13 +389,16 @@ function buildSteed(ctx: UnitBuildContext, d: Dims): Steed {
   // separate jowl block either side. The jowl is the shape that says *horse* in
   // relief carving — a heavy round cheek with a hard undercut behind it.
   {
+    // Long and shallow. A horse's head is about twice as long as it is deep;
+    // built any squarer it reads as a brick on the end of the neck, which is
+    // the commonest way a stylised horse stops being a horse.
     const head = prim.sweep(
       [
-        { p: [0, W * 1.175, -L * 0.615] as V3, rx: HW * 0.30, rz: W * 0.125, squareness: 0.60 },
-        { p: [0, W * 1.115, -L * 0.665] as V3, rx: HW * 0.345, rz: W * 0.165, squareness: 0.62 }, // brow
-        { p: [0, W * 1.02, -L * 0.725] as V3, rx: HW * 0.285, rz: W * 0.150, squareness: 0.64 },
-        { p: [0, W * 0.925, -L * 0.795] as V3, rx: HW * 0.215, rz: W * 0.118, squareness: 0.66 },
-        { p: [0, W * 0.868, -L * 0.845] as V3, rx: HW * 0.235, rz: W * 0.112, squareness: 0.62 }, // muzzle
+        { p: [0, W * 1.175, -L * 0.615] as V3, rx: HW * 0.30, rz: W * 0.105, squareness: 0.60 },
+        { p: [0, W * 1.13, -L * 0.678] as V3, rx: HW * 0.345, rz: W * 0.128, squareness: 0.62 }, // brow
+        { p: [0, W * 1.06, -L * 0.752] as V3, rx: HW * 0.285, rz: W * 0.112, squareness: 0.64 },
+        { p: [0, W * 0.995, -L * 0.838] as V3, rx: HW * 0.205, rz: W * 0.085, squareness: 0.66 },
+        { p: [0, W * 0.955, -L * 0.898] as V3, rx: HW * 0.225, rz: W * 0.082, squareness: 0.62 }, // muzzle
       ],
       { sides: 6, name: 'horseHead' },
     );
@@ -405,13 +408,13 @@ function buildSteed(ctx: UnitBuildContext, d: Dims): Steed {
 
     // Jowl / cheek: a bevelled block set behind and below the eye.
     const jowlR = prim.bevelSlab({
-      w: HW * 0.20,
-      h: W * 0.175,
-      d: W * 0.185,
-      bevel: W * 0.035,
+      w: HW * 0.19,
+      h: W * 0.145,
+      d: W * 0.15,
+      bevel: W * 0.032,
       name: 'horseJowl',
     });
-    prim.place(jowlR, { pos: [HW * 0.26, W * 1.095, -L * 0.655], rot: [0.34, -0.12, 0] });
+    prim.place(jowlR, { pos: [HW * 0.26, W * 1.078, -L * 0.666], rot: [0.36, -0.12, 0] });
     g.parts.push(
       P.mkPart(jowlR, 'leather', HIDE, 'root', { name: 'horseJowlR', rigid: true, mountBone: 'horse.head' }),
     );
@@ -427,9 +430,9 @@ function buildSteed(ctx: UnitBuildContext, d: Dims): Steed {
     // the head its wedge from the side.
     const jaw = prim.sweep(
       [
-        { p: [0, W * 1.045, -L * 0.632] as V3, rx: HW * 0.235, rz: W * 0.055, squareness: 0.6 },
-        { p: [0, W * 0.955, -L * 0.72] as V3, rx: HW * 0.185, rz: W * 0.05, squareness: 0.62 },
-        { p: [0, W * 0.862, -L * 0.83] as V3, rx: HW * 0.16, rz: W * 0.045, squareness: 0.64 },
+        { p: [0, W * 1.045, -L * 0.64] as V3, rx: HW * 0.235, rz: W * 0.05, squareness: 0.6 },
+        { p: [0, W * 0.975, -L * 0.742] as V3, rx: HW * 0.185, rz: W * 0.045, squareness: 0.62 },
+        { p: [0, W * 0.928, -L * 0.862] as V3, rx: HW * 0.155, rz: W * 0.038, squareness: 0.64 },
       ],
       { sides: 5, name: 'horseJaw' },
     );
@@ -442,12 +445,12 @@ function buildSteed(ctx: UnitBuildContext, d: Dims): Steed {
     // the brow and the jowl, where a relief carver cuts it.
     for (const s of [-1, 1]) {
       const eye = prim.bevelSlab({ w: HW * 0.10, h: W * 0.045, d: W * 0.03, bevel: W * 0.012 });
-      prim.place(eye, { pos: [s * HW * 0.30, W * 1.105, -L * 0.668], rot: [0.1, s * 0.5, s * 0.22] });
+      prim.place(eye, { pos: [s * HW * 0.30, W * 1.108, -L * 0.682], rot: [0.1, s * 0.5, s * 0.22] });
       g.parts.push(
         P.mkPart(eye, 'hair', HORN, 'root', { name: 'horseEye', rigid: true, mountBone: 'horse.head' }),
       );
       const nostril = prim.bevelSlab({ w: HW * 0.075, h: W * 0.04, d: W * 0.028, bevel: W * 0.01 });
-      prim.place(nostril, { pos: [s * HW * 0.155, W * 0.882, -L * 0.845], rot: [0.35, s * 0.34, 0] });
+      prim.place(nostril, { pos: [s * HW * 0.15, W * 0.968, -L * 0.892], rot: [0.35, s * 0.34, 0] });
       g.parts.push(
         P.mkPart(nostril, 'hair', HORN, 'root', { name: 'horseNostril', rigid: true, mountBone: 'horse.head' }),
       );
@@ -688,7 +691,7 @@ function buildSteed(ctx: UnitBuildContext, d: Dims): Steed {
     for (const s of [-1, 1]) {
       g.parts.push(
         trim.boss({
-          at: [s * HW * 0.30, W * 1.075, -L * 0.685],
+          at: [s * HW * 0.30, W * 1.062, -L * 0.702],
           r: W * 0.045,
           height: W * 0.022,
           boneHint: 'root',
@@ -900,9 +903,9 @@ function buildBridle(
       P.trim.piping({
         path: [
           [s * HW * 0.20, poll[1] - W * 0.005, poll[2] - L * 0.005],
-          [s * HW * 0.30, W * 1.075, -L * 0.685],
-          [s * HW * 0.245, W * 0.955, -L * 0.755],
-          [s * HW * 0.215, W * 0.895, -L * 0.815],
+          [s * HW * 0.30, W * 1.062, -L * 0.702],
+          [s * HW * 0.245, W * 1.0, -L * 0.792],
+          [s * HW * 0.215, W * 0.968, -L * 0.862],
         ],
         r,
         boneHint: 'root',
@@ -936,9 +939,9 @@ function buildBridle(
   g.parts.push(
     P.trim.piping({
       path: [
-        [-HW * 0.30, W * 1.14, -L * 0.652],
-        [0, W * 1.155, -L * 0.665],
-        [HW * 0.30, W * 1.14, -L * 0.652],
+        [-HW * 0.30, W * 1.148, -L * 0.658],
+        [0, W * 1.162, -L * 0.672],
+        [HW * 0.30, W * 1.148, -L * 0.658],
       ],
       r,
       boneHint: 'root',
@@ -954,7 +957,7 @@ function buildBridle(
   const nb: V3[] = [];
   for (let i = 0; i <= 10; i++) {
     const a = (i / 10) * Math.PI * 2;
-    nb.push([Math.cos(a) * HW * 0.235, W * 0.925 + Math.sin(a) * W * 0.075, -L * 0.79 - Math.sin(a) * L * 0.012]);
+    nb.push([Math.cos(a) * HW * 0.225, W * 0.99 + Math.sin(a) * W * 0.062, -L * 0.845 - Math.sin(a) * L * 0.012]);
   }
   g.parts.push(
     P.trim.piping({
@@ -971,8 +974,8 @@ function buildBridle(
 
   // The bit: a bar through the mouth with a ring either side. The rings are the
   // rein anchors and the sockets the animator drives the hands to.
-  const bitY = W * 0.895;
-  const bitZ = -L * 0.815;
+  const bitY = W * 0.968;
+  const bitZ = -L * 0.868;
   const bar = P.prim.prism({
     rx0: HW * 0.035,
     y0: -HW * 0.26,
@@ -1225,19 +1228,19 @@ function buildBarding(ctx: UnitBuildContext, d: Dims, g: PartGroup): void {
   const cham = P.prim.shell(
     [
       [
-        [-HW * 0.24, W * 1.155, -L * 0.648],
-        [0, W * 1.175, -L * 0.665],
-        [HW * 0.24, W * 1.155, -L * 0.648],
+        [-HW * 0.24, W * 1.16, -L * 0.652],
+        [0, W * 1.182, -L * 0.668],
+        [HW * 0.24, W * 1.16, -L * 0.652],
       ],
       [
-        [-HW * 0.22, W * 1.02, -L * 0.735],
-        [0, W * 1.045, -L * 0.75],
-        [HW * 0.22, W * 1.02, -L * 0.735],
+        [-HW * 0.22, W * 1.062, -L * 0.755],
+        [0, W * 1.086, -L * 0.77],
+        [HW * 0.22, W * 1.062, -L * 0.755],
       ],
       [
-        [-HW * 0.17, W * 0.94, -L * 0.795],
-        [0, W * 0.955, -L * 0.805],
-        [HW * 0.17, W * 0.94, -L * 0.795],
+        [-HW * 0.17, W * 1.0, -L * 0.845],
+        [0, W * 1.018, -L * 0.855],
+        [HW * 0.17, W * 1.0, -L * 0.845],
       ],
     ],
     W * 0.012,
