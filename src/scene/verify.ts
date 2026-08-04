@@ -42,7 +42,20 @@ import {
   palaceDiagonals,
   silkSag,
 } from './board.ts';
-import { BASE_TOP_Y, adaptGlyphPath } from './bases.ts';
+import {
+  BASE_GLYPH_EM,
+  BASE_TOP_Y,
+  adaptGlyphPath,
+  glyphInkBox,
+  sealOutlineFromContours,
+  sealOutlineFromShapes,
+} from './bases.ts';
+import { signedArea } from './geometry.ts';
+// The scene never imports @ui at runtime — the module graph forbids it and the
+// board takes its glyphs by injection. This script stands in for the integration
+// layer that does the wiring, so that the incision is tested against the real
+// type engine rather than against a fixture that agrees with it by construction.
+import { getSealGlyph, glyphToContours, glyphToShapes, sealRoster } from '@ui/seal.ts';
 import { Backdrop, LAKE_Y, TERRACE_RADIUS } from './backdrop.ts';
 import { Director, PUSH_LAND_FRACTION, RETURN_SLOWDOWN, SPRING } from './camera.ts';
 import { LightingRig } from './lighting.ts';
@@ -110,22 +123,33 @@ function tris(o: THREE.Object3D): number {
 }
 
 // ---------------------------------------------------------------------------
-// A synthetic seal outline, used only to exercise the incision path.
-// The real glyphs come from @ui/seal.ts; this is a test fixture, not art.
+// The real seal source: exactly the line the integration layer writes.
 // ---------------------------------------------------------------------------
 
-function testOutline(): SealOutline {
-  const box = (x0: number, y0: number, x1: number, y1: number, ccw: boolean): number[] =>
-    ccw ? [x0, y0, x1, y0, x1, y1, x0, y1] : [x0, y0, x0, y1, x1, y1, x1, y0];
-  return {
-    contours: [
-      box(-0.45, 0.18, 0.45, 0.42, true), // a horizontal stroke
-      box(-0.06, -0.45, 0.06, 0.42, true), // a vertical stroke
-      box(-0.4, -0.42, 0.4, -0.1, true), // an enclosing stroke...
-      box(-0.3, -0.34, -0.14, -0.18, false), // ...with a counter inside it
-    ],
-  };
-}
+const seal = (ch: string): SealOutline | null =>
+  sealOutlineFromShapes(glyphToShapes(ch, { size: 1, origin: 'center' }), 1);
+
+/** Every character this subsystem asks the type engine for. */
+const CHARS_USED = [
+  '楚',
+  '河',
+  '漢',
+  '界',
+  '帥',
+  '仕',
+  '相',
+  '傌',
+  '俥',
+  '炮',
+  '兵',
+  '將',
+  '士',
+  '象',
+  '馬',
+  '車',
+  '砲',
+  '卒',
+];
 
 // ---------------------------------------------------------------------------
 
@@ -136,7 +160,7 @@ section('board construction');
 const t0 = Date.now();
 const board = new Board({
   materials,
-  seal: () => testOutline(),
+  seal,
   detail: 'high',
 });
 const buildMs = Date.now() - t0;
