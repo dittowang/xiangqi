@@ -15,6 +15,50 @@
  *                 painted into the scene.
  *   perf/       — `RenderPipeline.setQuality()` / `applyQualitySettings()`.
  *   game/       — `createRenderPipeline()` and the frame call.
+ *
+ * ---------------------------------------------------------------------------
+ * HOW main.ts DRIVES THIS
+ * ---------------------------------------------------------------------------
+ *
+ *   const pipeline = createRenderPipeline(renderer, {
+ *     width: window.innerWidth,
+ *     height: window.innerHeight,
+ *     dpr: Math.min(window.devicePixelRatio || 1, 2),
+ *     quality: QualityGovernor.probe(renderer.getContext()),
+ *     mood: 'wide',
+ *   });
+ *
+ * Then, once:
+ *   renderer.shadowMap.enabled = false;   // the CSM here replaces it entirely
+ *   renderer.toneMapping = THREE.NoToneMapping;
+ *   // outputColorSpace is irrelevant: the grade pass encodes sRGB itself.
+ *
+ * Hand `pipeline.materials` to characters/, scene/ and ui/ at construction —
+ * it satisfies `GongbiMaterials` — and after building any figure or prop, call
+ * `attachOutlines(root, pipeline.materials)` once to give it its line work.
+ *
+ * Register the pipeline with scene/lighting.ts so the rig owns the light:
+ *   const lighting = new LightingRig({ consumers: [pipeline], materials: pipeline.materials });
+ *   pipeline.setShadowSpec(lighting.csmSpec());   // whenever the mood changes
+ *
+ * Per frame, exactly one call:
+ *   pipeline.render(scene, camera, dt);
+ *
+ * That call does everything: it pushes the per-frame uniforms (so do NOT also
+ * call `materials.update()` — the mood cross-fade integrates dt and would
+ * advance twice), renders the cascades, the prepass, the main pass and the two
+ * post passes, and presents to the canvas. `renderer.render()` must not be
+ * called anywhere else in the frame.
+ *
+ * On resize:  pipeline.setSize(cssWidth, cssHeight, dpr)
+ * On a tier change from the governor:  pipeline.applyQualitySettings(settings)
+ * On bus 'fx:flash':  pipeline.flash(strength, colour)   — decays on its own
+ * On a phase change:  pipeline.setMood(key, seconds)
+ * For the harness:    pipeline.setSilhouetteMode(on), pipeline.setDebug(flag, on)
+ *
+ * The harness's `setDebug` accepts the five flags render owns — 'rampBands',
+ * 'outlineOnly', 'sobelOnly', 'normals', 'shadowCascades' — and ignores the
+ * rest, so main.ts can forward every flag to every subsystem without filtering.
  */
 
 export {

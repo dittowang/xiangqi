@@ -121,8 +121,7 @@ const FLASH_DECAY = 4.2;
  * only serves `setQuality(tier)`, which the contract requires to work on its
  * own. If the two ever disagree, the governor wins.
  */
-const RENDER_QUALITY: Record<QualityTier, Pick<QualitySettings,
-  'tier' | 'shadowMapSize' | 'cascades' | 'sobel' | 'silkWash' | 'outlines' | 'msaa' | 'maxPixelRatio' | 'particleBudget'>> = {
+const RENDER_QUALITY: Record<QualityTier, QualitySettings> = {
   ultra: { tier: 'ultra', shadowMapSize: 2048, cascades: 3, sobel: true, silkWash: true, outlines: true, msaa: 4, maxPixelRatio: 2.0, particleBudget: 2600 },
   high: { tier: 'high', shadowMapSize: 2048, cascades: 3, sobel: true, silkWash: true, outlines: true, msaa: 2, maxPixelRatio: 1.75, particleBudget: 1800 },
   medium: { tier: 'medium', shadowMapSize: 1024, cascades: 2, sobel: true, silkWash: true, outlines: true, msaa: 0, maxPixelRatio: 1.4, particleBudget: 1100 },
@@ -167,7 +166,6 @@ class ScreenPass {
     this.material.dispose();
   }
 }
-
 
 function screenMaterial(
   name: string,
@@ -285,6 +283,7 @@ export class GongbiPipeline implements RenderPipeline {
   private floatTargets: boolean;
 
   private silhouette = false;
+  private outlinesEnabled = true;
   private debugMode = DEBUG_NONE;
   private flashStrength = 0;
 
@@ -414,8 +413,12 @@ export class GongbiPipeline implements RenderPipeline {
   /** `w`/`h` are CSS pixels; targets are allocated at the drawing-buffer size. */
   setSize(w: number, h: number, dpr: number): void {
     this.dpr = dpr;
+    // `maxPixelRatio` is deliberately NOT clamped here. perf/'s governor owns
+    // the pixel ratio; clamping it a second time in render/ would mean two
+    // owners for one number, and the resulting disagreement would present as
+    // "the resolution does not respond to the quality setting".
     this.renderer.setPixelRatio(dpr);
-    this.renderer.setSize(w, h, false);
+    this.renderer.setSize(w, h);
     this.renderer.getDrawingBufferSize(_size);
     this.width = Math.max(1, Math.floor(_size.x));
     this.height = Math.max(1, Math.floor(_size.y));
@@ -442,7 +445,7 @@ export class GongbiPipeline implements RenderPipeline {
 
   setQuality(tier: QualityTier): void {
     this.tier = tier;
-    this.applyQualitySettings(RENDER_QUALITY[tier] as QualitySettings);
+    this.applyQualitySettings(RENDER_QUALITY[tier]);
   }
 
   /** The authoritative path: perf/'s governor hands its real settings through. */
@@ -452,6 +455,7 @@ export class GongbiPipeline implements RenderPipeline {
     this.shadows.setMapSize(q.shadowMapSize);
     this.shadows.setCascadeCount(q.cascades);
     this.materials.setQuality(q);
+    this.outlinesEnabled = q.outlines;
     this.linesPass.material.uniforms.uSobelEnabled.value =
       q.sobel && this.floatTargets && this.debugMode !== DEBUG_OUTLINE_ONLY ? 1 : 0;
     // MSAA lives in the framebuffer, not in a uniform: three reads `samples`
@@ -646,8 +650,17 @@ export class GongbiPipeline implements RenderPipeline {
       // scene/'s job.
       scene.background = this.silhouetteBackground;
     }
+    // `QualitySettings.outlines` is the floor's last resort and is expected to
+    // stay true at every tier — the line work IS the art direction. Honouring
+    // it costs one loop over an array we already have.
+    if (!this.outlinesEnabled) {
+      for (let i = 0; i < this.hulls.length; i++) this.hulls[i].visible = false;
+    }
     renderer.setRenderTarget(this.sceneRT);
     renderer.render(scene, camera);
+    if (!this.outlinesEnabled) {
+      for (let i = 0; i < this.hulls.length; i++) this.hulls[i].visible = true;
+    }
     scene.background = prevBackground;
 
     // --- 4. post -----------------------------------------------------------

@@ -7,11 +7,26 @@
  *
  * Each pigment is a four-band ramp, darkest to lightest, in the order a gongbi
  * painter would lay them: the 罩染 undertone, the body colour, the lifted
- * plane, and the 提白 accent. The bands are authored so that all pigments share
- * one value ladder — measure `luma()` across any two pigments at the same band
- * index and they land within a few percent of each other. That shared ladder is
- * what keeps the cinnabar Han army and the ink-lacquer Chu army from tearing a
- * frame in half when they meet in the middle of the board.
+ * plane, and the 提白 accent.
+ *
+ * The pigments sit in three value registers, not one — a painting needs range,
+ * and collapsing everything onto a single ladder would flatten the frame:
+ *
+ *   deep    墨 and 玄漆, the contour and the Chu lacquer
+ *   field   石青 石綠 朱砂 赭石 花青 銀朱 石色 — the body of the image. These
+ *           genuinely do share a ladder: band 2 spans 0.092..0.149 linear luma
+ *           across all seven, so no field pigment can shout down another.
+ *   high    藤黃 泥金 蛤白, reserved for silk ground, metal leaf and 提白
+ *
+ * The load-bearing claim is narrower than "one ladder for everything", and it
+ * is this: the two ARMY LACQUERS must not tear a frame in half when they meet
+ * in the middle of the board. 玄漆 is authored at 0.78x 朱砂's luma at every
+ * band — close enough to share the ladder, still unmistakably the darker army.
+ * Black lacquer has real sheen under a key light; it is not a hole in the frame,
+ * and rendering it as one is the commonest way to lose the Chu side visually.
+ *
+ * `luma()` is exported so this is checkable rather than aspirational; the
+ * renderer's self-check prints the whole table on every run.
  *
  * Colours are authored in sRGB hex, which is how they were tuned by eye against
  * captured frames. Convert with `srgbToLinear()` before they reach a shader.
@@ -63,7 +78,12 @@ export const PIGMENTS: Record<PigmentName, Pigment> = {
   gamboge: P('gamboge', '藤黃', ['#523810', '#966C1A', '#CF9F30', '#E9C664'], 0.56),
   shellWhite: P('shellWhite', '蛤白', ['#6A5F4C', '#9E9179', '#D3C8AF', '#F2E9D6'], 0.78),
   ink: P('ink', '墨', ['#080706', '#141210', '#26221D', '#3E382F'], 0.10),
-  inkLacquer: P('inkLacquer', '玄漆', ['#101319', '#20242C', '#353B47', '#565D6C'], 0.22),
+  // Retargeted against 朱砂 by scaling each band uniformly in LINEAR space,
+  // which moves value while leaving hue and saturation untouched. Measured
+  // luma: 0.0129 / 0.0463 / 0.1062 / 0.2007 against cinnabar's 0.0162 /
+  // 0.0592 / 0.1364 / 0.2593. Before this the gap at band 2 was 3.1x and the
+  // Chu army read as a silhouette-shaped hole beside the Han army.
+  inkLacquer: P('inkLacquer', '玄漆', ['#1A1E26', '#373D49', '#535C6E', '#737C90'], 0.34),
   gold: P('gold', '泥金', ['#432F0F', '#836318', '#BE9430', '#E4C66A'], 0.52),
   indigo: P('indigo', '花青', ['#131C2C', '#233650', '#3A587E', '#6685AA'], 0.36),
   vermilionDeep: P('vermilionDeep', '銀朱', ['#380C09', '#6C1810', '#A02A1B', '#C55337'], 0.38),
