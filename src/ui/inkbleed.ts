@@ -113,10 +113,13 @@ void main() {
 `;
 
 /**
- * `uReach` is signed: positive means Red leads and the stain grows toward
- * Black's end (v = 0). `vUv.y` runs 0 at Black's end to 1 at Red's end because
- * the quad is laid with its +Y toward -Z and the canvas is flipped on upload —
- * see `hud.ts`, which owns that convention for every panel.
+ * `uReach` is signed: positive means Red leads, so the stain grows toward
+ * BLACK's end.
+ *
+ * The quad is laid with its local +Y along world -Z (see `hud.ts`, which owns
+ * that convention for every panel), so `vUv.y = 1` is the far end of the board,
+ * which is Black's. Getting this backwards is invisible in code review and
+ * unmissable in a frame: the ink stains the winner.
  */
 const FRAG = /* glsl */ `
 precision highp float;
@@ -143,8 +146,9 @@ void main() {
   float wetted = smoothstep(0.004, 0.03, reach);
 
   // Distance from the river toward the LOSING end, 0 at the river, 1 at the end.
+  // Red ahead (uReach > 0) puts the loser at v = 1, so d rises with v.
   float c = (vUv.y - 0.5) * 2.0;
-  float d = -c * sign(uReach);
+  float d = c * sign(uReach);
 
   // The front wanders, and it wanders more the further it has travelled: a
   // stain an inch across is nearly round, a stain a foot across is all fingers.
@@ -156,12 +160,14 @@ void main() {
   float halo = smoothstep(reach + 0.13, reach - 0.01, t) - body;
   float rim = smoothstep(0.085, 0.0, abs(t - reach));
 
-  // Nothing on the winning side of the river, and the source edge is soft
-  // because ink is loaded onto a wet line, not stamped.
-  float half_ = smoothstep(-0.03, 0.035, d);
+  // Nothing on the winning side of the river. The source edge takes the same
+  // wander as the front, at reduced amplitude: ink is loaded onto a wet line
+  // and creeps back over it a little, and a ruler-straight tail here is the one
+  // thing that would give the whole strip away as a gauge.
+  float half_ = smoothstep(-0.055, 0.06, d + wander * 0.45);
 
-  float density = 0.62 + 0.38 * field.g;
-  float a = (body * 0.95 + max(halo, 0.0) * 0.26) * density * half_ * wetted;
+  float density = 0.74 + 0.26 * field.g;
+  float a = (body + max(halo, 0.0) * 0.26) * density * half_ * wetted;
   // Fine fibre breaks the body up so the stain is never a flat swatch.
   a *= 0.86 + 0.14 * field.b;
 

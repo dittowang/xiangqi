@@ -25,7 +25,7 @@
  */
 
 import { Noise } from '@core/noise.ts';
-import { band, hexToRgb, type PigmentName } from '@core/palette.ts';
+import { band, hexToRgb, shiftHex, type PigmentName } from '@core/palette.ts';
 import { seedFor } from '@core/rng.ts';
 import { clamp } from '@core/types.ts';
 import { drawText, measureText, type DrawOptions } from '@ui/seal.ts';
@@ -40,6 +40,8 @@ const WEAVE_PERIOD = 5.5;
 const WEAVE_WANDER = 1.15;
 /** Frequency of the age blotch, in cycles per 256 texels. */
 const BLOTCH_FREQ = 2.4;
+/** Lattice step the blotch is evaluated on before interpolation, in texels. */
+const BLOTCH_STEP = 6;
 /** Frequency of the paper's long fibres across the sheet. */
 const FIBRE_ACROSS = 0.42;
 const FIBRE_ALONG = 0.022;
@@ -102,8 +104,11 @@ export function paintGround(
   const n = new Noise(rng.int(1, 0x7fffffff));
   const nWander = new Noise(rng.int(1, 0x7fffffff));
 
-  const base = hexToRgb(band(opts.ground, opts.groundBand));
-  const aged = hexToRgb(band(opts.age ?? opts.ground, opts.ageBand ?? opts.groundBand));
+  const lighten = opts.lighten ?? 0;
+  const base = hexToRgb(shiftHex(band(opts.ground, opts.groundBand), lighten));
+  const aged = hexToRgb(
+    shiftHex(band(opts.age ?? opts.ground, opts.ageBand ?? opts.groundBand), lighten),
+  );
 
   const weave = opts.weave ?? 0;
   const fibre = opts.fibre ?? 0;
@@ -116,10 +121,40 @@ export function paintGround(
   const short = Math.min(w, h);
   const wearBand = short * WEAR_MARGIN;
 
+  // Four-octave fbm is by far the most expensive term here and the only one
+  // that is genuinely low-frequency — one blotch spans a hundred texels. It is
+  // therefore evaluated on a coarse lattice and interpolated, which takes the
+  // ground for a whole HUD from about half a second to about fifty
+  // milliseconds. The other three terms are per-texel by nature and stay so.
+  const gw = Math.ceil(w / BLOTCH_STEP) + 1;
+  const gh = Math.ceil(h / BLOTCH_STEP) + 1;
+  const blotGrid = new Float32Array(gw * gh);
+  for (let j = 0; j < gh; j++) {
+    for (let i = 0; i < gw; i++) {
+      blotGrid[j * gw + i] = n.fbm(
+        ((i * BLOTCH_STEP) / 256) * BLOTCH_FREQ,
+        ((j * BLOTCH_STEP) / 256) * BLOTCH_FREQ,
+        4,
+      );
+    }
+  }
+
   for (let y = 0; y < h; y++) {
+    const gy = y / BLOTCH_STEP;
+    const j0 = Math.floor(gy);
+    const fy = gy - j0;
     for (let x = 0; x < w; x++) {
       // -- age blotch: which pigment this patch of sheet is made of ---------
-      const blot = n.fbm((x / 256) * BLOTCH_FREQ, (y / 256) * BLOTCH_FREQ, 4);
+      const gx = x / BLOTCH_STEP;
+      const i0 = Math.floor(gx);
+      const fx = gx - i0;
+      const b00 = blotGrid[j0 * gw + i0];
+      const b10 = blotGrid[j0 * gw + i0 + 1];
+      const b01 = blotGrid[(j0 + 1) * gw + i0];
+      const b11 = blotGrid[(j0 + 1) * gw + i0 + 1];
+      const bTop = b00 + (b10 - b00) * fx;
+      const bBot = b01 + (b11 - b01) * fx;
+      const blot = bTop + (bBot - bTop) * fy;
       const mix = clamp((blot - 0.32) * 1.9, 0, 1) * ageAmount;
       let r = base.r + (aged.r - base.r) * mix;
       let g = base.g + (aged.g - base.g) * mix;

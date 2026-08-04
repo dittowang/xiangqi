@@ -107,33 +107,45 @@ const PANEL_LIFT = 0.007;
 const ROWS = 5;
 const SLOTS = ROWS + 1;
 
-const SCROLL_W = 1.55;
+const SCROLL_W = 1.42;
 /** One move-pair's share of the scroll's length. */
-const SLOT_LEN = 1.52;
-const SCROLL_LEN = ROWS * SLOT_LEN; // 7.6
+const SLOT_LEN = 1.72;
+const SCROLL_LEN = ROWS * SLOT_LEN; // 8.6
 /** Where the scroll's centre sits along Z. */
-const SCROLL_Z = 0.15;
+const SCROLL_Z = -0.55;
 
 const SLIP_W = SCROLL_W;
-const SLIP_LEN = 1.9;
+const SLIP_LEN = 1.85;
 /** Gap between the title slip's foot and the scroll's head. */
-const SLIP_GAP = 0.26;
+const SLIP_GAP = 0.16;
 
 /**
  * Nominal X of the scroll's centre, and how far in it is allowed to be pulled
- * on a narrow window. The lower bound clears the table's frame; anything closer
- * and the sheet would lie half on the stone and half on the timber.
+ * on a narrow window.
+ *
+ * Both bounds are measured, not chosen: at the resting framing (`default`, 16:9)
+ * the terrace runs out to x ≈ 9.9 at the board's midline and x ≈ 8.1 at its near
+ * edge, and a body lying on the right rail projects its height out to about
+ * x = 6.3 in screen terms. The scroll has to start outside that and finish
+ * inside the near-edge limit, which is a window barely two units wide.
  */
-const SIDE_X_WIDE = 6.86;
-const SIDE_X_MIN = 6.42;
+const SIDE_X_WIDE = 7.5;
+const SIDE_X_MIN = 6.8;
 
-const BAND_W = 0.82;
+const BAND_W = 0.86;
 const BAND_LEN = 9.0;
-const BAND_X_WIDE = -6.6;
-const BAND_X_MIN = -6.28;
+const BAND_X_WIDE = -7.0;
+const BAND_X_MIN = -6.6;
 
-/** Where the fallen lie: the middle of the table's timber rail, left and right. */
-const RAIL_X = 5.8;
+/**
+ * Where the fallen lie: on the table's timber rail, left and right.
+ *
+ * The rail's flat top runs 5.48..6.22, and 5.8 is its centre — but a body lying
+ * 0.7 above the terrace projects outward from the camera axis, and at the
+ * resting framing that put the row visually astride the rail's outer arris.
+ * Pulled in so the bodies read as lying ON the timber.
+ */
+const RAIL_X = 5.62;
 /** Usable half-length of a rail, leaving the mitres clear. */
 const RAIL_HALF_Z = BOARD_HALF_Z + 0.05;
 
@@ -151,7 +163,7 @@ const WEIGHT_LEN = SCROLL_W * 1.16;
 const WEIGHT_W = 0.115;
 const WEIGHT_H = 0.075;
 /** Fallen figures are built at this fraction of their playing size. */
-const FALLEN_SCALE = 0.5;
+const FALLEN_SCALE = 0.55;
 /** Seconds a body takes to topple once it arrives. */
 const FALL_TIME = 0.55;
 
@@ -165,6 +177,15 @@ const INK_RATE = 1.35;
 const PAPER: PigmentName = 'shellWhite';
 const PAPER_BAND = 2;
 const PAPER_AGE: PigmentName = 'ochre';
+/**
+ * How far the paper is taken down the value ladder.
+ *
+ * Measured against a real frame: 蛤白 band 2 drawn unlit came out as the
+ * brightest thing in the picture, brighter than lit silk, and pulled the eye off
+ * the board. Everything else in the frame has been through a key at 2.5 and a
+ * four-band ramp; a sheet that is its own final value has to be authored lower.
+ */
+const PAPER_LIGHTEN = -0.15;
 const SILK: PigmentName = 'gamboge';
 const SILK_BAND = 2;
 const RULE: PigmentName = 'ochre';
@@ -176,12 +197,18 @@ const RECORD_INK: Record<Side, { pigment: PigmentName; band: 0 | 1 | 2 | 3 }> = 
   [Side.Black]: { pigment: 'ink', band: 1 },
 };
 
+/** Hoisted so nothing that runs from `update()` builds an array to iterate. */
+const SIDES = [Side.Red, Side.Black] as const;
+
 // ===========================================================================
 // Options
 // ===========================================================================
 
 export interface HudOptions {
-  /** Injected, never constructed here. Reserved for future lit HUD props. */
+  /**
+   * Injected, never constructed here. Used for the stone bars across the scroll,
+   * which are the HUD's one genuinely lit surface — see `WEIGHT_LEN`.
+   */
   materials: GongbiMaterials;
   /** The fallen are real units, so the factory is not optional. */
   characters: CharacterFactory;
@@ -268,7 +295,13 @@ varying vec2 vUv;
 void main() {
   vec2 uv = vec2(vUv.x, vUv.y * uWindow.y + uWindow.x);
   vec4 c = texture2D(uMap, uv);
-  float ends = smoothstep(0.0, uEndFade, vUv.y) * smoothstep(1.0, 1.0 - uEndFade, vUv.y);
+  // smoothstep with edge0 == edge1 divides by zero. A sheet whose ends are cut
+  // rather than faded is a legitimate ask (the title slip is a whole sheet, so
+  // its own deckle is the silhouette), and it must not come out as NaN.
+  float ends = 1.0;
+  if (uEndFade > 0.0) {
+    ends = smoothstep(0.0, uEndFade, vUv.y) * smoothstep(1.0, 1.0 - uEndFade, vUv.y);
+  }
   gl_FragColor = vec4(c.rgb, c.a * ends * uOpacity);
 }
 `;
@@ -441,11 +474,12 @@ class InSceneHud implements SceneHud {
       groundBand: PAPER_BAND,
       age: PAPER_AGE,
       ageBand: 1,
-      ageAmount: 0.3,
+      ageAmount: 0.42,
       weave: 0.16,
       fibre: 0.46,
       tooth: 0.55,
       wear: 0.4,
+      lighten: PAPER_LIGHTEN,
       seed: 'scroll',
     });
     // Only the long sides are torn: the ends run off the visible window, and a
@@ -457,7 +491,9 @@ class InSceneHud implements SceneHud {
     const face = makeCanvas(w, h);
     this.scrollCtx = face.ctx;
     this.scrollTex = makePanelTexture(face.canvas);
-    this.scrollMat = createPanelMaterial(this.scrollTex, 0.045);
+    // Small: this fade has to sell "the scroll continues past here" without
+    // eating into the first and last rows, which sit close to the ends.
+    this.scrollMat = createPanelMaterial(this.scrollTex, 0.022);
     (this.scrollMat.uniforms.uWindow.value as THREE.Vector2).set(0, ROWS / SLOTS);
     this.scroll = makePanel(SCROLL_W, SCROLL_LEN, this.scrollMat);
     this.group.add(this.scroll);
@@ -473,11 +509,12 @@ class InSceneHud implements SceneHud {
       groundBand: PAPER_BAND,
       age: PAPER_AGE,
       ageBand: 1,
-      ageAmount: 0.36,
+      ageAmount: 0.48,
       weave: 0.16,
       fibre: 0.4,
       tooth: 0.55,
       wear: 0.5,
+      lighten: PAPER_LIGHTEN,
       seed: 'slip',
     });
     deckle(ground.ctx, w, h, { sides: w * 0.016, ends: w * 0.016, seed: 'slip' });
@@ -486,7 +523,9 @@ class InSceneHud implements SceneHud {
     const face = makeCanvas(w, h);
     this.slipCtx = face.ctx;
     this.slipTex = makePanelTexture(face.canvas);
-    this.slipMat = createPanelMaterial(this.slipTex, 0.0);
+    // A whole sheet, so its own torn edge is the silhouette and the ends must
+    // not be faded away.
+    this.slipMat = createPanelMaterial(this.slipTex, 0);
     this.slip = makePanel(SLIP_W, SLIP_LEN, this.slipMat);
     this.group.add(this.slip);
   }
@@ -508,6 +547,7 @@ class InSceneHud implements SceneHud {
       fibre: 0.14,
       tooth: 0.4,
       wear: 0.3,
+      lighten: PAPER_LIGHTEN * 0.8,
       seed: 'band',
     });
     deckle(ground.ctx, w, h, { sides: w * 0.05, ends: 0, seed: 'band' });
@@ -596,8 +636,10 @@ class InSceneHud implements SceneHud {
 
     this.bandMesh.position.set(bandX, this.heightAt(bandX, 0) + PANEL_LIFT, 0);
 
-    // The bars sit just inside the scroll's two ends, across it.
-    const inset = SCROLL_LEN * 0.5 - 0.34;
+    // Right at the scroll's two ends, which is where a 鎮紙 goes and — measured
+    // off a frame — the only place it does not lie across the top or bottom row
+    // of the record and eat a character.
+    const inset = SCROLL_LEN * 0.5 - 0.07;
     for (let i = 0; i < this.weights.length; i++) {
       const z = scrollZ + (i === 0 ? -inset : inset);
       const y = this.heightAt(sideX, z) + PANEL_LIFT * 2 + WEIGHT_H * 0.5;
@@ -723,7 +765,10 @@ class InSceneHud implements SceneHud {
     ctx.drawImage(this.scrollGround, 0, 0);
 
     const slotH = h / SLOTS;
-    const size = slotH * 0.208;
+    // Four glyphs plus a breath: 4 × 0.19 = 0.76 of the slot, laid from 0.135,
+    // which keeps the first and last rows clear of both the scroll's end fade
+    // and the stone bars lying across its ends.
+    const size = slotH * 0.19;
     const colX = [w * 0.725, w * 0.275]; // [Red, Black] — Red column read first
 
     const rows = this.buildRows();
@@ -732,7 +777,7 @@ class InSceneHud implements SceneHud {
     for (let i = 0; i < SLOTS; i++) {
       const r = this.topPair - 1 + i;
       if (r < 0 || r >= rows.length) continue;
-      const y0 = i * slotH + slotH * 0.09;
+      const y0 = i * slotH + slotH * 0.135;
       for (let col = 0; col < 2; col++) {
         const entry = rows[r][col];
         if (!entry) continue;
@@ -769,9 +814,9 @@ class InSceneHud implements SceneHud {
 
     // --- 難度 and the tier, at the head -------------------------------------
     const sealW = w * 0.3;
-    const sealH = h * 0.4;
+    const sealH = h * 0.34;
     const sealX = w * 0.63;
-    const sealY = h * 0.075;
+    const sealY = h * 0.05;
     sealCartouche(ctx, sealX, sealY, sealW, sealH, {
       text: DIFFICULTY[this.difficulty].label,
       pigment: SEAL,
@@ -791,8 +836,12 @@ class InSceneHud implements SceneHud {
     });
 
     // --- the two armies, as column heads ------------------------------------
-    const headSize = h * 0.2;
-    const headY = h * 0.6;
+    // Placed over the scroll's own columns, so the head names the column below
+    // it the way a printed record does. The ring around the active one reaches
+    // 0.32 of a glyph past the em box in each direction, which is what sets the
+    // clearances above and below.
+    const headSize = h * 0.17;
+    const headY = h * 0.5;
     for (const side of [Side.Red, Side.Black] as const) {
       const x = side === Side.Red ? w * 0.725 : w * 0.275;
       const active = this.sideToMove === side;
@@ -814,8 +863,8 @@ class InSceneHud implements SceneHud {
 
     // --- 將軍 -----------------------------------------------------------------
     if (this.inCheck) {
-      const s = h * 0.12;
-      inkedRun(ctx, '將軍', w * 0.5, h * 0.845 - s, s, {
+      const s = h * 0.1;
+      inkedRun(ctx, '將軍', w * 0.5, h * 0.8, s, {
         vertical: false,
         align: 'center',
         pigment: SEAL,
@@ -989,9 +1038,12 @@ class InSceneHud implements SceneHud {
    * the last body walk off the table.
    */
   private layoutRail(): void {
-    for (const side of [Side.Red, Side.Black] as const) {
+    for (let s = 0; s < SIDES.length; s++) {
+      const side = SIDES[s];
       let total = 0;
-      for (const f of this.fallen) if (f.side === side) total += f.extent;
+      for (let i = 0; i < this.fallen.length; i++) {
+        if (this.fallen[i].side === side) total += this.fallen[i].extent;
+      }
       const available = RAIL_HALF_Z * 2;
       const squeeze = total > available ? available / total : 1;
 
@@ -1001,7 +1053,8 @@ class InSceneHud implements SceneHud {
       const start = side === Side.Red ? RAIL_HALF_Z : -RAIL_HALF_Z;
       const x = side === Side.Red ? RAIL_X : -RAIL_X;
       let run = 0;
-      for (const f of this.fallen) {
+      for (let i = 0; i < this.fallen.length; i++) {
+        const f = this.fallen[i];
         if (f.side !== side) continue;
         const step = f.extent * squeeze;
         const z = start + dir * (run + step * 0.5);

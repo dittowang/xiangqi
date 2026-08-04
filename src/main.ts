@@ -48,6 +48,7 @@ import { createCharacters, unitsStillFallingBack } from '@characters/index.ts';
 import { createEngineClient, legalTargets, findLegalMove } from '@engine/index.ts';
 import { getSealGlyph, glyphToShapes } from '@ui/seal.ts';
 import { createAudioEngine, pieceDetune } from '@ui/audio.ts';
+import { createHud } from '@ui/hud.ts';
 import {
   createAnimator,
   createChoreographer,
@@ -212,6 +213,32 @@ function retireAnimator(unit: { root: THREE.Object3D }): void {
   a.dispose();
   animators.delete(unit.root);
 }
+
+// ---------------------------------------------------------------------------
+// 8. HUD — painted into the scene, never into the DOM
+// ---------------------------------------------------------------------------
+
+/** Line work for the HUD's fallen figures, tracked so they can be released. */
+const hudCollapses = new Map<THREE.Object3D, ReturnType<typeof collapseToAtlas>>();
+
+const hud = createHud({
+  materials: pipeline.materials,
+  characters,
+  heightAt: rig.heightAt,
+  dress: (root) =>
+    hudCollapses.set(root, collapseToAtlas(root, pipeline.materials, { variation: 0.5 })),
+  undress: (root) => {
+    const c = hudCollapses.get(root);
+    if (c) disposeCollapse(c);
+    hudCollapses.delete(root);
+  },
+  difficulty: saved?.difficulty ?? 'medium',
+  sideToMove: Side.Red,
+  width: window.innerWidth,
+  height: window.innerHeight,
+  dpr: startDpr,
+});
+scene.add(hud.group);
 
 // ---------------------------------------------------------------------------
 // Bus wiring
@@ -435,6 +462,9 @@ async function boot(): Promise<void> {
     dressUnit(view);
     animatorFor(view).play('idle', 0);
   }
+  // A resumed match replays its moves without emitting move:end, so the record
+  // and the fallen rail would come back empty without this.
+  if (saved?.moves.length) hud.syncRecord(match.moves, match.notation);
   rig.setPhase('development', 0);
   booted = true;
   bus.emit('match:start', { difficulty: match.difficulty, resumed: !!saved?.moves.length });
@@ -463,6 +493,7 @@ function frame(nowMs: number): void {
   // has to be ticked here or its mount bones never move.
   showcaseAnimator?.update(dt);
   choreographer.update(dt);
+  hud.update(dt);
   audio.update(dt);
   saver.update(dt);
   if (booted) governor.update(dt, monitor.percentile(0.95));
@@ -486,6 +517,7 @@ window.addEventListener('resize', () => {
   const w = window.innerWidth;
   const h = window.innerHeight;
   renderer.setSize(w, h);
+  hud.resize(w, h, Math.min(window.devicePixelRatio || 1, governor.settings.maxPixelRatio));
   pipeline.setSize(w, h, Math.min(window.devicePixelRatio || 1, governor.settings.maxPixelRatio));
   rig.resize(w, h);
 });
@@ -574,6 +606,7 @@ const api: XqTestApi = {
       ? match.legalMoves()
       : match.targetsFrom(from).map((t) => encodeMove(from, t, match.pos.board[t])),
   setDifficulty: (d: Difficulty) => {
+    hud.setDifficulty(d);
     match.difficulty = d;
   },
   setHumanSide: (s: Side) => {
@@ -613,11 +646,13 @@ const api: XqTestApi = {
   setNamedPose: (n: NamedPose, immediate?: boolean) =>
     rig.director.setNamedPose(n, immediate !== false),
   setSilhouette: (on: boolean) => {
+    hud.setVisible(!on && hudVisible);
     pipeline.setSilhouetteMode(on);
     rig.setSilhouetteMode(on);
   },
   setHudVisible: (on: boolean) => {
     hudVisible = on;
+    hud.setVisible(on);
   },
   setQuality: (tier) => governor.force(tier === 'auto' ? null : (tier as QualityTier)),
   showcase: async (side, unit, opts) => {
