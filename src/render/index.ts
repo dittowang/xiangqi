@@ -54,6 +54,34 @@
  * On a tier change from the governor:  pipeline.applyQualitySettings(settings)
  * On bus 'fx:flash':  pipeline.flash(strength, colour)   — decays on its own
  * On a phase change:  pipeline.setMood(key, seconds)
+ *
+ * ---------------------------------------------------------------------------
+ * THE ATLAS PATH — one draw call per figure
+ * ---------------------------------------------------------------------------
+ *
+ * A figure uses 8–13 (MaterialClass, PigmentName) pairs, and one material per
+ * pair put a measured 32-unit board at 331 meshes and 2319 draw calls against a
+ * budget of 260. `characters/factory.ts` stamps a per-vertex `aMaterial` code
+ * on every merged geometry; `getAtlas()`/`outlineAtlas()` read it and resolve
+ * class, pigment, rim, wash, granulation, tooth grain and the whole outline
+ * profile per fragment instead of per material.
+ *
+ * After building a unit:
+ *
+ *     const collapses = collapseToAtlas(unit.root, pipeline.materials, {
+ *       variation: unit.meta.variation,
+ *     });
+ *     // ... and on teardown, alongside unit.dispose():
+ *     disposeCollapse(collapses);
+ *
+ * That is instead of `attachOutlines` for that unit — the collapse builds the
+ * atlas hull itself. Measured on the real cast: 32 meshes + 32 hulls, 226 draw
+ * calls, one material for the entire board.
+ *
+ * Pass `bakeInstancesBelow: 64` to the character factory as well. Instancing
+ * saves vertex memory, not triangles, and below that size an InstancedMesh
+ * costs a draw call the collapse could have absorbed — measured, it is the
+ * difference between 100 and 32 meshes.
  * For the harness:    pipeline.setSilhouetteMode(on), pipeline.setDebug(flag, on)
  *
  * The harness's `setDebug` accepts the five flags render owns — 'rampBands',
@@ -78,10 +106,19 @@ export {
   DEBUG_SHADOW_CASCADES,
   type GongbiLighting,
   type GongbiMaterialRequest,
+  type AtlasRequest,
   type GongbiOptions,
   type GongbiUserData,
   type NormalisedRequest,
 } from './gongbi.ts';
+
+export {
+  collapseToAtlas,
+  disposeCollapse,
+  hasAtlasAttribute,
+  type AtlasCollapse,
+  type CollapseOptions,
+} from './atlas.ts';
 
 export {
   attachOutlines,
@@ -103,6 +140,11 @@ export {
 } from './csm.ts';
 
 export {
+  ATLAS_CODE_STRIDE,
+  PARAM_WIDTH,
+  buildParamTable,
+  codeFor,
+  rowForCode,
   bakeRampRow,
   bandHexes,
   buildRampAtlas,
@@ -118,6 +160,9 @@ export {
 } from './ramps.ts';
 
 export {
+  TOOTH_ARRAY_SIZE,
+  TOOTH_LAYERS,
+  toothLayerIndex,
   generateField,
   textureSize,
   TextureLibrary,

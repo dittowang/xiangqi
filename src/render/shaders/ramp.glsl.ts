@@ -46,24 +46,26 @@
 export const GLSL_RAMP_PARS = /* glsl */ `
 /** The (MaterialClass x PigmentName) ramp atlas. NearestFilter, no mips. */
 uniform sampler2D uRampAtlas;
-/** V coordinate of this material's row, already at the texel centre. */
-uniform float uRampRow;
-/** Number of quantisation steps in this row, 3 or 4. Debug view only. */
-uniform float uRampSteps;
 `;
 
-export const GLSL_RAMP = /* glsl */ `
+/**
+ * Row-parameterised core. Every lookup takes the atlas V coordinate as an
+ * argument, so the same code serves both paths: the per-uniform materials pass
+ * a constant, and the atlas material passes a value it decoded from the
+ * per-vertex material code.
+ */
+export const GLSL_RAMP_CORE = /* glsl */ `
 ${GLSL_RAMP_PARS}
 
 /**
- * Fetch the laid pigment for a given N·L.
+ * Fetch the laid pigment for a given N·L on a given row.
  *
  * 'ndl' is clamped rather than wrapped: past 1.0 there is no more pigment to
  * lay, and below 0 a gongbi painter does not invent a rim of fill light, they
  * leave the undertone.
  */
-vec3 xqRamp(float ndl) {
-  return texture2D(uRampAtlas, vec2(clamp(ndl, 0.0, 1.0), uRampRow)).rgb;
+vec3 xqRampRow(float rowV, float ndl) {
+  return texture2D(uRampAtlas, vec2(clamp(ndl, 0.0, 1.0), rowV)).rgb;
 }
 
 /**
@@ -81,15 +83,21 @@ vec3 xqRamp(float ndl) {
  * (index + 0.5) / 4. Recovering it is one multiply — cheaper and far more
  * robust than re-deriving the thresholds in the shader.
  */
-float xqRampBand(float ndl) {
-  float packed = texture2D(uRampAtlas, vec2(clamp(ndl, 0.0, 1.0), uRampRow)).a;
+float xqRampBandRow(float rowV, float ndl, float steps) {
+  float packed = texture2D(uRampAtlas, vec2(clamp(ndl, 0.0, 1.0), rowV)).a;
   float idx = floor(packed * 4.0);
-  return idx / max(uRampSteps - 1.0, 1.0);
+  return idx / max(steps - 1.0, 1.0);
 }
 
-/** False-colour for the 'rampBands' debug mode: one flat hue per band. */
-vec3 xqRampBandDebug(float ndl) {
-  float packed = texture2D(uRampAtlas, vec2(clamp(ndl, 0.0, 1.0), uRampRow)).a;
+/**
+ * False-colour for the 'rampBands' debug mode: one flat hue per band.
+ *
+ * These four are deliberately NOT palette pigments. This view is a measurement
+ * legend, and a legend drawn in the same colours as the artwork cannot be told
+ * apart from it.
+ */
+vec3 xqRampBandDebugRow(float rowV, float ndl) {
+  float packed = texture2D(uRampAtlas, vec2(clamp(ndl, 0.0, 1.0), rowV)).a;
   float idx = floor(packed * 4.0);
   if (idx < 0.5) return vec3(0.10, 0.10, 0.16);
   if (idx < 1.5) return vec3(0.15, 0.45, 0.85);
@@ -124,5 +132,118 @@ vec3 xqWakeColour(vec3 base, vec3 wake, float amount, float ndv, float ndl, floa
   // where the form rolls into shadow instead of stopping dead mid-edge.
   mask *= smoothstep(gate, gate + 0.22, ndl);
   return mix(base, wake, amount * mask);
+}
+`;
+
+/**
+ * The per-uniform path's convenience wrappers. One material, one (class,
+ * pigment), row and step count fixed at construction. This is what scene/ and
+ * ui/ use and it stays the simpler default.
+ */
+export const GLSL_RAMP_UNIFORM = /* glsl */ `
+/** V coordinate of this material's row, already at the texel centre. */
+uniform float uRampRow;
+/** Number of quantisation steps in this row, 3 or 4. */
+uniform float uRampSteps;
+
+vec3 xqRamp(float ndl) { return xqRampRow(uRampRow, ndl); }
+float xqRampBand(float ndl) { return xqRampBandRow(uRampRow, ndl, uRampSteps); }
+vec3 xqRampBandDebug(float ndl) { return xqRampBandDebugRow(uRampRow, ndl); }
+`;
+
+/** Backwards-compatible bundle: core + the uniform wrappers. */
+export const GLSL_RAMP = `${GLSL_RAMP_CORE}\n${GLSL_RAMP_UNIFORM}`;
+
+/**
+ * The ATLAS path: class and pigment resolved per VERTEX instead of per material.
+ *
+ * WHY THIS EXISTS
+ * A figure legitimately uses eight to thirteen (MaterialClass, PigmentName)
+ * pairs — lacquer over cloth over leather with gold fittings and an iron blade
+ * is not decoration, it is what makes the unit readable in silhouette. Under
+ * one material per pair that is eight to thirteen draw calls per figure, and
+ * the inverted-hull pass doubles it. At thirty-two figures the board measured
+ * 475 meshes and 950 draw calls against a budget of 260.
+ *
+ * `characters/factory.ts` therefore stamps a per-vertex float `aMaterial`,
+ * encoded `classIndex * STRIDE + pigmentIndex`. This block decodes it and turns
+ * it into two texture reads: the ramp atlas row for the pigment, and a row of
+ * the parameter table for everything that used to be a per-material uniform —
+ * the 醒色 wake colour, the silk wash tint and strength, the granulation, the
+ * tooth layer and scale, and the whole outline profile.
+ *
+ * The result is one material and one hull material for an entire figure, and
+ * the draw-call arithmetic closes.
+ *
+ * The material code is carried FLAT, not interpolated. Every triangle in a
+ * merged geometry has all three vertices from the same part and therefore the
+ * same code, so interpolating would be a no-op in practice — but "in practice"
+ * is doing work in that sentence, and `flat` makes it structural. It also
+ * removes any question about a float that must be read back as an integer
+ * surviving perspective-correct interpolation.
+ */
+export function glslAtlasDecode(cfg: {
+  /** Rows in the ramp atlas and the parameter table (they share row indices). */
+  rows: number;
+  /** Columns in the parameter table. */
+  paramWidth: number;
+  /** `aMaterial` = classIndex * stride + pigmentIndex. */
+  stride: number;
+  /** How many pigments — the row stride inside a class. */
+  pigments: number;
+}): string {
+  const rowStep = (1 / cfg.rows).toPrecision(12);
+  const paramStep = (1 / cfg.paramWidth).toPrecision(12);
+  return /* glsl */ `
+uniform sampler2D uParamTable;
+
+#define XQ_ROW_STEP ${rowStep}
+#define XQ_PARAM_STEP ${paramStep}
+#define XQ_CODE_STRIDE ${cfg.stride}.0
+#define XQ_PIGMENTS ${cfg.pigments}.0
+
+/** aMaterial -> the V coordinate shared by the ramp atlas and the param table. */
+float xqAtlasRowV(float code) {
+  float ci = floor(code * (1.0 / XQ_CODE_STRIDE));
+  float pi = code - ci * XQ_CODE_STRIDE;
+  float row = ci * XQ_PIGMENTS + pi;
+  return (row + 0.5) * XQ_ROW_STEP;
+}
+
+/**
+ * Fetch column 'i' of the parameter row.
+ *
+ * textureLod with an explicit level rather than texture(): this is called from
+ * the VERTEX shader too (the hull needs its stroke width before it can push a
+ * vertex), and implicit-LOD sampling has no derivatives to work from there.
+ * The table has no mipmaps, so level 0 is the only level and the explicit form
+ * costs nothing.
+ */
+vec4 xqAtlasParam(float rowV, float i) {
+  return textureLod(uParamTable, vec2((i + 0.5) * XQ_PARAM_STEP, rowV), 0.0);
+}
+`;
+}
+
+/**
+ * Triplanar tooth from the layered array texture.
+ *
+ * Same projection and same fourth-power blend sharpening as the single-texture
+ * path in gongbi.ts; the only difference is that the layer arrives as a number
+ * instead of as a bound sampler, which is the whole reason the atlas path can
+ * give eleven material classes eleven different grains from one draw call.
+ */
+export const GLSL_TOOTH_ARRAY = /* glsl */ `
+uniform sampler2DArray uToothArray;
+
+float xqToothLayered(vec3 objPos, vec3 objNormal, float scale, float layer) {
+  vec3 b = abs(normalize(objNormal));
+  b = b * b;
+  b = b * b;
+  b /= max(b.x + b.y + b.z, 1e-4);
+  vec3 p = objPos * scale;
+  return texture(uToothArray, vec3(p.zy, layer)).r * b.x
+       + texture(uToothArray, vec3(p.xz, layer)).r * b.y
+       + texture(uToothArray, vec3(p.xy, layer)).r * b.z;
 }
 `;

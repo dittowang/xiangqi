@@ -41,20 +41,37 @@
  */
 
 import * as THREE from 'three';
-import { PIGMENT_NAMES, RAMPS, type MaterialClass, type PigmentName } from '@core/palette.ts';
+import {
+  OUTLINES,
+  PIGMENT_NAMES,
+  RAMPS,
+  type MaterialClass,
+  type PigmentName,
+} from '@core/palette.ts';
 import { CascadedShadowMaps } from './csm.ts';
 import { createGradeMaterial, createLinesMaterial } from './composer.ts';
 import { GongbiMaterialLibrary, gongbiInfo } from './gongbi.ts';
 import { ensureSmoothNormals, SMOOTH_NORMAL_ATTRIBUTE } from './outline.ts';
 import {
+  ATLAS_CODE_STRIDE,
   MATERIAL_CLASSES,
+  PARAM_WIDTH,
   RAMP_ROWS,
   RAMP_WIDTH,
   bakeRampRow,
   buildRampAtlas,
+  codeFor,
+  rampRowIndex,
+  rowForCode,
 } from './ramps.ts';
 import { SilkWash } from './silk.ts';
-import { TEXTURE_KINDS, generateField, textureSize, type TextureKind } from './textures.ts';
+import {
+  TEXTURE_KINDS,
+  TOOTH_LAYERS,
+  generateField,
+  textureSize,
+  type TextureKind,
+} from './textures.ts';
 
 // ---------------------------------------------------------------------------
 // Tiny harness
@@ -95,6 +112,69 @@ function resolveIncludes(src: string, depth = 0): string {
     }
     return resolveIncludes(chunk, depth + 1);
   });
+}
+
+/**
+ * Evaluate the preprocessor conditionals the way the driver will.
+ *
+ * Without this the audit reads BOTH arms of every `#ifdef` as live code, so it
+ * reports the atlas path's helpers as undefined in the per-uniform hull (where
+ * the whole branch is preprocessed away) and misses anything wrong inside a
+ * branch that IS taken. Since `USE_SKINNING` and `USE_INSTANCING` come from the
+ * object rather than from the material, every material is audited once per
+ * relevant define set — a shader can be correct on a Mesh and broken on a
+ * SkinnedMesh, and the cast is entirely SkinnedMeshes.
+ *
+ * Only the forms this project actually uses are handled: #ifdef, #ifndef,
+ * #if defined(X), #else, #endif. Anything else keeps both arms, which is the
+ * conservative direction — a false pass is worse than a false failure here.
+ */
+function preprocess(src: string, defines: Set<string>): string {
+  const out: string[] = [];
+  // Each entry: [thisBranchLive, anyBranchTakenYet, understood]
+  const stack: { live: boolean; taken: boolean; known: boolean }[] = [];
+  const live = (): boolean => stack.every((f) => f.live);
+
+  for (const line of src.split('\n')) {
+    const t = line.trim();
+    let m: RegExpMatchArray | null;
+
+    if ((m = t.match(/^#ifdef\s+(\w+)/))) {
+      const on = defines.has(m[1]);
+      stack.push({ live: on, taken: on, known: true });
+      continue;
+    }
+    if ((m = t.match(/^#ifndef\s+(\w+)/))) {
+      const on = !defines.has(m[1]);
+      stack.push({ live: on, taken: on, known: true });
+      continue;
+    }
+    if ((m = t.match(/^#if\s+defined\s*\(\s*(\w+)\s*\)\s*$/))) {
+      const on = defines.has(m[1]);
+      stack.push({ live: on, taken: on, known: true });
+      continue;
+    }
+    if (/^#if\b/.test(t)) {
+      stack.push({ live: true, taken: true, known: false });
+      continue;
+    }
+    if (/^#else\b/.test(t)) {
+      const f = stack[stack.length - 1];
+      if (f) f.live = f.known ? !f.taken : true;
+      continue;
+    }
+    if (/^#elif\b/.test(t)) {
+      const f = stack[stack.length - 1];
+      if (f) f.live = !f.known;
+      continue;
+    }
+    if (/^#endif\b/.test(t)) {
+      stack.pop();
+      continue;
+    }
+    if (live()) out.push(line);
+  }
+  return out.join('\n');
 }
 
 /** Strip // and block comments, and string-like content. GLSL has no strings. */
@@ -203,9 +283,31 @@ function varyings(src: string): Map<string, string> {
   return out;
 }
 
+/**
+ * Define sets to audit each material under. three sets `USE_SKINNING` and
+ * `USE_INSTANCING` from the OBJECT, so one material compiles into several
+ * programs and each one has to be checked.
+ */
+const SHAPE_DEFINES: readonly (readonly string[])[] = [[], ['USE_SKINNING'], ['USE_INSTANCING']];
+
 function auditMaterial(label: string, mat: THREE.ShaderMaterial): void {
-  const vert = stripComments(resolveIncludes(mat.vertexShader));
-  const frag = stripComments(resolveIncludes(mat.fragmentShader));
+  for (const shape of SHAPE_DEFINES) {
+    const defines = new Set<string>([...Object.keys(mat.defines ?? {}), ...shape]);
+    auditOnce(shape.length ? `${label} <${shape.join(',')}>` : label, mat, defines);
+  }
+}
+
+function auditOnce(label: string, mat: THREE.ShaderMaterial, defines: Set<string>): void {
+  const vert = preprocess(stripComments(resolveIncludes(mat.vertexShader)), defines);
+  const frag = preprocess(stripComments(resolveIncludes(mat.fragmentShader)), defines);
+
+  for (const [stage, src] of [
+    ['vertex', stripComments(resolveIncludes(mat.vertexShader))],
+    ['fragment', stripComments(resolveIncludes(mat.fragmentShader))],
+  ] as const) {
+    const p = checkPreprocessor(src);
+    ok(p.ok, `${label} ${stage}: balanced #if/#endif`, p.detail);
+  }
 
   for (const [stage, src] of [
     ['vertex', vert],
@@ -213,26 +315,93 @@ function auditMaterial(label: string, mat: THREE.ShaderMaterial): void {
   ] as const) {
     const b = checkBalance(src);
     ok(b.ok, `${label} ${stage}: balanced braces`, b.detail);
-    const p = checkPreprocessor(src);
-    ok(p.ok, `${label} ${stage}: balanced #if/#endif`, p.detail);
     checkFunctionOrder(src, `${label} ${stage}`);
   }
 
   const declV = declaredUniforms(vert);
   const declF = declaredUniforms(frag);
-  const declared = new Map([...declV, ...declF]);
-  const used = new Set([...usedOurUniforms(vert), ...usedOurUniforms(frag)]);
   const provided = new Set(Object.keys(mat.uniforms ?? {}));
 
-  for (const name of used) {
-    ok(declared.has(name), `${label}: '${name}' used`, 'not declared in any stage');
+  // PER STAGE, not on the union of both.
+  //
+  // A uniform declared in the vertex shader is invisible to the fragment
+  // shader: they are separate translation units and the link step only joins
+  // uniforms each stage declared for itself. Checking the union passes happily
+  // on a program where the outline colour is declared in the vertex and used in
+  // the fragment — which is exactly the bug that made every surface and hull
+  // variant fail its first real compile, and which this check was blind to.
+  //
+  // A duplicate declaration across stages is fine and normal, so this is a
+  // one-directional test per stage.
+  for (const [stage, src, decl] of [
+    ['vertex', vert, declV],
+    ['fragment', frag, declF],
+  ] as const) {
+    for (const name of usedOurUniforms(src)) {
+      ok(
+        decl.has(name),
+        `${label} ${stage}: '${name}' used`,
+        `not declared in the ${stage} stage (declared in the other stage does NOT count)`,
+      );
+    }
+    // A uniform declared in both stages must agree on type, or the link fails.
+    for (const [name, type] of decl) {
+      const other = stage === 'vertex' ? declF.get(name) : declV.get(name);
+      if (other !== undefined) {
+        ok(other === type, `${label}: '${name}' type agrees across stages`, `${type} vs ${other}`);
+      }
+    }
   }
+
+  const declared = new Map([...declV, ...declF]);
   for (const [name] of declared) {
     if (!/^u[A-Z]/.test(name)) continue; // three's own (bindMatrix, boneTexture)
     ok(provided.has(name), `${label}: '${name}' declared`, 'missing from material.uniforms');
   }
   for (const name of provided) {
     ok(declared.has(name), `${label}: uniforms['${name}']`, 'declared by no shader stage');
+  }
+
+  // Duplicate declaration WITHIN one stage is a hard compile error, and it is
+  // easy to reach by composing two chunks that both declare the same uniform.
+  for (const [stage, src] of [
+    ['vertex', stripComments(resolveIncludes(mat.vertexShader))],
+    ['fragment', stripComments(resolveIncludes(mat.fragmentShader))],
+  ] as const) {
+    const p = checkPreprocessor(src);
+    ok(p.ok, `${label} ${stage}: balanced #if/#endif`, p.detail);
+  }
+
+  for (const [stage, src] of [
+    ['vertex', vert],
+    ['fragment', frag],
+  ] as const) {
+    const counts = new Map<string, number>();
+    UNIFORM_DECL.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = UNIFORM_DECL.exec(src))) counts.set(m[2], (counts.get(m[2]) ?? 0) + 1);
+    for (const [name, n] of counts) {
+      ok(n === 1, `${label} ${stage}: '${name}' declared once`, `declared ${n} times`);
+    }
+  }
+
+  // Attributes we own must be declared in the vertex stage; three injects only
+  // position/normal/uv/skinIndex/skinWeight/instanceMatrix.
+  for (const name of vert.match(/\ba[A-Z]\w*/g) ?? []) {
+    if (!/^a[A-Z]/.test(name)) continue;
+    ok(
+      new RegExp(`\\b(attribute|in)\\s+\\w+\\s+${name}\\s*;`).test(vert),
+      `${label} vertex: attribute '${name}' declared`,
+    );
+  }
+
+  // `flat` interpolants bypass the `varying` macro, so they need their own
+  // matching check: a flat out with no flat in (or vice versa) links but reads
+  // garbage.
+  const flatOut = new Set([...vert.matchAll(/\bflat\s+out\s+(\w+)\s+(\w+)\s*;/g)].map((m) => m[2]));
+  const flatIn = [...frag.matchAll(/\bflat\s+in\s+(\w+)\s+(\w+)\s*;/g)];
+  for (const m of flatIn) {
+    ok(flatOut.has(m[2]), `${label}: flat varying '${m[2]}'`, 'read in fragment, never written');
   }
 
   // A varying the fragment reads must be written by the vertex, with the same
@@ -294,6 +463,17 @@ function checkShaders(): void {
     doubleSided: true,
   } as never) as THREE.ShaderMaterial;
   auditMaterial('surface:instanced+doubleSided', variant);
+
+  // The atlas path: one material for a whole figure, class and pigment
+  // per-vertex.
+  auditMaterial('atlas:surface', lib.getAtlas());
+  auditMaterial('atlas:surface variation', lib.getAtlas({ variation: 0.3, glow: 0.5 }));
+  auditMaterial('atlas:hull', lib.outlineAtlas());
+  auditMaterial('atlas:hull prepass', gongbiInfo(lib.outlineAtlas())!.prepass);
+  ok(
+    lib.getAtlas() === lib.getAtlas(),
+    'identical atlas requests share one material instance',
+  );
 
   auditMaterial('post:lines', createLinesMaterial());
   auditMaterial(
@@ -512,6 +692,120 @@ function checkRamps(): void {
 // ---------------------------------------------------------------------------
 // 3. Procedural textures
 // ---------------------------------------------------------------------------
+
+/**
+ * The parameter table, and the encoding contract with characters/.
+ *
+ * The contract is checked by READING characters/factory.ts as text rather than
+ * importing it. ARCHITECTURE.md forbids render importing characters, and a
+ * static import would also make this subsystem fail to typecheck whenever that
+ * one was mid-edit — which it was, twice, while this was being written. Reading
+ * the source costs nothing, creates no edge anywhere, and fails loudly the day
+ * either side reorders its list. Silent drift would repaint every figure in the
+ * wrong pigment, with the cause four subsystems away from the symptom.
+ */
+async function checkAtlas(): Promise<void> {
+  section('atlas — parameter table and the characters/ encoding contract');
+
+  const lib = new GongbiMaterialLibrary();
+  const table = lib.paramTable;
+  const data = table.image.data as Float32Array;
+
+  ok(table.image.width === PARAM_WIDTH, 'param table width', `${table.image.width}`);
+  ok(table.image.height === RAMP_ROWS, 'param table height', `${table.image.height}`);
+  ok(table.magFilter === THREE.NearestFilter, 'param table is NEAREST');
+  ok(table.generateMipmaps === false, 'param table has no mipmaps');
+
+  let bad = 0;
+  for (let i = 0; i < data.length; i++) if (!Number.isFinite(data[i])) bad++;
+  ok(bad === 0, 'no NaN or Inf in the parameter table', `${bad} bad values`);
+
+  // Every row must carry the values the art direction actually asked for.
+  for (const cls of MATERIAL_CLASSES as MaterialClass[]) {
+    const spec = RAMPS[cls];
+    const profile = OUTLINES[spec.outline];
+    for (const pigment of PIGMENT_NAMES as PigmentName[]) {
+      const o = rampRowIndex(cls, pigment) * PARAM_WIDTH * 4;
+      const tag = `${cls}/${pigment}`;
+      ok(Math.abs(data[o + 3] - spec.rim) < 1e-6, `${tag}: rim matches RampSpec`);
+      ok(Math.abs(data[o + 7] - spec.silkWash) < 1e-6, `${tag}: silkWash matches RampSpec`);
+      ok(Math.abs(data[o + 11] - profile.tint) < 1e-6, `${tag}: outline tint matches profile`);
+      ok(Math.abs(data[o + 14] - profile.widthPx) < 1e-6, `${tag}: outline width matches profile`);
+      ok(Math.abs(data[o + 15] - spec.steps) < 1e-6, `${tag}: step count matches RampSpec`);
+      ok(Math.abs(data[o + 16] - profile.fadeStart) < 1e-6, `${tag}: fadeStart matches profile`);
+      ok(Math.abs(data[o + 17] - profile.fadeEnd) < 1e-6, `${tag}: fadeEnd matches profile`);
+      const layer = data[o + 18];
+      ok(
+        Number.isInteger(layer) && layer >= 0 && layer < TOOTH_LAYERS.length,
+        `${tag}: tooth layer index is in range`,
+        `${layer}`,
+      );
+      // The row the shader computes from the code must be the row we baked.
+      ok(
+        rowForCode(codeFor(cls, pigment)) === rampRowIndex(cls, pigment),
+        `${tag}: code round-trips to its own row`,
+      );
+    }
+  }
+
+  // --- the cross-subsystem contract ---------------------------------------
+  const spec = (m: string): string => m;
+  let source: string | null = null;
+  try {
+    const fs = (await import(spec('node:fs'))) as unknown as {
+      readFileSync(p: string, e: string): string;
+    };
+    source = fs.readFileSync('src/characters/factory.ts', 'utf8');
+  } catch {
+    note('characters/factory.ts unreadable — encoding contract NOT verified');
+  }
+
+  if (source) {
+    const grab = (name: string): string[] | null => {
+      const m = source!.match(new RegExp(`${name}[^=]*=\\s*\\[([^\\]]*)\\]`));
+      if (!m) return null;
+      return [...m[1].matchAll(/'([^']+)'/g)].map((x) => x[1]);
+    };
+    const theirClasses = grab('MATERIAL_CLASS_ORDER');
+    const theirPigments = grab('PIGMENT_ORDER');
+
+    ok(theirClasses !== null, 'characters exports MATERIAL_CLASS_ORDER');
+    ok(theirPigments !== null, 'characters exports PIGMENT_ORDER');
+
+    if (theirClasses) {
+      ok(
+        theirClasses.join(',') === (MATERIAL_CLASSES as string[]).join(','),
+        'class order agrees with characters/factory.ts',
+        `theirs [${theirClasses.join(',')}] vs ours [${(MATERIAL_CLASSES as string[]).join(',')}]`,
+      );
+    }
+    if (theirPigments) {
+      ok(
+        theirPigments.join(',') === (PIGMENT_NAMES as string[]).join(','),
+        'pigment order agrees with characters/factory.ts',
+        `theirs [${theirPigments.join(',')}] vs ours [${(PIGMENT_NAMES as string[]).join(',')}]`,
+      );
+    }
+
+    // And the stride, which is the other half of the encoding.
+    const strideMatch = source.match(/classIndex\s*\*\s*(\d+)\s*\+\s*pigmentIndex/);
+    const theirStride = strideMatch ? Number(strideMatch[1]) : null;
+    ok(
+      theirStride === ATLAS_CODE_STRIDE,
+      'aMaterial stride agrees with characters/factory.ts',
+      `theirs ${theirStride} vs ours ${ATLAS_CODE_STRIDE}`,
+    );
+    // The stride must also leave room for every pigment, or two classes would
+    // alias onto each other's rows.
+    ok(
+      ATLAS_CODE_STRIDE >= PIGMENT_NAMES.length,
+      'stride leaves room for every pigment',
+      `${ATLAS_CODE_STRIDE} vs ${PIGMENT_NAMES.length}`,
+    );
+  }
+
+  lib.dispose();
+}
 
 function checkTextures(): void {
   section('textures — procedural fields');
@@ -800,6 +1094,7 @@ function checkSilk(): void {
 console.log('render/selfcheck — static validation (no GPU required)');
 
 checkShaders();
+await checkAtlas();
 checkRamps();
 checkTextures();
 checkOutlineMaths();

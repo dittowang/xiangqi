@@ -105,6 +105,12 @@ pipeline.setShadowSpec(rig.lighting.csmSpec());
 const characters = createCharacters({
   materials: pipeline.materials,
   onWarn: (m: string) => console.warn('[characters]', m),
+  // Fold every instance set under this size into the merged mesh. Instancing
+  // saves vertex memory, not triangles, and an InstancedMesh cannot be merged
+  // into the material atlas — at the default of 24 the atlas collapse stalls at
+  // 534 draw calls because 44 instanced sets refuse to fold. At 64 they all
+  // fold, at identical triangle count, and the board lands at 226.
+  bakeInstancesBelow: 64,
 });
 
 /** Everything that is a figure lives here, so silhouette mode can find it. */

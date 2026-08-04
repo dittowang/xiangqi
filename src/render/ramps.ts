@@ -31,6 +31,7 @@
 
 import * as THREE from 'three';
 import {
+  OUTLINES,
   PIGMENTS,
   PIGMENT_NAMES,
   RAMPS,
@@ -273,6 +274,129 @@ export function buildRampAtlas(): THREE.DataTexture {
   tex.needsUpdate = true;
   tex.name = 'gongbi.rampAtlas';
   return tex;
+}
+
+// ---------------------------------------------------------------------------
+// The parameter table — everything the atlas (per-vertex) material needs
+// ---------------------------------------------------------------------------
+
+/**
+ * THE ENCODING CONTRACT WITH characters/.
+ *
+ * `characters/factory.ts` stamps a per-vertex float attribute `aMaterial` on
+ * every merged geometry, encoded as `classIndex * 16 + pigmentIndex` against
+ * its own `MATERIAL_CLASS_ORDER` and `PIGMENT_ORDER`. Those two arrays are
+ * element-for-element identical to `MATERIAL_CLASSES` here and to
+ * `PIGMENT_NAMES` in core/palette.ts — which is not a coincidence but IS a
+ * coupling, and render must not import characters to check it.
+ *
+ * So the check is done in selfcheck.ts, which reads characters/factory.ts as
+ * TEXT and compares the two arrays. That creates no module edge, no typecheck
+ * dependency and no bundle edge, and it fails loudly the day either side is
+ * reordered. Silent drift here would repaint every figure in the wrong pigment
+ * and the cause would be four subsystems away from the symptom.
+ */
+export const ATLAS_CODE_STRIDE = 16;
+
+/**
+ * Columns of the parameter table. One row per (class, pigment) — the SAME row
+ * index as the ramp atlas, so one computed V coordinate serves both.
+ *
+ * Why a texture and not uniform arrays: the wake colour depends on class AND
+ * pigment, so a uniform array would need 11 x 12 vec3s just for that, before
+ * the wash tint, the outline colour and eight scalars. That is most of the
+ * guaranteed fragment uniform budget spent on a lookup table. As a 5 x 132
+ * float texture it is 10.5 KB, permanently resident in cache, and three fetches
+ * per fragment that never miss.
+ *
+ *   texel 0 : rgb = 醒色 wake colour (linear)     a = RampSpec.rim
+ *   texel 1 : rgb = silk wash tint (linear)      a = RampSpec.silkWash
+ *   texel 2 : rgb = outline colour (linear)      a = OutlineProfile.tint
+ *   texel 3 : r = granulation  g = toothScale  b = outline widthPx  a = steps
+ *   texel 4 : r = fadeStart    g = fadeEnd     b = tooth layer      a = class index
+ */
+export const PARAM_WIDTH = 5;
+
+/** Filled in by gongbi.ts, which owns the per-class tooth and granulation
+ *  tuning; ramps.ts only knows how to lay them out. */
+export interface AtlasClassTuning {
+  granulation(cls: MaterialClass): number;
+  toothScale(cls: MaterialClass): number;
+  toothLayer(cls: MaterialClass): number;
+}
+
+export function buildParamTable(tuning: AtlasClassTuning): THREE.DataTexture {
+  const data = new Float32Array(PARAM_WIDTH * RAMP_ROWS * 4);
+
+  for (const cls of MATERIAL_CLASSES) {
+    const spec = RAMPS[cls];
+    const ci = MATERIAL_CLASSES.indexOf(cls);
+    const profile = OUTLINES[spec.outline];
+    const outline = toLinear(PIGMENTS[profile.colour].bands[profile.colourBand]);
+
+    for (const pigment of PIGMENT_NAMES) {
+      const row = rampRowIndex(cls, pigment);
+      const o = row * PARAM_WIDTH * 4;
+      const wake = wakeColour(cls, pigment);
+      const wash = washColour(pigment);
+
+      data[o + 0] = wake.r;
+      data[o + 1] = wake.g;
+      data[o + 2] = wake.b;
+      data[o + 3] = spec.rim;
+
+      data[o + 4] = wash.r;
+      data[o + 5] = wash.g;
+      data[o + 6] = wash.b;
+      data[o + 7] = spec.silkWash;
+
+      data[o + 8] = outline.r;
+      data[o + 9] = outline.g;
+      data[o + 10] = outline.b;
+      data[o + 11] = profile.tint;
+
+      data[o + 12] = tuning.granulation(cls);
+      data[o + 13] = tuning.toothScale(cls);
+      data[o + 14] = profile.widthPx;
+      data[o + 15] = spec.steps;
+
+      data[o + 16] = profile.fadeStart;
+      data[o + 17] = profile.fadeEnd;
+      data[o + 18] = tuning.toothLayer(cls);
+      data[o + 19] = ci;
+    }
+  }
+
+  const tex = new THREE.DataTexture(
+    data,
+    PARAM_WIDTH,
+    RAMP_ROWS,
+    THREE.RGBAFormat,
+    THREE.FloatType,
+  );
+  tex.minFilter = THREE.NearestFilter;
+  tex.magFilter = THREE.NearestFilter;
+  tex.wrapS = THREE.ClampToEdgeWrapping;
+  tex.wrapT = THREE.ClampToEdgeWrapping;
+  tex.generateMipmaps = false;
+  tex.flipY = false;
+  tex.colorSpace = THREE.LinearSRGBColorSpace;
+  tex.needsUpdate = true;
+  tex.name = 'gongbi.paramTable';
+  return tex;
+}
+
+/** The row a given `aMaterial` code resolves to. Mirrors the shader exactly;
+ *  exported so the self-check can compare the two. */
+export function rowForCode(code: number): number {
+  const ci = Math.floor(code / ATLAS_CODE_STRIDE);
+  const pi = code - ci * ATLAS_CODE_STRIDE;
+  return ci * PIGMENT_NAMES.length + pi;
+}
+
+/** The `aMaterial` code for a (class, pigment) pair. */
+export function codeFor(cls: MaterialClass, pigment: PigmentName): number {
+  return MATERIAL_CLASSES.indexOf(cls) * ATLAS_CODE_STRIDE + PIGMENT_NAMES.indexOf(pigment);
 }
 
 /**

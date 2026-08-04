@@ -48,7 +48,7 @@ import {
   srgbToLinear,
   type LightMood,
 } from '@core/palette.ts';
-import { CascadedShadowMaps } from './csm.ts';
+import { CASCADE_SPLITS, CascadedShadowMaps } from './csm.ts';
 import {
   DEBUG_NONE,
   DEBUG_NORMALS,
@@ -109,6 +109,40 @@ const VIGNETTE = 0.10;
 
 /** Impact-flash decay, per second, exponential. 4.2 is about a quarter second. */
 const FLASH_DECAY = 4.2;
+
+/**
+ * Resolution of the depth/normal prepass, as a fraction of the drawing buffer.
+ *
+ * The Sobel is a screen-space edge filter and does not need retina. At dpr 2 a
+ * half-resolution prepass makes an interior line two device pixels wide, which
+ * is ONE CSS pixel — which is the weight a fine interior line wants anyway, so
+ * this is not purely a saving. It quarters the prepass fill cost and quarters
+ * the Sobel's 21 fetches per pixel.
+ *
+ * What it does NOT reduce is the prepass's draw calls or vertex work: that is a
+ * full scene submission either way, and it is the reason the atlas collapse
+ * matters more than this does.
+ *
+ * Kept at 1.0 on ultra because the top tier should not be the one making
+ * compromises, and 0.5 below it.
+ */
+const PREPASS_SCALE: Record<QualityTier, number> = {
+  ultra: 1.0,
+  high: 1.0,
+  medium: 0.5,
+  low: 0.5,
+};
+
+/**
+ * Radius, in world units, of everything that can cast or receive a shadow.
+ *
+ * The playing field is 8 x 9 units centred on the origin (core/coords.ts), so
+ * its half-diagonal is about 6.0; the tallest unit is the elephant at roughly
+ * 2.7, and the table it stands on overhangs the grid. 8 covers all of it with
+ * room, and being generous here costs nothing but occasionally keeping a
+ * cascade that was not needed.
+ */
+const SHADOW_WORLD_RADIUS = 8;
 
 /**
  * Render-side view of the quality tiers.
@@ -284,6 +318,9 @@ export class GongbiPipeline implements RenderPipeline {
 
   private silhouette = false;
   private outlinesEnabled = true;
+  private prepassScale = 1;
+  private adaptiveCascades = true;
+  private maxCascades = 3;
   private debugMode = DEBUG_NONE;
   private flashStrength = 0;
 
@@ -423,18 +460,30 @@ export class GongbiPipeline implements RenderPipeline {
     this.width = Math.max(1, Math.floor(_size.x));
     this.height = Math.max(1, Math.floor(_size.y));
 
-    this.mrt.setSize(this.width, this.height);
+    this.resizeTargets();
+  }
+
+  private resizeTargets(): void {
+    const pw = Math.max(1, Math.round(this.width * this.prepassScale));
+    const ph = Math.max(1, Math.round(this.height * this.prepassScale));
+
+    this.mrt.setSize(pw, ph);
     this.sceneRT.setSize(this.width, this.height);
     this.postRT.setSize(this.width, this.height);
 
-    (this.linesPass.material.uniforms.uTexel.value as THREE.Vector2).set(
-      1 / this.width,
-      1 / this.height,
-    );
+    // The Sobel's taps are offsets into the PREPASS, so its texel size is the
+    // prepass's, not the frame's. Getting this wrong at scale < 1 makes the
+    // kernel sample the same texel three times and every interior line
+    // disappears — a failure that looks like "the Sobel is off" rather than
+    // like a resolution bug.
+    (this.linesPass.material.uniforms.uTexel.value as THREE.Vector2).set(1 / pw, 1 / ph);
+
     // The hull's own width scales with the viewport (see outline.glsl.ts), so
-    // the radius the Sobel yields inside must scale with it too or the two
-    // systems drift apart on a window resize.
-    this.linesPass.material.uniforms.uHullSuppressPx.value = hullSuppressRadiusPx(this.height);
+    // the radius the Sobel yields inside must scale with it too, and then be
+    // converted from frame pixels into prepass texels.
+    this.linesPass.material.uniforms.uHullSuppressPx.value =
+      hullSuppressRadiusPx(this.height) * this.prepassScale;
+
     (this.gradePass.material.uniforms.uViewportPx.value as THREE.Vector2).set(
       this.width,
       this.height,
@@ -453,8 +502,14 @@ export class GongbiPipeline implements RenderPipeline {
     this.tier = q.tier;
     this.settings = q;
     this.shadows.setMapSize(q.shadowMapSize);
+    this.maxCascades = q.cascades;
     this.shadows.setCascadeCount(q.cascades);
     this.materials.setQuality(q);
+    const scale = PREPASS_SCALE[q.tier] ?? 1;
+    if (scale !== this.prepassScale) {
+      this.prepassScale = scale;
+      this.resizeTargets();
+    }
     this.outlinesEnabled = q.outlines;
     this.linesPass.material.uniforms.uSobelEnabled.value =
       q.sobel && this.floatTargets && this.debugMode !== DEBUG_OUTLINE_ONLY ? 1 : 0;
@@ -616,15 +671,27 @@ export class GongbiPipeline implements RenderPipeline {
     const prevAlpha = renderer.getClearAlpha();
     renderer.autoClear = true;
 
+    // `renderer.info` resets itself at the top of every `renderer.render()`
+    // call, so in a pipeline that submits the scene five times per frame the
+    // counters only ever describe the LAST submission — which is the two-
+    // triangle grade pass. Anything reading draw calls or triangles (the perf
+    // governor, `__XQ.stats()`, the capture harness's budget check) would see
+    // "1 draw call, 1 triangle" and conclude nothing was drawn. Taking manual
+    // control makes the numbers the frame totals they are supposed to be.
+    renderer.info.autoReset = false;
+    renderer.info.reset();
+
     // --- 1. shadows --------------------------------------------------------
     const wantShadows =
       this.settings.cascades > 0 && !this.silhouette && this.debugMode !== DEBUG_OUTLINE_ONLY;
     this.materials.setShadowsEnabled(wantShadows);
+    if (wantShadows && this.adaptiveCascades) this.shadows.setCascadeCount(this.neededCascades(camera));
     if (wantShadows) {
       this.shadows.render(renderer, scene, camera, this.hulls);
       // Immediately after the fit, never before it — see syncShadows()'s note.
       this.materials.syncShadows();
     }
+    this.stats.shadow = renderer.info.render.calls;
 
     // --- 2. depth + normal prepass ----------------------------------------
     const wantSobel = this.linesPass.material.uniforms.uSobelEnabled.value === 1 && !this.silhouette;
@@ -656,8 +723,11 @@ export class GongbiPipeline implements RenderPipeline {
     if (!this.outlinesEnabled) {
       for (let i = 0; i < this.hulls.length; i++) this.hulls[i].visible = false;
     }
+    this.stats.prepass = renderer.info.render.calls - this.stats.shadow;
     renderer.setRenderTarget(this.sceneRT);
     renderer.render(scene, camera);
+    this.stats.main =
+      renderer.info.render.calls - this.stats.shadow - this.stats.prepass;
     if (!this.outlinesEnabled) {
       for (let i = 0; i < this.hulls.length; i++) this.hulls[i].visible = true;
     }
@@ -670,6 +740,52 @@ export class GongbiPipeline implements RenderPipeline {
     renderer.setRenderTarget(prevTarget);
     renderer.setClearColor(this.prevClear, prevAlpha);
     renderer.autoClear = prevAutoClear;
+
+    // Split the frame's totals out per pass, so a budget overrun can be
+    // attributed instead of guessed at.
+    this.stats.total = renderer.info.render.calls;
+    this.stats.triangles = renderer.info.render.triangles;
+  }
+
+  /**
+   * Draw-call and triangle totals for the WHOLE frame, across every pass.
+   * `renderer.info` cannot be read directly for this — see the note in
+   * `renderCurrent()`.
+   */
+  readonly stats = { total: 0, triangles: 0, shadow: 0, prepass: 0, main: 0, post: 2 };
+
+  /**
+   * How many cascades this framing actually needs.
+   *
+   * Everything that can cast or receive lies within `SHADOW_WORLD_RADIUS` of
+   * the origin (the board is centred there by core/coords.ts), so the furthest
+   * view depth any shadowed fragment can have is bounded by the camera's
+   * distance from the origin plus that radius. If that bound falls inside
+   * cascade 1, cascade 2 is rendering an empty map — 32 draw calls a frame for
+   * nothing.
+   *
+   * At the resting framing (15.5 units out) the bound is 23.5 and all three
+   * cascades are live. At the over-the-shoulder capture framing (4.2 units) it
+   * is 12.2 and the third cascade is dropped, which is exactly the moment the
+   * frame budget is tightest because a capture animation is playing.
+   *
+   * The bound is an upper bound, not an estimate, so this can never drop a
+   * cascade something needed. `setAdaptiveCascades(false)` turns it off for a
+   * harness that wants a fixed cost.
+   */
+  private neededCascades(camera: THREE.Camera): number {
+    const reach = camera.position.length() + SHADOW_WORLD_RADIUS;
+    let n = 1;
+    for (let i = 0; i < CASCADE_SPLITS.length - 1; i++) {
+      if (reach > this.shadows.cascades[i].far) n = i + 2;
+    }
+    return Math.min(n, this.maxCascades);
+  }
+
+  /** Pin the cascade count to the quality tier's, defeating the adaptive rule. */
+  setAdaptiveCascades(on: boolean): void {
+    this.adaptiveCascades = on;
+    if (!on) this.shadows.setCascadeCount(this.maxCascades);
   }
 
   private pushGrade(): void {

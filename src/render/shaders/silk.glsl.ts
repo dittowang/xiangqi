@@ -41,10 +41,18 @@ uniform float uSilkPeriodPx;
 uniform float uCunScalePx;
 /** Direction of the 皴 strokes, radians, measured in screen space. */
 uniform float uCunAngle;
-/** The wash pigment, linear. Usually the surface pigment's own undertone band. */
-uniform vec3 uSilkTint;
 /** Global multiplier; the perf governor drops this to 0 on the low tier. */
 uniform float uSilkGain;
+`;
+
+/**
+ * The wash pigment and per-class strength, for the per-uniform material path.
+ * The atlas path reads both from the parameter table instead, so it does not
+ * declare these.
+ */
+export const GLSL_SILK_UNIFORM_PARS = /* glsl */ `
+/** The wash pigment, linear. Usually the surface pigment's own undertone band. */
+uniform vec3 uSilkTint;
 /** Per-material-class strength, straight from RampSpec.silkWash. */
 uniform float uSilkWash;
 `;
@@ -161,11 +169,20 @@ float xqSilkGround(vec2 px) {
  * where the ground's tooth is LOW — i.e. the wash pools in the valleys of the
  * weave, which is what a transparent wash physically does on real silk.
  */
-vec3 xqSilkWash(vec3 base, vec2 px, float shadowness, float enabled) {
-  float amt = uSilkGain * uSilkWash * shadowness * enabled;
+vec3 xqSilkWashAt(vec3 base, vec2 px, float shadowness, float enabled, vec3 tint, float wash) {
+  float amt = uSilkGain * wash * shadowness * enabled;
   if (amt <= 0.0) return base;
   float tooth = xqSilkGround(px);
   // 1 - tooth: pigment settles where the ground dips.
-  return mix(base, uSilkTint, amt * (1.0 - tooth));
+  return mix(base, tint, amt * (1.0 - tooth));
+}
+`;
+
+/** The per-uniform path's wrapper. */
+export const GLSL_SILK_UNIFORM = /* glsl */ `
+${GLSL_SILK_UNIFORM_PARS}
+
+vec3 xqSilkWash(vec3 base, vec2 px, float shadowness, float enabled) {
+  return xqSilkWashAt(base, px, shadowness, enabled, uSilkTint, uSilkWash);
 }
 `;

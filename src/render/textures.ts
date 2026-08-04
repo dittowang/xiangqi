@@ -258,6 +258,36 @@ export const TEXTURE_KINDS: readonly TextureKind[] = [
  * direction asked for, and the symptom — "the band edges on the robes look too
  * clean" — points nowhere near the cause.
  */
+/**
+ * Layer order inside the tooth `DataArrayTexture`. Frozen: the parameter table
+ * stores a layer INDEX per material class, so reordering this repaints every
+ * surface with the wrong grain.
+ *
+ * `silkGround` is absent on purpose — it is a colour map, not a tooth, and no
+ * material class wears it.
+ */
+export const TOOTH_LAYERS: readonly TextureKind[] = [
+  'clothWeave',
+  'timberGrain',
+  'stoneGrit',
+  'lacquerCrackle',
+  'goldLeaf',
+  'granulation',
+];
+
+/**
+ * Every layer of an array texture must be the same size, so the two fields that
+ * would happily live at 256 are generated at 512 as well. 512 is set by the
+ * lacquer crackle, whose plates are 28 across a repeat and turn to mush below
+ * it.
+ */
+export const TOOTH_ARRAY_SIZE = 512;
+
+export function toothLayerIndex(kind: TextureKind): number {
+  const i = TOOTH_LAYERS.indexOf(kind);
+  return i < 0 ? 0 : i;
+}
+
 export const CLASS_TOOTH: Record<MaterialClass, TextureKind> = {
   lacquer: 'lacquerCrackle',
   cloth: 'clothWeave',
@@ -681,13 +711,68 @@ export class TextureLibrary {
     t.needsUpdate = true;
   }
 
+  /**
+   * The tooth fields as one `DataArrayTexture`, one layer per kind in
+   * `TOOTH_LAYERS` order.
+   *
+   * WHY AN ARRAY AND NOT SEVEN SAMPLERS
+   * The atlas material decides which tooth a fragment wears from a per-vertex
+   * attribute, so the choice is dynamic. GLSL forbids indexing an array of
+   * samplers with a non-constant expression, which leaves either a seven-way
+   * branch with three fetches in each arm — twenty-one texture instructions in
+   * the shader, most of them dead but all of them compiled — or a 2D array
+   * texture, where the layer is just the third component of the coordinate and
+   * the hardware does the selection. The array is one instruction.
+   *
+   * Every layer must be the same size, so they are all generated at
+   * `TOOTH_ARRAY_SIZE` rather than at their individual sizes. That costs the two
+   * 256-px fields (stone grit, granulation) about 4x their generation time;
+   * `prewarmAtlas()` is called behind the boot veil and the real number is
+   * printed by selfcheck.ts rather than guessed at here.
+   */
+  toothArray(): THREE.DataArrayTexture {
+    if (this.array) return this.array;
+
+    const n = TOOTH_LAYERS.length;
+    const size = TOOTH_ARRAY_SIZE;
+    const layerBytes = size * size * 4;
+    const data = new Uint8Array(layerBytes * n);
+    for (let i = 0; i < n; i++) {
+      data.set(new Uint8Array(generateField(TOOTH_LAYERS[i], size).buffer), i * layerBytes);
+    }
+
+    const tex = new THREE.DataArrayTexture(data, size, size, n);
+    tex.name = 'gongbi.toothArray';
+    tex.format = THREE.RGBAFormat;
+    tex.type = THREE.UnsignedByteType;
+    tex.wrapS = THREE.RepeatWrapping;
+    tex.wrapT = THREE.RepeatWrapping;
+    tex.magFilter = THREE.LinearFilter;
+    tex.minFilter = THREE.LinearMipmapLinearFilter;
+    tex.generateMipmaps = true;
+    tex.anisotropy = this.anisotropy;
+    tex.colorSpace = THREE.NoColorSpace;
+    tex.needsUpdate = true;
+    this.array = tex;
+    return tex;
+  }
+
+  private array: THREE.DataArrayTexture | null = null;
+
   /** Build everything now, so the first move never pays for a texture. */
   prewarm(): void {
     for (const k of TEXTURE_KINDS) this.get(k);
   }
 
+  /** Build the array too. Only the atlas material path needs it. */
+  prewarmAtlas(): void {
+    this.toothArray();
+  }
+
   dispose(): void {
     for (const t of this.cache.values()) t.dispose();
     this.cache.clear();
+    this.array?.dispose();
+    this.array = null;
   }
 }

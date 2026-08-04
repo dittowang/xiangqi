@@ -45,6 +45,7 @@ import {
   MOODS,
   OUTLINES,
   PIGMENTS,
+  PIGMENT_NAMES,
   RAMPS,
   hexToRgb,
   srgbToLinear,
@@ -56,14 +57,29 @@ import {
 import { seedFor } from '@core/rng.ts';
 import type { CascadedShadowMaps } from './csm.ts';
 import { CASCADE_BLEND } from './csm.ts';
-import { buildRampAtlas, rampRowV, wakeColour, washColour } from './ramps.ts';
-import { CLASS_TOOTH, TextureLibrary } from './textures.ts';
+import {
+  ATLAS_CODE_STRIDE,
+  PARAM_WIDTH,
+  RAMP_ROWS,
+  buildParamTable,
+  buildRampAtlas,
+  rampRowV,
+  wakeColour,
+  washColour,
+} from './ramps.ts';
+import { CLASS_TOOTH, TextureLibrary, toothLayerIndex } from './textures.ts';
 import { SilkWash } from './silk.ts';
 import { GLSL_CSM, GLSL_MATH } from './shaders/lib.glsl.ts';
 import { GLSL_NOISE } from './shaders/noise.glsl.ts';
-import { GLSL_RAMP } from './shaders/ramp.glsl.ts';
-import { GLSL_SILK } from './shaders/silk.glsl.ts';
 import {
+  GLSL_RAMP,
+  GLSL_RAMP_CORE,
+  GLSL_TOOTH_ARRAY,
+  glslAtlasDecode,
+} from './shaders/ramp.glsl.ts';
+import { GLSL_SILK, GLSL_SILK_UNIFORM } from './shaders/silk.glsl.ts';
+import {
+  GLSL_ATLAS_OUTLINE_FRAG,
   GLSL_OUTLINE_FRAG,
   GLSL_OUTLINE_PARS,
   GLSL_OUTLINE_VERT,
@@ -154,6 +170,18 @@ const GRANULATION: Record<MaterialClass, number> = {
 /** Cache-key quantisation. See the note on `glow` in `get()`. */
 const VARIATION_STEPS = 64;
 const GLOW_STEPS = 16;
+
+/**
+ * The decode block, generated from the real table dimensions so a change to
+ * PARAM_WIDTH or the class/pigment counts cannot leave a stale literal in the
+ * shader. selfcheck.ts re-derives the same arithmetic on the CPU and compares.
+ */
+const GLSL_ATLAS_DECODE = glslAtlasDecode({
+  rows: RAMP_ROWS,
+  paramWidth: PARAM_WIDTH,
+  stride: ATLAS_CODE_STRIDE,
+  pigments: PIGMENT_NAMES.length,
+});
 
 // ===========================================================================
 // Debug modes — shared with composer.ts and the shaders
@@ -282,6 +310,13 @@ varying vec3 vObjPos;
 varying vec3 vObjNormal;
 varying float vInstanceVariation;
 
+#ifdef USE_ATLAS_MATERIAL
+  // characters/factory.ts stamps this on every merged geometry:
+  // classIndex * 16 + pigmentIndex. Carried FLAT — see glslAtlasDecode().
+  attribute float aMaterial;
+  flat out float vMatCode;
+#endif
+
 void main() {
   vec3 transformed = position;
   vec3 objectNormal = normal;
@@ -311,17 +346,90 @@ void main() {
     vInstanceVariation = 0.0;
   #endif
 
+  #ifdef USE_ATLAS_MATERIAL
+    vMatCode = aMaterial;
+  #endif
+
   gl_Position = projectionMatrix * mvPosition;
 }
 `;
 
-const GLSL_SURFACE_FRAG = /* glsl */ `
+/**
+ * The shading itself, written ONCE and shared by both material paths.
+ *
+ * Every input that used to be a per-material uniform arrives as an argument
+ * instead. The per-uniform path passes its uniforms; the atlas path passes
+ * values it decoded from a per-vertex material code and read out of the
+ * parameter table. Having one body is not tidiness — it is the only way the two
+ * paths cannot drift, and a drift here would mean the figures and the board
+ * were shaded by two subtly different renderers.
+ */
+const GLSL_SURFACE_SHADE = /* glsl */ `
+vec3 xqGongbiShade(
+  float rowV, float steps,
+  vec3 wake, float rim,
+  vec3 silkTint, float silkWash,
+  float tooth, float granulation,
+  float variation, float glow, vec3 glowColour, float noSilk,
+  vec3 N, vec3 V, vec3 worldPos, float viewDepth
+) {
+  // --- where on the ramp -------------------------------------------------
+  float ndlRaw = max( dot( N, uKeyDir ), 0.0 );
+  float shadow = xqCsmShadow( worldPos, N, viewDepth, uCsmBlend );
+
+  float ndl = ndlRaw * mix( uShadowDepth, 1.0, shadow );
+  ndl += ( tooth - 0.5 ) * granulation;   // 顆粒: break the edge on the grain
+  ndl += variation * ${VARIATION_BAND.toFixed(4)};
+
+  if ( uDebugMode == ${DEBUG_RAMP_BANDS} ) return xqRampBandDebugRow( rowV, ndl );
+  if ( uDebugMode == ${DEBUG_SHADOW_CASCADES} ) {
+    return xqCsmDebugTint( viewDepth ) * mix( 0.30, 1.0, shadow );
+  }
+
+  vec3 col = xqRampRow( rowV, ndl );
+  float band = xqRampBandRow( rowV, ndl, steps );  // 0 = deepest, 1 = top band
+  float shade = 1.0 - band;
+
+  // --- light as tint, never as accumulated radiance ----------------------
+  float keyGain = uKeyIntensity / ${KEY_REFERENCE.toFixed(2)};
+  col *= mix( vec3( 1.0 ), uKeyColour, ${KEY_TINT.toFixed(3)} * band * keyGain );
+  col *= mix( vec3( 1.0 ), uFillColour, ${FILL_TINT.toFixed(3)} * shade * uFillIntensity );
+
+  // Bounce is light off the tabletop, so it reaches downward-facing planes and
+  // only matters where the key does not.
+  float down = max( -N.y, 0.0 );
+  col *= mix( vec3( 1.0 ), uBounceColour, ${BOUNCE_TINT.toFixed(3)} * down * shade );
+
+  // Per-unit value nudge, so a rank of soldiers is not a xerox.
+  col *= 1.0 + variation * ${VARIATION_VALUE.toFixed(4)};
+
+  // --- 醒色 ---------------------------------------------------------------
+  col = xqWakeColour( col, wake, rim, dot( N, V ), ndlRaw,
+                      ${RIM_EDGE.toFixed(3)}, ${RIM_GATE.toFixed(3)} );
+
+  // --- 罩染: the ground shows through the shadow washes -------------------
+  col = xqSilkWashAt( col, gl_FragCoord.xy, shade, 1.0 - noSilk, silkTint, silkWash );
+
+  // --- check pulse / impact flash only -----------------------------------
+  col += glowColour * glow;
+
+  col *= uExposure;
+  return mix( col, vec3( 0.0 ), uSilhouette );
+}
+`;
+
+/** Varyings both surface mains share. */
+const GLSL_SURFACE_VARYINGS = /* glsl */ `
 varying vec3 vWorldNormal;
 varying vec3 vWorldPos;
 varying vec3 vViewPos;
 varying vec3 vObjPos;
 varying vec3 vObjNormal;
 varying float vInstanceVariation;
+`;
+
+const GLSL_SURFACE_FRAG = /* glsl */ `
+${GLSL_SURFACE_VARYINGS}
 
 /**
  * Triplanar tooth in rest-pose object space. The blend weights are raised to
@@ -349,58 +457,73 @@ void main() {
 
   vec3 N = normalize( vWorldNormal );
   vec3 V = normalize( cameraPosition - vWorldPos );
-  float viewDepth = -vViewPos.z;
 
-  float variation = uVariation + vInstanceVariation;
+  gl_FragColor = vec4( xqGongbiShade(
+    uRampRow, uRampSteps,
+    uRimColour, uRim,
+    uSilkTint, uSilkWash,
+    xqTooth(), uGranulation,
+    uVariation + vInstanceVariation, uGlow, uGlowColour, uNoSilk,
+    N, V, vWorldPos, -vViewPos.z
+  ), 1.0 );
+}
+`;
 
-  // --- where on the ramp -------------------------------------------------
-  float ndlRaw = max( dot( N, uKeyDir ), 0.0 );
-  float shadow = xqCsmShadow( vWorldPos, N, viewDepth, uCsmBlend );
+/**
+ * The atlas surface fragment.
+ *
+ * One material for a whole figure. The class and pigment come from the
+ * per-vertex code, and everything that was a uniform comes out of the parameter
+ * table — including which of the six tooth grains this fragment wears, which is
+ * why the tooth is an array texture rather than seven bound samplers.
+ */
+const GLSL_ATLAS_SURFACE_FRAG = /* glsl */ `
+${GLSL_SURFACE_VARYINGS}
 
-  float ndl = ndlRaw * mix( uShadowDepth, 1.0, shadow );
-  ndl += ( xqTooth() - 0.5 ) * uGranulation;   // 顆粒: break the edge on the grain
-  ndl += variation * ${VARIATION_BAND.toFixed(4)};
+/**
+ * What is still per-MATERIAL on the atlas path. Everything else — pigment,
+ * class, rim, wash, granulation, tooth, outline profile — has moved to the
+ * per-vertex code and the parameter table. These three stay because they are
+ * per-UNIT, not per-vertex: one soldier's value nudge, one general's check
+ * pulse.
+ */
+uniform float uVariation;
+uniform float uGlow;
+uniform float uNoSilk;
 
-  vec3 col = xqRamp( ndl );
-  float band = xqRampBand( ndl );  // 0 = deepest, 1 = top band
-  float shade = 1.0 - band;
+flat in float vMatCode;
 
-  if ( uDebugMode == ${DEBUG_RAMP_BANDS} ) {
-    gl_FragColor = vec4( xqRampBandDebug( ndl ), 1.0 );
-    return;
-  }
-  if ( uDebugMode == ${DEBUG_SHADOW_CASCADES} ) {
-    gl_FragColor = vec4( xqCsmDebugTint( viewDepth ) * mix( 0.30, 1.0, shadow ), 1.0 );
-    return;
-  }
+void main() {
+  if ( uDebugMode == ${DEBUG_OUTLINE_ONLY} ) discard;
 
-  // --- light as tint, never as accumulated radiance ----------------------
-  float keyGain = uKeyIntensity / ${KEY_REFERENCE.toFixed(2)};
-  col *= mix( vec3( 1.0 ), uKeyColour, ${KEY_TINT.toFixed(3)} * band * keyGain );
-  col *= mix( vec3( 1.0 ), uFillColour, ${FILL_TINT.toFixed(3)} * shade * uFillIntensity );
+  vec3 N = normalize( vWorldNormal );
+  vec3 V = normalize( cameraPosition - vWorldPos );
 
-  // Bounce is light off the tabletop, so it reaches downward-facing planes and
-  // only matters where the key does not.
-  float down = max( -N.y, 0.0 );
-  col *= mix( vec3( 1.0 ), uBounceColour, ${BOUNCE_TINT.toFixed(3)} * down * shade );
+  float rowV = xqAtlasRowV( vMatCode );
+  vec4 p0 = xqAtlasParam( rowV, 0.0 );  // wake.rgb, rim
+  vec4 p1 = xqAtlasParam( rowV, 1.0 );  // washTint.rgb, silkWash
+  vec4 p3 = xqAtlasParam( rowV, 3.0 );  // granulation, toothScale, widthPx, steps
+  vec4 p4 = xqAtlasParam( rowV, 4.0 );  // fadeStart, fadeEnd, toothLayer, classIdx
 
-  // Per-unit value nudge, so a rank of soldiers is not a xerox.
-  col *= 1.0 + variation * ${VARIATION_VALUE.toFixed(4)};
+#ifdef USE_TOOTH
+  float tooth = xqToothLayered( vObjPos, vObjNormal, p3.g, p4.b );
+#else
+  float tooth = 0.5;
+#endif
 
-  // --- 醒色 ---------------------------------------------------------------
-  col = xqWakeColour( col, uRimColour, uRim, dot( N, V ), ndlRaw,
-                      ${RIM_EDGE.toFixed(3)}, ${RIM_GATE.toFixed(3)} );
+  // The glow pigment is the row's own accent band rather than a uniform: the
+  // check pulse should flare in the piece's own colour, and asking the ramp for
+  // N·L = 1 is exactly "the brightest this pigment gets".
+  vec3 glowColour = xqRampRow( rowV, 1.0 );
 
-  // --- 罩染: the ground shows through the shadow washes -------------------
-  col = xqSilkWash( col, gl_FragCoord.xy, shade, 1.0 - uNoSilk );
-
-  // --- check pulse / impact flash only -----------------------------------
-  col += uGlowColour * uGlow;
-
-  col *= uExposure;
-  col = mix( col, vec3( 0.0 ), uSilhouette );
-
-  gl_FragColor = vec4( col, 1.0 );
+  gl_FragColor = vec4( xqGongbiShade(
+    rowV, p3.a,
+    p0.rgb, p0.a,
+    p1.rgb, p1.a,
+    tooth, p3.r,
+    uVariation + vInstanceVariation, uGlow, glowColour, uNoSilk,
+    N, V, vWorldPos, -vViewPos.z
+  ), 1.0 );
 }
 `;
 
@@ -437,7 +560,13 @@ void main() {
 const GLSL_PREPASS_HULL_VERT = /* glsl */ `
 #include <skinning_pars_vertex>
 
-${GLSL_OUTLINE_PARS}
+#ifdef USE_ATLAS_MATERIAL
+  attribute float aMaterial;
+#else
+  uniform float uOutlineWidthPx;
+#endif
+
+uniform vec2 uViewportPx;
 
 attribute vec3 aSmoothNormal;
 
@@ -467,7 +596,12 @@ void main() {
   vec3 viewNormal = normalize( normalMatrix * hullNormal );
 
   float depth = isOrthographic ? 1.0 : max( -mvPosition.z, 1e-4 );
-  float widthPx = uOutlineWidthPx * uViewportPx.y / 1080.0;
+  #ifdef USE_ATLAS_MATERIAL
+    float authoredPx = xqAtlasParam( xqAtlasRowV( aMaterial ), 3.0 ).b;
+  #else
+    float authoredPx = uOutlineWidthPx;
+  #endif
+  float widthPx = authoredPx * uViewportPx.y / 1080.0;
   float offset = 2.0 * widthPx * depth / ( projectionMatrix[1][1] * uViewportPx.y );
   mvPosition.xyz += viewNormal * offset;
 
@@ -540,6 +674,44 @@ function normalise(req: MaterialRequest): NormalisedRequest {
   };
 }
 
+/**
+ * What is still per-MATERIAL on the atlas path. Class, pigment, outline profile
+ * and every per-class parameter have moved into the per-vertex code and the
+ * parameter table; what is left is genuinely per-unit.
+ */
+export interface AtlasRequest {
+  /** Per-unit value nudge, so a rank of soldiers is not a xerox. */
+  variation?: number;
+  /** Emissive lift for the check pulse and the impact flash. */
+  glow?: number;
+  /** Opt out of the silk wash entirely. */
+  noSilk?: boolean;
+  doubleSided?: boolean;
+  instanced?: boolean;
+}
+
+interface NormalisedAtlasRequest {
+  variation: number;
+  glow: number;
+  noSilk: boolean;
+  doubleSided: boolean;
+  instanced: boolean;
+}
+
+function normaliseAtlas(req: AtlasRequest): NormalisedAtlasRequest {
+  return {
+    variation: quantise(Math.max(-1, Math.min(1, req.variation ?? 0)), VARIATION_STEPS),
+    glow: quantise(Math.max(0, Math.min(1, req.glow ?? 0)), GLOW_STEPS),
+    noSilk: req.noSilk === true,
+    doubleSided: req.doubleSided === true,
+    instanced: req.instanced === true,
+  };
+}
+
+function atlasKey(n: NormalisedAtlasRequest, kind: string): string {
+  return `${kind}|${n.variation}|${n.glow}|${n.noSilk ? 1 : 0}|${n.doubleSided ? 1 : 0}|${n.instanced ? 1 : 0}`;
+}
+
 function cacheKey(n: NormalisedRequest, kind: string): string {
   return `${kind}|${n.cls}|${n.pigment}|${n.variation}|${n.outline}|${n.noSilk ? 1 : 0}|${n.glow}|${n.doubleSided ? 1 : 0}|${n.instanced ? 1 : 0}`;
 }
@@ -547,11 +719,12 @@ function cacheKey(n: NormalisedRequest, kind: string): string {
 /** What kind of gongbi material this is, stashed on `Material.userData`. */
 export interface GongbiUserData {
   gongbi: {
-    kind: 'surface' | 'hull';
+    kind: 'surface' | 'hull' | 'atlasSurface' | 'atlasHull';
     key: string;
     /** The request this material was built from, so outline.ts can ask for the
-     *  matching hull without the caller having to keep the request around. */
-    req: NormalisedRequest;
+     *  matching hull without the caller having to keep the request around.
+     *  Null on the atlas path, where class and pigment are per-vertex. */
+    req: NormalisedRequest | null;
     /** The MRT twin used by the depth/normal prepass. */
     prepass: THREE.ShaderMaterial;
   };
@@ -578,6 +751,8 @@ export interface GongbiOptions {
 
 export class GongbiMaterialLibrary implements GongbiMaterials {
   readonly rampAtlas: THREE.DataTexture;
+  /** Per-(class, pigment) lookup row for the atlas path. See ramps.ts. */
+  readonly paramTable: THREE.DataTexture;
   readonly textures: TextureLibrary;
 
   /** Uniform objects shared BY REFERENCE across every material. */
@@ -601,6 +776,11 @@ export class GongbiMaterialLibrary implements GongbiMaterials {
 
   constructor(opts: GongbiOptions = {}) {
     this.rampAtlas = buildRampAtlas();
+    this.paramTable = buildParamTable({
+      granulation: (cls) => (opts.tooth === false ? 0 : GRANULATION[cls]),
+      toothScale: (cls) => TOOTH_SCALE[cls],
+      toothLayer: (cls) => toothLayerIndex(CLASS_TOOTH[cls]),
+    });
     this.textures = opts.textures ?? new TextureLibrary();
     this.tooth = opts.tooth !== false;
 
@@ -681,6 +861,8 @@ export class GongbiMaterialLibrary implements GongbiMaterials {
       GLSL_CSM,
       GLSL_RAMP,
       GLSL_SILK,
+      GLSL_SILK_UNIFORM,
+      GLSL_SURFACE_SHADE,
       GLSL_SURFACE_PARS,
       GLSL_SURFACE_FRAG,
     ].join('\n');
@@ -738,12 +920,12 @@ export class GongbiMaterialLibrary implements GongbiMaterials {
     const key = `prepass.hull.${profileName}`;
     let m = this.prepassCache.get(key);
     if (!m) {
+      // Only the width: the prepass hull writes a mask and a depth, and has no
+      // use for the stroke's colour, tint or fade. Carrying them would be three
+      // uniforms uploaded per draw that no shader stage declares.
       m = this.buildPrepass(GLSL_PREPASS_HULL_VERT, 1, {}, key, {
         uViewportPx: this.shared.uViewportPx,
         uOutlineWidthPx: widthUniform,
-        uOutlineColour: { value: new THREE.Color(0, 0, 0) },
-        uOutlineTint: { value: 0 },
-        uOutlineFade: { value: new THREE.Vector2(0, 0) },
       });
       m.side = THREE.BackSide;
       this.prepassCache.set(key, m);
@@ -791,6 +973,161 @@ export class GongbiMaterialLibrary implements GongbiMaterials {
       prepass: this.hullPrepass(n.outline, uniforms.uOutlineWidthPx),
     };
     return mat;
+  }
+
+  // -- the atlas (per-vertex class + pigment) path --------------------------
+
+  /**
+   * One material for a whole figure.
+   *
+   * The per-uniform path above is the simpler default and stays the right
+   * choice for scene/ and ui/, where an object legitimately is one pigment.
+   * This path exists for characters/, where it is not: a figure uses eight to
+   * thirteen (class, pigment) pairs, and one material per pair put a 32-unit
+   * board at 475 meshes and 950 draw calls against a budget of 260.
+   *
+   * Requirements on the caller:
+   *   - every geometry drawn with it MUST carry the `aMaterial` attribute
+   *     (`hasAtlasAttribute()` checks); without it the attribute reads as zero
+   *     and the whole figure comes out as lacquered azurite;
+   *   - the geometries of one figure should be merged into one, which is what
+   *     `collapseToAtlas()` in outline.ts does to an already-built unit.
+   *
+   * `variation` and `glow` remain per-material because they are per-UNIT, not
+   * per-vertex. That costs one material object per distinct value but not one
+   * draw call — a draw call is per mesh, and all of these share one program.
+   */
+  getAtlas(req: AtlasRequest = {}): THREE.ShaderMaterial {
+    const n = normaliseAtlas(req);
+    const key = atlasKey(n, 'as');
+    let m = this.cache.get(key);
+    if (m) return m;
+
+    const uniforms: Record<string, THREE.IUniform> = {
+      ...this.shared,
+      uParamTable: { value: this.paramTable },
+      uToothArray: { value: this.textures.toothArray() },
+      uVariation: { value: n.variation },
+      uGlow: { value: n.glow },
+      uNoSilk: { value: n.noSilk ? 1 : 0 },
+    };
+
+    const frag = [
+      GLSL_MATH,
+      GLSL_NOISE,
+      GLSL_FRAME_PARS,
+      GLSL_LIGHT_PARS,
+      GLSL_CSM,
+      GLSL_RAMP_CORE,
+      GLSL_ATLAS_DECODE,
+      GLSL_TOOTH_ARRAY,
+      GLSL_SILK,
+      GLSL_SURFACE_SHADE,
+      GLSL_ATLAS_SURFACE_FRAG,
+    ].join('\n');
+
+    const defines: Record<string, string> = { USE_ATLAS_MATERIAL: '1' };
+    if (this.tooth) defines.USE_TOOTH = '1';
+    if (n.instanced) defines.USE_INSTANCE_VARIATION = '1';
+
+    m = new THREE.ShaderMaterial({
+      name: key,
+      uniforms,
+      defines,
+      vertexShader: GLSL_SURFACE_VERT,
+      fragmentShader: frag,
+      lights: false,
+      fog: false,
+      side: n.doubleSided ? THREE.DoubleSide : THREE.FrontSide,
+    });
+    (m.userData as GongbiUserData).gongbi = {
+      kind: 'atlasSurface',
+      key,
+      req: null,
+      prepass: this.surfacePrepass(n.doubleSided),
+    };
+    this.cache.set(key, m);
+    return m;
+  }
+
+  /**
+   * The hull twin of `getAtlas()`. The outline PROFILE is per-vertex here too —
+   * stroke width, pigment, tint and distance fade all come out of the parameter
+   * table row the vertex code selects — so one hull draws deep-ink contour on
+   * cloth and 泥金 structural line on plate in the same pass.
+   *
+   * There is exactly one of these per (doubleSided is irrelevant — a hull is
+   * always BackSide), so the whole cast's line work is one material.
+   */
+  outlineAtlas(req: AtlasRequest = {}): THREE.ShaderMaterial {
+    const n = normaliseAtlas(req);
+    const key = atlasKey(n, 'ah');
+    let m = this.cache.get(key);
+    if (m) return m;
+
+    const uniforms: Record<string, THREE.IUniform> = {
+      uViewportPx: this.shared.uViewportPx,
+      uSilhouette: this.shared.uSilhouette,
+      uRampAtlas: this.shared.uRampAtlas,
+      uParamTable: { value: this.paramTable },
+    };
+
+    const vert = [GLSL_ATLAS_DECODE, GLSL_OUTLINE_VERT].join('\n');
+    const frag = [
+      GLSL_MATH,
+      GLSL_RAMP_CORE,
+      GLSL_ATLAS_DECODE,
+      'uniform float uSilhouette;',
+      GLSL_ATLAS_OUTLINE_FRAG,
+    ].join('\n');
+
+    m = new THREE.ShaderMaterial({
+      name: key,
+      uniforms,
+      defines: { USE_ATLAS_MATERIAL: '1' },
+      vertexShader: vert,
+      fragmentShader: frag,
+      lights: false,
+      fog: false,
+      side: THREE.BackSide,
+    });
+    (m.userData as GongbiUserData).gongbi = {
+      kind: 'atlasHull',
+      key,
+      req: null,
+      prepass: this.atlasHullPrepass(),
+    };
+    this.cache.set(key, m);
+    return m;
+  }
+
+  /**
+   * The atlas hull's MRT twin. Its width must come from the same parameter
+   * table read as the colour hull's, or the Sobel's suppression mask would sit
+   * a fraction of a pixel off the line it exists to suppress.
+   */
+  private atlasHullPrepass(): THREE.ShaderMaterial {
+    const key = 'prepass.hull.atlas';
+    let m = this.prepassCache.get(key);
+    if (!m) {
+      m = new THREE.ShaderMaterial({
+        name: key,
+        uniforms: {
+          uHullMask: { value: 1 },
+          uViewportPx: this.shared.uViewportPx,
+          uParamTable: { value: this.paramTable },
+        },
+        defines: { USE_ATLAS_MATERIAL: '1' },
+        vertexShader: [GLSL_ATLAS_DECODE, GLSL_PREPASS_HULL_VERT].join('\n'),
+        fragmentShader: GLSL_PREPASS_FRAG,
+        glslVersion: THREE.GLSL3,
+        lights: false,
+        fog: false,
+        side: THREE.BackSide,
+      });
+      this.prepassCache.set(key, m);
+    }
+    return m;
   }
 
   private buildPrepass(
@@ -1112,6 +1449,7 @@ export class GongbiMaterialLibrary implements GongbiMaterials {
     for (const m of this.prepassCache.values()) m.dispose();
     this.prepassCache.clear();
     this.rampAtlas.dispose();
+    this.paramTable.dispose();
     this.textures.dispose();
   }
 }

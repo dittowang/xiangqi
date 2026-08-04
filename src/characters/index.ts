@@ -83,10 +83,17 @@ export type {
 //
 //     import './units/soldier.ts';
 //
-// Nothing is imported yet: `src/characters/units/` is empty apart from its
-// contract README, and every type currently resolves to the generic fallback
-// figure in `fallback.ts`. `createCharacters()` reports which types are still
-// falling back through its `onWarn` sink.
+// Types with no line here still resolve to the generic fallback figure in
+// `fallback.ts`; `createCharacters()` reports which through its `onWarn` sink.
+
+import './units/horse.ts';
+
+import './units/general.ts';
+import './units/chariot.ts';
+
+import './units/soldier.ts';
+
+import './units/cannon.ts';
 
 import { createCharacterFactory, registeredUnits, type Factory, type FactoryOptions } from './factory.ts';
 import { fallbackUnit } from './fallback.ts';

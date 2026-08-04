@@ -59,18 +59,49 @@
  *    just stopped being darker than what it encloses.
  */
 
-export const GLSL_OUTLINE_PARS = /* glsl */ `
-/** Stroke weight in CSS pixels at the 1080-CSS-px reference viewport height. */
-uniform float uOutlineWidthPx;
+/**
+ * STAGE-SCOPED DECLARATIONS.
+ *
+ * A uniform declared in the vertex shader is NOT visible in the fragment
+ * shader: they are separate compilation units that a link step joins, and the
+ * link only matches uniforms that both stages declared for themselves. Putting
+ * every outline uniform in one block and composing it into the vertex only —
+ * which is what this file did until a real driver said otherwise — makes
+ * `uOutlineColour`, `uOutlineTint` and `uOutlineFade` undeclared identifiers in
+ * the hull fragment. GLSL then error-recovers by treating them as floats, so
+ * ONE missing declaration cascades into "mix: no matching overloaded function",
+ * "dimension mismatch", "cannot convert float to 3-component vector" and
+ * "field selection requires a vector" on `.x`/`.y`. Twelve reported errors, one
+ * cause.
+ *
+ * So the blocks are split by the stage that uses them and each stage composes
+ * only its own. selfcheck.ts now checks declarations PER STAGE for exactly this
+ * reason; checking the union of both stages, which is what it did before, is
+ * blind to this entire class of bug.
+ */
+export const GLSL_OUTLINE_VERT_PARS = /* glsl */ `
+#ifndef USE_ATLAS_MATERIAL
+  /** Stroke weight in CSS pixels at the 1080-CSS-px reference viewport height.
+   *  On the atlas path this comes from the parameter table instead, per vertex,
+   *  so declaring it there would be a uniform no stage ever reads. */
+  uniform float uOutlineWidthPx;
+#endif
+/** Device-pixel viewport, shared with every other material. */
+uniform vec2 uViewportPx;
+`;
+
+export const GLSL_OUTLINE_FRAG_PARS = /* glsl */ `
 /** Stroke pigment, linear. Deep ink, 泥金, or half-ink per OutlineProfile. */
 uniform vec3 uOutlineColour;
 /** 0 = pure stroke, 1 = fully tinted toward the surface it encloses. */
 uniform float uOutlineTint;
 /** (fadeStart, fadeEnd) in world units of camera distance. */
 uniform vec2 uOutlineFade;
-/** Device-pixel viewport, shared with every other material. */
-uniform vec2 uViewportPx;
 `;
+
+/** Both, for callers that want the whole profile in one string. */
+export const GLSL_OUTLINE_PARS =
+  GLSL_OUTLINE_VERT_PARS + GLSL_OUTLINE_FRAG_PARS;
 
 /**
  * Vertex program. Shared verbatim by the colour hull and its depth/normal
@@ -81,11 +112,19 @@ uniform vec2 uViewportPx;
 export const GLSL_OUTLINE_VERT = /* glsl */ `
 #include <skinning_pars_vertex>
 
-${GLSL_OUTLINE_PARS}
+${GLSL_OUTLINE_VERT_PARS}
 
 attribute vec3 aSmoothNormal;
 
 varying float vCamDist;
+
+#ifdef USE_ATLAS_MATERIAL
+  // The outline PROFILE becomes per-vertex too: a chariot's iron fittings take
+  // the structural 泥金 line and its timber body takes the same, while the
+  // driver's hands take the fine ink line — all in one hull, one draw call.
+  attribute float aMaterial;
+  flat out float vMatCode;
+#endif
 
 void main() {
   vec3 transformed = position;
@@ -116,11 +155,19 @@ void main() {
 
   // Equation (1) above. 'isOrthographic' is injected by three.
   float depth = isOrthographic ? 1.0 : max( -mvPosition.z, 1e-4 );
+
+  #ifdef USE_ATLAS_MATERIAL
+    float authoredPx = xqAtlasParam( xqAtlasRowV( aMaterial ), 3.0 ).b;
+    vMatCode = aMaterial;
+  #else
+    float authoredPx = uOutlineWidthPx;
+  #endif
+
   // OutlineProfile widths are authored against a 1080-CSS-px-tall viewport and
   // scale with the viewport so the *drawing* stays composed at any window size.
   // Working in device pixels, the dpr cancels: cssW * (Hcss/1080) * dpr
   // == cssW * Hdevice / 1080.
-  float widthPx = uOutlineWidthPx * uViewportPx.y / 1080.0;
+  float widthPx = authoredPx * uViewportPx.y / 1080.0;
   float offset = 2.0 * widthPx * depth / ( projectionMatrix[1][1] * uViewportPx.y );
 
   mvPosition.xyz += viewNormal * offset;
@@ -141,6 +188,8 @@ void main() {
  * rather than a guessed grey.
  */
 export const GLSL_OUTLINE_FRAG = /* glsl */ `
+${GLSL_OUTLINE_FRAG_PARS}
+
 varying float vCamDist;
 
 void main() {
@@ -161,6 +210,36 @@ void main() {
   // actually sees.
   stroke = mix( stroke, vec3( 0.0 ), uSilhouette );
 
+  gl_FragColor = vec4( stroke, 1.0 );
+}
+`;
+
+/**
+ * The atlas hull fragment: colour, tint and distance fade all come out of the
+ * parameter table row the per-vertex code selected, so one material draws the
+ * deep-ink contour on cloth, the 泥金 structural line on plate, and the fine
+ * half-ink line on flesh, in a single pass over a single merged geometry.
+ *
+ * A class whose OutlineProfile is 'none' (the silk board) has width 0, so its
+ * hull collapses exactly onto the surface and is hidden behind it. It costs a
+ * little overdraw and no correctness.
+ */
+export const GLSL_ATLAS_OUTLINE_FRAG = /* glsl */ `
+varying float vCamDist;
+flat in float vMatCode;
+
+void main() {
+  float rowV = xqAtlasRowV( vMatCode );
+  vec4 p2 = xqAtlasParam( rowV, 2.0 );  // outline colour, tint
+  vec4 p4 = xqAtlasParam( rowV, 4.0 );  // fadeStart, fadeEnd
+
+  vec3 surface = xqRampRow( rowV, 0.55 );
+  vec3 stroke = mix( p2.rgb, surface, p2.a );
+
+  float dissolve = smoothstep( p4.r, p4.g, vCamDist );
+  stroke = mix( stroke, surface, dissolve * 0.85 );
+
+  stroke = mix( stroke, vec3( 0.0 ), uSilhouette );
   gl_FragColor = vec4( stroke, 1.0 );
 }
 `;
