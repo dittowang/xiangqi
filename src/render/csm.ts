@@ -283,9 +283,24 @@ export class CascadedShadowMaps {
     _snapView.copy(_snapViewInv).invert(); // world -> light basis
 
     let near = isPersp ? persp.near : 0;
+    const lastActive = this.activeCount - 1;
+    const fullRange = _splits[CASCADE_SPLITS.length - 1];
+
     for (let i = 0; i < this.activeCount; i++) {
       const c = this.cascades[i];
-      const far = _splits[i];
+      // The LAST ACTIVE cascade always reaches the full shadow distance.
+      //
+      // Without this, dropping to one or two cascades does not reduce shadow
+      // QUALITY, it deletes the shadows: every fragment past the last split
+      // falls outside that cascade's footprint, and `xqCsmFetch` correctly —
+      // and unhelpfully — reports "lit" there rather than painting a black
+      // rectangle. At the resting framing the camera is 15.5 units out, so with
+      // one cascade covering 6 units the entire board would be unshadowed.
+      //
+      // Caught by an A/B of two real frames where a soldier's cast shadow
+      // simply disappeared between the two; nothing static could have found it,
+      // because in isolation each cascade was behaving exactly as designed.
+      const far = i === lastActive ? fullRange : _splits[i];
       c.far = far;
 
       let axial: number;

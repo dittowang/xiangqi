@@ -171,10 +171,13 @@ export class LightingRig {
     this.key.shadow.camera.right = SHADOW_EXTENT;
     this.key.shadow.camera.top = SHADOW_EXTENT;
     this.key.shadow.camera.bottom = -SHADOW_EXTENT;
-    // Incised grid lines are 12 mm deep; a fat bias erases them from the shadow
-    // map entirely, so this stays small and leans on the normal bias instead.
-    this.key.shadow.bias = -0.00018;
-    this.key.shadow.normalBias = 0.022;
+    // Incised line work is 12 thousandths deep. A normal bias larger than that
+    // pushes the shadow lookup clean through the far wall of every groove, and
+    // the grid then self-shadows in patches — it renders as a dotted line rather
+    // than a drawn one. Both biases have to stay well under the depth of the
+    // shallowest thing on the board.
+    this.key.shadow.bias = -0.00012;
+    this.key.shadow.normalBias = 0.004;
     this.group.add(this.key);
     this.group.add(this.key.target);
 

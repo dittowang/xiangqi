@@ -372,6 +372,18 @@ export function sweepAlongPath(
     }
   }
 
+  // One normal per section edge, in the constant lateral frame.
+  const sectionNormals: P3[] = [];
+  if (straight) {
+    for (let s = 0; s + 1 < section.length; s++) {
+      const du = section[s + 1].u - section[s].u;
+      const dy = section[s + 1].y - section[s].y;
+      // In the (lateral, up) plane the outward normal of a profile edge with
+      // tangent (du, dy) is (-dy, du); lift that into world with the lateral.
+      sectionNormals.push(norm3(lx[0] * -dy, du, lz[0] * -dy));
+    }
+  }
+
   let run = 0;
   for (let i = 0; i + 1 < count; i++) {
     const ax = path[i * 3];
@@ -389,7 +401,17 @@ export function sweepAlongPath(
       const p01: P3 = [ax + lx[i] * s1.u, ay + s1.y, az + lz[i] * s1.u];
       const p10: P3 = [bx + lx[i + 1] * s0.u, by + s0.y, bz + lz[i + 1] * s0.u];
       const p11: P3 = [bx + lx[i + 1] * s1.u, by + s1.y, bz + lz[i + 1] * s1.u];
-      const n = faceNormal(p00, p10, p11);
+      // On a straight run every quad of a given wall gets the *analytic* normal
+      // for that section edge, not the normal of its own four corners.
+      //
+      // This is the second half of the dashed-line fix and the half that
+      // actually matters. Fixing the lateral direction stops the wall twisting,
+      // but the centreline still bows, so corner-derived normals still wobble by
+      // a degree between one segment and the next — and against a hard-banded
+      // ramp a degree is the difference between band 1 and band 2. The line then
+      // renders as a dotted line at exactly the segment pitch, which is what the
+      // first pass at this shipped.
+      const n = straight ? sectionNormals[s] : faceNormal(p00, p10, p11);
       const v0 = run * uvScale;
       const v1 = (run + segLen) * uvScale;
       b.quad(

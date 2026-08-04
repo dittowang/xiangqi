@@ -78,12 +78,23 @@ export const PIGMENTS: Record<PigmentName, Pigment> = {
   gamboge: P('gamboge', '藤黃', ['#523810', '#966C1A', '#CF9F30', '#E9C664'], 0.56),
   shellWhite: P('shellWhite', '蛤白', ['#6A5F4C', '#9E9179', '#D3C8AF', '#F2E9D6'], 0.78),
   ink: P('ink', '墨', ['#080706', '#141210', '#26221D', '#3E382F'], 0.10),
-  // Retargeted against 朱砂 by scaling each band uniformly in LINEAR space,
-  // which moves value while leaving hue and saturation untouched. Measured
-  // luma: 0.0129 / 0.0463 / 0.1062 / 0.2007 against cinnabar's 0.0162 /
-  // 0.0592 / 0.1364 / 0.2593. Before this the gap at band 2 was 3.1x and the
-  // Chu army read as a silhouette-shaped hole beside the Han army.
-  inkLacquer: P('inkLacquer', '玄漆', ['#1A1E26', '#373D49', '#535C6E', '#737C90'], 0.34),
+  // Retargeted against 朱砂 twice, on both axes.
+  //
+  // Value first: each band scaled uniformly in LINEAR space, which moves value
+  // while leaving hue and saturation untouched. Measured luma 0.0127 / 0.0457 /
+  // 0.1070 / 0.1997 against cinnabar's 0.0162 / 0.0592 / 0.1364 / 0.2593.
+  //
+  // Then chroma, because matching value alone was not enough and the frame
+  // proved it. A capture measured the Chu army at mean saturation 0.431 against
+  // the Han's 0.739: the values agreed, so neither side was darker, but one
+  // army was CHROMATIC and the other was GREY. That reads as a hole just as
+  // surely as a value mismatch does. Chroma is pushed away from the grey axis in
+  // linear space and the luma restored exactly afterwards, so the value ladder
+  // above is untouched. Saturation now runs 0.65 / 0.53 / 0.53 / 0.44 against
+  // cinnabar's 0.81 / 0.83 / 0.81 / 0.70 — deliberately still below, because
+  // black lacquer that matched cinnabar for chroma would stop being black, but
+  // close enough that both armies live in the same picture.
+  inkLacquer: P('inkLacquer', '玄漆', ['#111E31', '#2A3D5A', '#405D88', '#617CAD'], 0.34),
   gold: P('gold', '泥金', ['#432F0F', '#836318', '#BE9430', '#E4C66A'], 0.52),
   indigo: P('indigo', '花青', ['#131C2C', '#233650', '#3A587E', '#6685AA'], 0.36),
   vermilionDeep: P('vermilionDeep', '銀朱', ['#380C09', '#6C1810', '#A02A1B', '#C55337'], 0.38),
@@ -125,6 +136,40 @@ export function linearToSrgb(c: number): number {
 export function luma(hex: string): number {
   const c = hexToRgb(hex);
   return 0.2126 * srgbToLinear(c.r) + 0.7152 * srgbToLinear(c.g) + 0.0722 * srgbToLinear(c.b);
+}
+
+/**
+ * Saturation, used to police the CHROMA ladder — the axis this palette
+ * originally left unguarded.
+ *
+ * Two pigments can sit at identical luma and still tear a frame in half if one
+ * is chromatic and the other is grey. A capture caught exactly that: the two
+ * armies matched on value to within 2% and the Chu side still read as a hole,
+ * because its saturation was 0.43 against the Han's 0.74. Value alone is not
+ * enough, and `luma()` on its own is a half-check.
+ */
+export function saturation(hex: string): number {
+  const c = hexToRgb(hex);
+  const mx = Math.max(c.r, c.g, c.b);
+  const mn = Math.min(c.r, c.g, c.b);
+  return mx < 1e-6 ? 0 : (mx - mn) / mx;
+}
+
+/**
+ * Move a colour toward or away from the grey axis without changing its value.
+ * Chroma is scaled in LINEAR space and the luma restored exactly afterwards,
+ * so a pigment can be re-saturated without disturbing the value ladder.
+ */
+export function scaleChroma(hex: string, k: number): string {
+  const c = hexToRgb(hex);
+  const lin = { r: srgbToLinear(c.r), g: srgbToLinear(c.g), b: srgbToLinear(c.b) };
+  const l0 = 0.2126 * lin.r + 0.7152 * lin.g + 0.0722 * lin.b;
+  const r = Math.max(0, l0 + (lin.r - l0) * k);
+  const g = Math.max(0, l0 + (lin.g - l0) * k);
+  const b = Math.max(0, l0 + (lin.b - l0) * k);
+  const l1 = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  const s = l1 > 1e-9 ? l0 / l1 : 1;
+  return rgbToHex({ r: linearToSrgb(r * s), g: linearToSrgb(g * s), b: linearToSrgb(b * s) });
 }
 
 export function mixHex(a: string, b: string, t: number): string {

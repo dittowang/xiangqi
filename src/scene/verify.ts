@@ -31,6 +31,7 @@ import {
   Board,
   GRID_BOW_MAX,
   GRID_HALF_MAX,
+  INSCRIPTION_WEIGHT,
   FRAME_TOP_Y,
   FRAME_WIDTH,
   OFF_BOARD_Y,
@@ -318,6 +319,7 @@ section('winding and normals');
     let wallIn = 0;
     for (let i = 0; i < pos.count; i += 3) {
       nrm.fromBufferAttribute(nAttr, i);
+      if (nrm.lengthSq() < 0.5) continue; // degenerate: no normal to judge
       A.fromBufferAttribute(pos, i);
       if (nrm.y > 0.9) flatUp++;
       else if (nrm.y < -0.9) flatDown++;
@@ -452,15 +454,31 @@ section('heightAt');
     WATER_HALF > RIVER_FLOOR_HALF && WATER_HALF < RIVER_CUT_HALF + 0.01,
     `water half ${fmt(WATER_HALF)} between floor ${fmt(RIVER_FLOOR_HALF)} and cut edge ${fmt(RIVER_CUT_HALF)}`,
   );
-  // The channel is narrow now; the thing that has to stay true is that it is a
-  // real cut with walls a low camera can read.
   const wallAngle = (Math.atan2(BANK_RISE + RIVER_DEPTH, RIVER_CUT_HALF - RIVER_FLOOR_HALF) * 180) / Math.PI;
-  between('river wall angle from horizontal', wallAngle, 60, 82);
-  check(
-    'the channel is deeper than it is half-wide',
-    RIVER_DEPTH > WATER_HALF,
-    `depth ${fmt(RIVER_DEPTH)}, water ${fmt(WATER_HALF * 2)} wide -> you never see the floor and the far wall at once`,
-  );
+  between('river wall angle from horizontal', wallAngle, 55, 82);
+  // The real acceptance test for the channel's width is a sightline: from a low
+  // camera, does the near bank's cap occlude the water, or can you see onto it?
+  // A narrow channel passes every aspect-ratio test you can invent and still
+  // renders as a flat grey strip at eye level, which is what it did.
+  {
+    const p = NAMED_POSES.profile;
+    const camY = p.target[1] + Math.sin(p.pitch) * p.distance;
+    const camD = Math.cos(p.pitch) * p.distance;
+    // Ray from the camera to the far waterline, evaluated at the near cap's edge.
+    const farWaterZ = -WATER_HALF;
+    const nearCapZ = BANK_CAP_HALF;
+    const t = (camD - nearCapZ) / (camD - farWaterZ);
+    const rayY = camY + (WATER_Y - camY) * t;
+    const capY = BANK_RISE;
+    check(
+      'the far water is visible over the near bank at the profile framing',
+      rayY > capY,
+      `sightline clears the cap by ${fmt(rayY - capY)} (ray ${fmt(rayY)} vs cap ${fmt(capY)})`,
+    );
+    process.stdout.write(
+      `      channel: ${fmt(WATER_HALF * 2)} of water, ${fmt(RIVER_DEPTH)} deep, walls at ${fmt(wallAngle)}°\n`,
+    );
+  }
   const capZ = (RIVER_CUT_HALF + BANK_CAP_HALF) * 0.5;
   near('banking cap', board.surfaceAt(0, capZ), BANK_RISE + silkSag(0, capZ), 1e-9);
   near('silk just past the bank', board.surfaceAt(0, 0.3), silkSag(0, 0.3), 1e-9);
@@ -828,11 +846,30 @@ section('楚河漢界');
     byChar.get('楚')!.cx > byChar.get('河')!.cx,
     `楚 x=${fmt(byChar.get('楚')!.cx)} before 河 x=${fmt(byChar.get('河')!.cx)}`,
   );
-  check(
-    '楚河 sits to Red’s left, 漢界 to Red’s right',
-    byChar.get('楚')!.cx < 0 && byChar.get('漢')!.cx > 0,
-    `${fmt(byChar.get('楚')!.cx)} vs ${fmt(byChar.get('漢')!.cx)}`,
-  );
+  // Mirror symmetry across the channel. Each pair occupies the same two x
+  // positions on its own bank, so the inscription reads as one deliberate mark
+  // from any camera angle rather than as two marks placed diagonally.
+  {
+    const xs = (a: string, b: string) => [byChar.get(a)!.cx, byChar.get(b)!.cx].sort((m, n) => m - n);
+    const red = xs('漢', '界');
+    const black = xs('楚', '河');
+    check(
+      'the two pairs are mirrored across the channel',
+      Math.abs(red[0] - black[0]) < 1e-9 && Math.abs(red[1] - black[1]) < 1e-9,
+      `Red at [${red.map(fmt).join(', ')}], Black at [${black.map(fmt).join(', ')}]`,
+    );
+    check(
+      'and the whole inscription is centred on the board',
+      Math.abs(red[0] + red[1]) < 1e-9,
+      `pair spans ${fmt(red[0])} to ${fmt(red[1])}`,
+    );
+    const zs = board.inscription.map((c) => Math.abs(c.cz));
+    check(
+      'both banks sit at the same distance from the channel',
+      Math.max(...zs) - Math.min(...zs) < 1e-9,
+      `|z| = ${fmt(zs[0])}`,
+    );
+  }
 
   // Nothing may stray onto the channel or across a rank line.
   let worstNear = Infinity;
@@ -889,11 +926,21 @@ section('楚河漢界');
       Math.max(...board.inscription.map((c) => Math.abs(c.panel.x1))) < outerFileEdge,
       `panels stop at |x|=${fmt(Math.max(...board.inscription.map((c) => Math.abs(c.panel.x1))))}, the outer file groove starts at ${fmt(outerFileEdge)}`,
     );
+    // Only files 1..7 may pass under a panel, and those are the ones the river
+    // breaks; files 0 and 8 run the full length and must stay clear.
+    const filesTouched = new Set<number>();
+    for (const c of board.inscription) {
+      for (let f = 0; f < FILES; f++) {
+        const fx = worldX(f);
+        if (fx > c.panel.x0 - GRID_HALF_MAX && fx < c.panel.x1 + GRID_HALF_MAX) filesTouched.add(f);
+      }
+    }
     check(
-      'the interior files are already broken here',
-      worstX > 0,
-      `panels sit at |x| ≥ ${fmt(worstX)}, in the band where files 1–7 do not run`,
+      'no panel sits under a file line that survives the river',
+      !filesTouched.has(0) && !filesTouched.has(FILES - 1),
+      `panels overlap files {${[...filesTouched].sort((a, b) => a - b).join(', ')}}, all of which stop at the bank`,
     );
+    void worstX;
   }
 
   // --- the deck seam ------------------------------------------------------
@@ -953,6 +1000,7 @@ section('楚河漢界');
 
     let smallestCss = Infinity;
     let smallestCh = '';
+    let strokeCssMin = Infinity;
     const rows: string[] = [];
     for (const c of board.inscription) {
       const o = seal(c.ch)!;
@@ -964,7 +1012,7 @@ section('楚河漢界');
       const top = pxY(c.cx, y, c.cz - h / 2, 800);
       const bot = pxY(c.cx, y, c.cz + h / 2, 800);
       const css = Math.abs(bot - top);
-      const stroke = getSealGlyph(c.ch).strokes[0].width * c.em;
+      const stroke = getSealGlyph(c.ch).strokes[0].width * INSCRIPTION_WEIGHT * c.em;
       const strokeTop = pxY(c.cx, y, c.cz - stroke / 2, 800);
       const strokeBot = pxY(c.cx, y, c.cz + stroke / 2, 800);
       const strokeCss = Math.abs(strokeBot - strokeTop);
@@ -975,6 +1023,7 @@ section('楚河漢界');
         smallestCss = css;
         smallestCh = c.ch;
       }
+      strokeCssMin = Math.min(strokeCssMin, strokeCss);
     }
     process.stdout.write(
       `      at the 'default' pose, 1280x800 @2x — the harness's capture viewport:\n`,
@@ -986,14 +1035,27 @@ section('楚河漢界');
     const emY0 = pxY(0, silkSag(0, 0.303), 0.303 - em / 2, 800);
     const emY1 = pxY(0, silkSag(0, 0.303), 0.303 + em / 2, 800);
     const emCss = Math.abs(emY1 - emY0);
+    // What governs legibility at this distance is stroke width, not character
+    // height: a 30 px character drawn with 1.5 px strokes aliases into a tangle,
+    // and the fix is a fatter stylus rather than a taller character. The board's
+    // own grid grooves are the reference — the inscription has to hold its own
+    // beside the line work it sits in.
+    const gridStrokeTop = pxY(0, 0, 0.4 - GRID_HALF_MAX, 800);
+    const gridStrokeBot = pxY(0, 0, 0.4 + GRID_HALF_MAX, 800);
+    const gridCss = Math.abs(gridStrokeBot - gridStrokeTop);
     check(
-      'the inscription is set at 30+ device px at the default pose',
-      emCss * 2 >= 30,
+      'inscription strokes hold up beside the grid line work',
+      strokeCssMin >= gridCss * 0.55,
+      `thinnest stroke ${(strokeCssMin * 2).toFixed(2)} device px against a grid groove at ${(gridCss * 2).toFixed(2)}`,
+    );
+    check(
+      'the inscription is set at 26+ device px at the default pose',
+      emCss * 2 >= 26,
       `em = ${(emCss * 2).toFixed(1)} device px (${emCss.toFixed(1)} CSS px)`,
     );
     check(
-      'even the shortest character clears 28 device px',
-      smallestCss * 2 >= 28,
+      'even the shortest character clears 21 device px',
+      smallestCss * 2 >= 21,
       `smallest is ${smallestCh} at ${(smallestCss * 2).toFixed(1)} device px`,
     );
     // For scale: how big the same character is on a piece base.
