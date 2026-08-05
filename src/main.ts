@@ -748,10 +748,25 @@ const api: XqTestApi = {
    * path a player's keypress takes, so the army arrives on its squares with
    * every mark fired and nothing left mid-stride. The hand-over therefore lands
    * on the one state the march has for certain: its end.
+   *
+   * The zero-length update is what makes that happen *here* rather than on some
+   * later frame. `boot()` resumes from the march's promise on a microtask, so
+   * driving it from inside `pause()` means the phase change that follows the
+   * march has already run by the time this call returns — and a `setPose` the
+   * harness makes on its very next line cannot be overwritten from behind by a
+   * `setPhase('development')` that landed a frame after it.
    */
   pause: () => {
     harnessOwnsClock = true;
     clock.pause();
+    choreographer.update(0);
+    // The same argument one level down. The river and the marker pulses are
+    // pure functions of accumulated `dt` — which is the rule — but they have
+    // been accumulating since page load, and the hand-over happens a
+    // wall-clock-dependent number of frames into that. Left alone it is worth
+    // about a hundred pixels across the channel on every still, which is small
+    // enough to look like encoder noise and large enough to defeat a pixel diff.
+    rig.board.resetAnimationPhase();
   },
   resume: () => clock.resume(),
   step: (s) => stepOnce(s),

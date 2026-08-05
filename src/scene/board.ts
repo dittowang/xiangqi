@@ -1096,6 +1096,16 @@ export class Board implements BoardScene {
     this.markers.update(dt);
   }
 
+  /**
+   * Put everything that free-runs on the board back to phase zero: the river's
+   * flow and the marker pulses. Called by `__XQ.pause()` — see the note on
+   * `RiverWater.resetPhase`.
+   */
+  resetAnimationPhase(): void {
+    this.water.resetPhase();
+    this.markers.resetPhase();
+  }
+
   /** Push the current interpolated mood into the water shader. */
   setLight(spec: BoardLightSpec): void {
     this.water.setLight(spec);

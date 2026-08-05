@@ -301,6 +301,16 @@ export class Markers {
     this.updateCheck(dt);
   }
 
+  /**
+   * Put the free-running pulses back to their origin. Same reason as
+   * `RiverWater.resetPhase`: they accumulate from page load, and the harness
+   * takes the clock a wall-clock-dependent number of frames later.
+   */
+  resetPhase(): void {
+    this.hoverPhase = 0;
+    this.checkPhase = 0;
+  }
+
   private updateLegal(dt: number): void {
     if (this.legalCount === 0) return;
     let anyVisible = false;

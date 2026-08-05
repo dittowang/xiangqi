@@ -259,6 +259,18 @@ export interface RiverWater {
   material: THREE.ShaderMaterial;
   /** Advance the flow. `dt` in seconds; never reads a wall clock. */
   update(dt: number): void;
+  /**
+   * Put the flow back to its origin.
+   *
+   * The flow is a pure function of accumulated `dt`, which is the rule — but the
+   * accumulation starts at page load, and the harness does not take the clock
+   * until several frames later. How many is a property of how fast the machine
+   * booted, so two runs of one capture script arrive at the river with different
+   * phase, and the same still comes out ~100 pixels different across the channel
+   * every time. `__XQ.pause()` calls this so the hand-over starts the flow from
+   * a known place.
+   */
+  resetPhase(): void;
   /** Push the current interpolated light mood. */
   setLight(spec: {
     dir: THREE.Vector3;
@@ -342,6 +354,9 @@ export function createRiverWater(channel: WaterChannelSpec): RiverWater {
     material,
     update(dt: number) {
       uniforms.uTime.value += dt;
+    },
+    resetPhase() {
+      uniforms.uTime.value = 0;
     },
     setLight(spec) {
       uniforms.uKeyDir.value.copy(spec.dir);
