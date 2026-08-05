@@ -191,6 +191,17 @@ const choreographer = createChoreographer({
   ground: rig.heightAt,
 });
 
+/** Drop animators whose figure is no longer on the board, and dispose them. */
+function pruneAnimators(): void {
+  const live = new Set<THREE.Object3D>();
+  for (const view of match.views.values()) live.add(view.unit.root);
+  for (const [root, a] of animators) {
+    if (live.has(root)) continue;
+    a.dispose();
+    animators.delete(root);
+  }
+}
+
 function animatorFor(view: PieceView): Animator {
   let a = animators.get(view.unit.root);
   if (!a) {
@@ -585,6 +596,11 @@ const api: XqTestApi = {
     match.moves.length = 0;
     match.notation.length = 0;
     match.sync();
+    // sync() rebuilds every figure here by design, so unlike an ordinary move
+    // there is no from/to hint that would preserve them. That leaves the
+    // animator map holding entries keyed on disposed roots, which the frame loop
+    // would go on ticking against dead skeletons.
+    pruneAnimators();
     for (const view of match.views.values()) {
       dressUnit(view);
       animatorFor(view).play('idle', 0);
@@ -602,7 +618,15 @@ const api: XqTestApi = {
     if (!m) return;
     match.pos.makeMove(m);
     match.moves.push(m);
-    match.sync();
+    // The hint is not optional. Without it, sync() retires the figure and spawns
+    // a brand-new UnitInstance, while `animators` is keyed on the OLD unit.root
+    // — so animatorFor() misses, every choreographer play() becomes a silent
+    // no-op, and the figure slides across the board with its pose frozen at
+    // bind. The choreographer's direct writes (root position, facing,
+    // visibility) keep working, which is what made this look like a dead
+    // AnimationMixer rather than an orphaned animator. Match.settle passes the
+    // same hint; forceMove must match it.
+    match.sync({ from, to });
   },
   legalMoves: (from?: number): Move[] =>
     from === undefined
