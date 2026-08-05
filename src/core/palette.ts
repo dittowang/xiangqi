@@ -48,7 +48,8 @@ export type PigmentName =
   | 'gold' // 泥金  — leaf and paste gold, palace diagonals, structural lines
   | 'indigo' // 花青  — plant blue, cloth, distance haze
   | 'vermilionDeep' // 銀朱  — the darker cinnabar used for Han shadow accents
-  | 'stone'; // 石色  — river banking, unpainted grit
+  | 'stone' // 石色  — river banking, unpainted grit
+  | 'blackHide'; // 皂革  — the Chu army's blackened leather
 
 export interface Pigment {
   name: PigmentName;
@@ -99,6 +100,18 @@ export const PIGMENTS: Record<PigmentName, Pigment> = {
   indigo: P('indigo', '花青', ['#131C2C', '#233650', '#3A587E', '#6685AA'], 0.36),
   vermilionDeep: P('vermilionDeep', '銀朱', ['#380C09', '#6C1810', '#A02A1B', '#C55337'], 0.38),
   stone: P('stone', '石色', ['#2A2823', '#494539', '#6E6857', '#968E79'], 0.40),
+  // 皂革 exists because the Chu army used to wear 墨 for its leather, and 墨 is
+  // the CONTOUR pigment — deliberately the deepest value in the frame. A capture
+  // measured the horse's girth, scabbard and stirrup as a single #070605 slab
+  // over 53% of the sample: one large flat unmodulated near-black shape running
+  // from the saddle past the hoof. Using the contour pigment as a surface
+  // guarantees the surface reads as contour, which is the same "hole in the
+  // frame" failure this file already fixed once for the lacquer.
+  //
+  // Blackened hide instead: still clearly the dark army's leather, but with a
+  // real ladder (0.0098 / 0.0328 / 0.0803 / 0.1615 against 墨's 0.0022 / 0.0062
+  // / 0.0164 / 0.0406) and enough warmth to sit beside 玄漆 without matching it.
+  blackHide: P('blackHide', '皂革', ['#211712', '#412F24', '#644B38', '#886A52'], 0.26),
 };
 
 export const PIGMENT_NAMES = Object.keys(PIGMENTS) as PigmentName[];
@@ -457,7 +470,7 @@ export const ARMY: Record<0 | 1, ArmyPalette> = {
     hanzi: '楚',
     lacquer: 'inkLacquer',
     cloth: 'indigo',
-    leather: 'ink',
+    leather: 'blackHide',
     metal: 'stone',
     accent: 'azurite',
     dispersal: 'azurite',

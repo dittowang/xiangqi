@@ -28,7 +28,17 @@ import { bus, type MatchPhase } from '@core/bus.ts';
 import type { AnimState, CameraPose, QualitySettings, QualityTier } from '@core/contracts.ts';
 import type { DebugFlag, NamedPose, XqFrameStats, XqTestApi } from '@core/testapi.ts';
 import { START_FEN } from '@core/testapi.ts';
-import { BOARD_HALF_X, BOARD_HALF_Z, facingY, worldToSquare } from '@core/coords.ts';
+import {
+  BOARD_HALF_X,
+  BOARD_HALF_Z,
+  facingY,
+  fileOf,
+  rankOf,
+  sq,
+  worldToSquare,
+  worldX,
+  worldZ,
+} from '@core/coords.ts';
 import {
   PieceType,
   pieceType,
@@ -723,6 +733,7 @@ async function exitShowcase(): Promise<void> {
     showcaseUnit = null;
   }
   stage.visible = true;
+  rig.board.bases.group.visible = true;
   await stepOnce(0);
 }
 
@@ -881,14 +892,26 @@ const api: XqTestApi = {
     // Hide the match rather than tearing it down, so exitShowcase is cheap and
     // the position the harness set up survives a whole showcase sweep.
     stage.visible = false;
+    // showcase() promises an EMPTY board. `stage` holds the figures but the
+    // plinths live in the board's own instanced bases, so hiding the stage alone
+    // left 32 stone discs behind the isolated unit.
+    rig.board.bases.group.visible = false;
     rig.board.clearLegalMarks();
     rig.board.setHover(null);
 
     const built = characters.create(side, type, 0);
-    // Stand it on the board's centre intersection so it is lit and shadowed
-    // exactly as it would be in play — a figure floating in a void reads
-    // differently, and the critic is judging the shipped look.
-    built.root.position.set(0, rig.board.heightAt(0, 0), 0);
+    // Stand it on a real intersection, lit and shadowed exactly as it would be
+    // in play — a figure floating in a void reads differently, and the critic is
+    // judging the shipped look.
+    //
+    // NOT (0, 0): ranks sit at z = -4.5 .. +4.5 in unit steps, so z = 0 is the
+    // river's centre line and there is no intersection there at all. Standing a
+    // unit on it put the trebuchet's legs through the stone coping and left the
+    // horse straddling the bank. Use the side's own second rank instead.
+    const showSq = sq(4, side === Side.Red ? 6 : 3);
+    const sx = worldX(fileOf(showSq));
+    const sz = worldZ(rankOf(showSq));
+    built.root.position.set(sx, rig.board.heightAt(sx, sz), sz);
     built.root.rotation.y = opts?.turntable ?? facingY(side);
     showcaseGroup.add(built.root);
     showcaseUnit = built;
