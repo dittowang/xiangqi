@@ -24,7 +24,7 @@ import * as THREE from 'three';
 import { clock } from '@game/clock.ts';
 import { Match, type PieceView } from '@game/match.ts';
 import { SaveScheduler, load as loadSave, clear as clearSave } from '@game/persistence.ts';
-import { bus } from '@core/bus.ts';
+import { bus, type MatchPhase } from '@core/bus.ts';
 import type { AnimState, CameraPose, QualitySettings, QualityTier } from '@core/contracts.ts';
 import type { DebugFlag, NamedPose, XqFrameStats, XqTestApi } from '@core/testapi.ts';
 import { START_FEN } from '@core/testapi.ts';
@@ -271,9 +271,24 @@ bus.on('check', ({ generalSq }) => {
   rig.director.pushToCheck(generalSq);
 });
 bus.on('check:clear', () => rig.director.release());
-bus.on('match:end', () => {
+bus.on('match:end', ({ result }) => {
   audio.play('gong');
-  rig.setPhase('terminal');
+  setPhase('terminal');
+  // The losing general falls and the winning army raises its weapons. Focus the
+  // director on the fallen general first so the arc has something to orbit.
+  const loser = result.winner === null ? null : (result.winner ^ 1);
+  if (loser !== null) {
+    for (const view of match.views.values()) {
+      if (view.side === loser && view.type === PieceType.General) {
+        rig.director.setTerminalFocus(view.square);
+        break;
+      }
+    }
+  }
+  void choreographer.finale(
+    result,
+    [...match.views.values()].map((v) => v.unit),
+  );
 });
 bus.on('camera:impulse', ({ strength, direction }) =>
   rig.director.impulse(strength, direction ? new THREE.Vector3(...direction) : undefined),
@@ -322,6 +337,13 @@ renderer.domElement.addEventListener('pointermove', (ev) => {
     if (targets.length) bus.emit('hover', { square: sq, targets });
   }
 });
+
+/** During the opening march, any input skips it. */
+function armFormationSkip(): void {
+  skipFormation = true;
+}
+window.addEventListener('keydown', armFormationSkip);
+renderer.domElement.addEventListener('pointerdown', armFormationSkip);
 
 renderer.domElement.addEventListener('pointerdown', (ev) => {
   if (ev.button !== 0) return;
@@ -476,9 +498,41 @@ async function boot(): Promise<void> {
   // A resumed match replays its moves without emitting move:end, so the record
   // and the fallen rail would come back empty without this.
   if (saved?.moves.length) hud.syncRecord(match.moves, match.notation);
-  rig.setPhase('development', 0);
+
   booted = true;
   bus.emit('match:start', { difficulty: match.difficulty, resumed: !!saved?.moves.length });
+
+  // The opening march. Only for a fresh match — resuming a saved game mid-board
+  // and then marching everyone in from off-screen would be nonsense.
+  if (!saved?.moves.length) {
+    setPhase('formation', 0);
+    skipFormation = false;
+    await choreographer.formation(
+      [...match.views.values()].map((v) => v.unit),
+      () => skipFormation,
+    );
+  }
+  setPhase('development', saved?.moves.length ? 0 : 1.2);
+}
+
+/** Any pointer or key during the march means "get on with it". */
+let skipFormation = false;
+
+/**
+ * The authoritative match phase. `describe()` used to report
+ * `booted ? 'development' : 'boot'`, which was a hardcoded guess that could
+ * never show the formation march or the terminal set piece — so a harness
+ * polling for them saw nothing and concluded they never ran. Everything that
+ * changes phase goes through here.
+ */
+let matchPhase: MatchPhase = 'boot';
+
+function setPhase(phase: MatchPhase, seconds?: number): void {
+  const previous = matchPhase;
+  if (previous === phase) return;
+  matchPhase = phase;
+  rig.setPhase(phase, seconds);
+  bus.emit('match:phase', { phase, previous });
 }
 
 void boot().catch((err) => {
@@ -605,7 +659,7 @@ const api: XqTestApi = {
       dressUnit(view);
       animatorFor(view).play('idle', 0);
     }
-    rig.setPhase('development', 0);
+    setPhase('development', 0);
     await stepOnce(0);
   },
   getPosition: () => match.pos.toFen(),
@@ -738,7 +792,7 @@ const api: XqTestApi = {
     renderer.info.reset();
   },
   describe: () => ({
-    phase: booted ? 'development' : 'boot',
+    phase: matchPhase,
     ply: match.ply,
     sideToMove: match.sideToMove,
     inCheck: match.inCheck,
