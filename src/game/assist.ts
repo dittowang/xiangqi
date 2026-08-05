@@ -149,6 +149,8 @@ export class Assist {
   private cursorPly = 0;
   /** Where `match.pos` was when review started, so exit can put it back. */
   private restorePly = 0;
+  /** Whether a seek has reconciled the view at least once this session. */
+  private syncedOnce = false;
   private progress: ReviewProgress = { done: 0, total: 0 };
 
   private readonly unsubs: (() => void)[] = [];
@@ -356,6 +358,7 @@ export class Assist {
     const token = this.beginFlow();
 
     this.reviewing = true;
+    this.syncedOnce = false;
     this.restorePly = this.match.moves.length;
     this.plies.length = 0;
     this.rows.length = 0;

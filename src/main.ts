@@ -49,6 +49,8 @@ import { createEngineClient, legalTargets, findLegalMove } from '@engine/index.t
 import { getSealGlyph, glyphToShapes } from '@ui/seal.ts';
 import { createAudioEngine, pieceDetune } from '@ui/audio.ts';
 import { createHud } from '@ui/hud.ts';
+import { createReviewPanel } from '@ui/review.ts';
+import { createAssist } from '@game/assist.ts';
 import {
   createAnimator,
   createChoreographer,
@@ -251,6 +253,40 @@ const hud = createHud({
 });
 scene.add(hud.group);
 
+const review = createReviewPanel({
+  heightAt: rig.heightAt,
+  width: window.innerWidth,
+  height: window.innerHeight,
+  dpr: startDpr,
+});
+scene.add(review.group);
+
+const assist = createAssist({
+  match,
+  engine,
+  board: rig.board,
+  choreography: choreographer,
+  panel: review,
+  // Exactly what __XQ.setPosition runs after its own sync().
+  onSync: () => {
+    pruneAnimators();
+    for (const view of match.views.values()) {
+      dressUnit(view);
+      animatorFor(view).play('idle', 0);
+    }
+  },
+});
+
+// Review takes the HUD's terrace slot, so the two can never be up together.
+bus.on('review:enter', () => {
+  hud.setVisible(false);
+  setPhase('review');
+});
+bus.on('review:exit', () => {
+  hud.setVisible(hudVisible);
+  setPhase(match.over ? 'terminal' : 'development');
+});
+
 // ---------------------------------------------------------------------------
 // Bus wiring
 // ---------------------------------------------------------------------------
@@ -343,6 +379,34 @@ function armFormationSkip(): void {
   skipFormation = true;
 }
 window.addEventListener('keydown', armFormationSkip);
+
+/** The only keyboard surface in the game. */
+window.addEventListener('keydown', (ev) => {
+  if (ev.metaKey || ev.ctrlKey || ev.altKey) return;
+  switch (ev.key) {
+    case 'h':
+    case 'H':
+      void assist.hint();
+      break;
+    case 'z':
+    case 'Z':
+    case 'Backspace':
+      ev.preventDefault();
+      void assist.takeback();
+      break;
+    case 'r':
+    case 'R':
+      if (assist.inReview) assist.exitReview();
+      else void assist.enterReview();
+      break;
+    case 'ArrowLeft':
+      if (assist.inReview) void assist.stepBack();
+      break;
+    case 'ArrowRight':
+      if (assist.inReview) void assist.stepForward();
+      break;
+  }
+});
 renderer.domElement.addEventListener('pointerdown', armFormationSkip);
 
 renderer.domElement.addEventListener('pointerdown', (ev) => {
@@ -350,6 +414,7 @@ renderer.domElement.addEventListener('pointerdown', (ev) => {
   const sq = pickSquare(ev);
   if (sq < 0) return;
   if (!match.humanToMove) return;
+  if (assist.busy) return;
 
   // Clicking a legal destination commits the move.
   if (selected >= 0 && selectedTargets.includes(sq)) {
@@ -392,6 +457,7 @@ function deselect(): void {
  * does not change.
  */
 async function playMove(move: Move): Promise<void> {
+  const flow = assist.beginFlow();
   const side = match.sideToMove;
   const from = moveFrom(move);
   const to = moveTo(move);
@@ -405,20 +471,32 @@ async function playMove(move: Move): Promise<void> {
   if (!applied) return;
 
   match.animating = true;
-  if (applied.capture && mover) {
-    const defender = capturedView;
-    if (defender) {
-      await choreographer.capture(mover.unit, defender.unit, {
-        attackerSq: applied.capture.attackerSq,
-        defenderSq: applied.capture.defenderSq,
-        attackerType: pieceType(applied.capture.attacker),
-        defenderType: pieceType(applied.capture.defender),
-        ranged: applied.capture.ranged,
-      });
-      retireAnimator(defender.unit);
+  // Pin the quality tier for the exchange. `perf/governor.ts` has said "never
+  // change tier during a capture animation" since it was written, and it grew a
+  // counted `lock()`/`unlock()` pair to enforce it — but nothing in the project
+  // had ever called them, so the one moment the lock exists to protect was the
+  // only moment it was not protecting. A tier change rebuilds the render targets
+  // and moves the pixel ratio, which on a capture is both a visible hitch and a
+  // frame the harness cannot reproduce.
+  governor.lock();
+  try {
+    if (applied.capture && mover) {
+      const defender = capturedView;
+      if (defender) {
+        await choreographer.capture(mover.unit, defender.unit, {
+          attackerSq: applied.capture.attackerSq,
+          defenderSq: applied.capture.defenderSq,
+          attackerType: pieceType(applied.capture.attacker),
+          defenderType: pieceType(applied.capture.defender),
+          ranged: applied.capture.ranged,
+        });
+        retireAnimator(defender.unit);
+      }
+    } else if (mover) {
+      await choreographer.walk(mover.unit, from, to);
     }
-  } else if (mover) {
-    await choreographer.walk(mover.unit, from, to);
+  } finally {
+    governor.unlock();
   }
   match.animating = false;
 
@@ -427,6 +505,7 @@ async function playMove(move: Move): Promise<void> {
 
   if (!match.over && match.sideToMove !== match.humanSide) {
     const reply = await match.think();
+    if (!assist.flowValid(flow)) return;
     if (reply) await playMove(reply);
   }
 }
@@ -509,14 +588,29 @@ async function boot(): Promise<void> {
     skipFormation = false;
     await choreographer.formation(
       [...match.views.values()].map((v) => v.unit),
-      () => skipFormation,
+      () => skipFormation || harnessOwnsClock,
     );
   }
-  setPhase('development', saved?.moves.length ? 0 : 1.2);
+  // Only settle into `development` if nothing took the phase while the march was
+  // running. Entering review or reaching a result mid-march is unusual but not
+  // impossible, and boot() finishing afterwards must not stamp over it.
+  if (matchPhase === 'formation' || matchPhase === 'boot') {
+    setPhase('development', saved?.moves.length ? 0 : 1.2);
+  }
 }
 
 /** Any pointer or key during the march means "get on with it". */
 let skipFormation = false;
+
+/**
+ * Set the moment the harness takes the clock with `__XQ.pause()`, and never
+ * cleared. The march polls it *alongside* `skipFormation` rather than sharing
+ * that flag, because `boot()` clears `skipFormation` immediately before the
+ * march starts — so a harness that paused before boot reached that line would
+ * have its request thrown away and would then sit on a march that can never
+ * advance, because advancing it is exactly what pausing stopped.
+ */
+let harnessOwnsClock = false;
 
 /**
  * The authoritative match phase. `describe()` used to report
@@ -550,6 +644,8 @@ function frame(nowMs: number): void {
   const dt = clock.tick(nowMs);
   monitor.begin(nowMs);
 
+  // Assist first, so a hint mark retired this frame starts its fade this frame.
+  assist.update(dt);
   rig.update(dt);
   // Animators before the choreographer: it reads their settled state to decide
   // when a beat has landed.
@@ -562,6 +658,7 @@ function frame(nowMs: number): void {
   // root positions this frame's animation just produced.
   match.followBases();
   hud.update(dt);
+  review.update(dt);
   audio.update(dt);
   saver.update(dt);
   if (booted) governor.update(dt, monitor.percentile(0.95));
@@ -586,6 +683,7 @@ window.addEventListener('resize', () => {
   const h = window.innerHeight;
   renderer.setSize(w, h);
   hud.resize(w, h, Math.min(window.devicePixelRatio || 1, governor.settings.maxPixelRatio));
+  review.resize(w, h, Math.min(window.devicePixelRatio || 1, governor.settings.maxPixelRatio));
   pipeline.setSize(w, h, Math.min(window.devicePixelRatio || 1, governor.settings.maxPixelRatio));
   rig.resize(w, h);
 });
@@ -631,7 +729,30 @@ async function exitShowcase(): Promise<void> {
 const api: XqTestApi = {
   ready: () => firstFrame,
 
-  pause: () => clock.pause(),
+  /**
+   * Hand the clock to the harness.
+   *
+   * Taking the clock also ends anything the GAME started on its own, which at
+   * boot is the opening march — and that is what made captures irreproducible.
+   * `ready()` resolves on the first composited frame, which is one frame after
+   * `booted`, and the march runs for `FORMATION.total` = 9.74 s of wall clock
+   * *after* that. So `pause()` lands at a wall-clock-dependent point in a
+   * ten-second animation, and because the march is an ordinary choreography
+   * sequence, every subsequent `step()` went on advancing it: figures walked in
+   * from 4.6 units off-board across the capture, arriving on whatever stepped
+   * frame the boot speed happened to put them. From a wide framing that reads
+   * as a march; from a capture push it reads as combatants missing from the
+   * first N cells of a contact sheet, with N different every run.
+   *
+   * The march polls this from its own tick and `complete()`s itself — the same
+   * path a player's keypress takes, so the army arrives on its squares with
+   * every mark fired and nothing left mid-stride. The hand-over therefore lands
+   * on the one state the march has for certain: its end.
+   */
+  pause: () => {
+    harnessOwnsClock = true;
+    clock.pause();
+  },
   resume: () => clock.resume(),
   step: (s) => stepOnce(s),
   stepFrames: async (n, s = 1 / 60) => {
@@ -728,6 +849,7 @@ const api: XqTestApi = {
     rig.director.setNamedPose(n, immediate !== false),
   setSilhouette: (on: boolean) => {
     hud.setVisible(!on && hudVisible);
+    review.group.visible = !on;
     pipeline.setSilhouetteMode(on);
     rig.setSilhouetteMode(on);
   },
@@ -811,7 +933,9 @@ window.__XQ = api;
  * chasing "the draw calls are there but nothing is on screen" without being
  * able to walk the scene graph from the console is needlessly hard.
  */
-(window as unknown as Record<string, unknown>).__DBG = { scene, stage, rig, match, pipeline, characters };
+(window as unknown as Record<string, unknown>).__DBG = {
+  scene, stage, rig, match, pipeline, characters, choreographer, assist, review, hud,
+};
 
 // Keep the unused-but-intentional bindings honest for the type checker.
 void hudVisible;

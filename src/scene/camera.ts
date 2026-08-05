@@ -240,7 +240,12 @@ export const MODE_FRAMINGS: Record<Exclude<CameraMode, 'capture' | 'check' | 'fr
   wide: { target: [0, 0.4, 0], distance: 15.0, pitch: 0.83, yaw: null, fov: 38, seconds: 2.2 },
   endgame: { target: [0, 0.28, 0], distance: 12.6, pitch: 0.42, yaw: null, fov: 33, seconds: 3.4 },
   terminal: { target: [0, 0.7, 0], distance: 6.4, pitch: 0.34, yaw: null, fov: 34, seconds: 3.0 },
-  review: { target: [0, 0.35, 0], distance: 14.2, pitch: 0.86, yaw: null, fov: 36, seconds: 1.8 },
+  // Review is a READING mode, and what is read sits on the terrace either side
+  // of the table — the marked record on +X, the evaluation silk on -X. At 14.2
+  // and fov 36 this framing was tighter than `development` and cropped both of
+  // them out of shot, so review mode showed a board with nothing to read. It is
+  // now the widest resting framing in the table, deliberately.
+  review: { target: [0, 0.35, 0], distance: 17.6, pitch: 0.86, yaw: null, fov: 39, seconds: 1.8 },
 };
 
 /**
