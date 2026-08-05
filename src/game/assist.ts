@@ -432,9 +432,16 @@ export class Assist {
       }
     }
 
+    const moved = this.playedPlies() !== this.cursorPly;
     this.cursorPly = this.playedPlies();
-    this.match.sync();
-    this.opts.onSync?.();
+    // Only reconcile when the board really changed. `onSync` re-dresses every
+    // figure main.ts owns, and re-collapsing thirty-two units to answer a seek
+    // that did not move anything is the most expensive no-op in the module.
+    if (moved || !this.syncedOnce) {
+      this.syncedOnce = true;
+      this.match.sync();
+      this.opts.onSync?.();
+    }
 
     if (this.cursorPly > 0) {
       const m = this.match.moves[this.cursorPly - 1];
