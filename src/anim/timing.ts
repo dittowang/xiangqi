@@ -495,9 +495,13 @@ export const CAPTURE = {
    * is 42% of a square and three quarters of his own height, and the frame that
    * fires the flash was a frame in which nothing touched.
    *
-   * `OTS_CONTACT_FRACTION` in @scene/camera.ts mirrors this number to frame the
-   * exchange as it will be at contact. It is a framing heuristic and it stays a
-   * mirror of the fallback, not of the derived value.
+   * The camera needs the same number to frame the exchange as it will be at
+   * contact, and it used to mirror this constant by hand — which held only
+   * until the derived fraction arrived and the mirror went on framing 0.58 for
+   * a cast that no longer used it. The value now travels with the request
+   * instead, as the third argument to `CameraDirector.pushToCapture`, so the
+   * camera frames whatever this file actually did. Nothing mirrors this number
+   * any more; it is a fallback for a figure with no animator and nothing else.
    */
   approachFraction: 0.58,
   /**
