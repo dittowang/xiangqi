@@ -37,9 +37,79 @@ const FILL_DISTANCE = 22;
 /** Half-extent of the fallback shadow camera. Covers the table and its figures. */
 const SHADOW_EXTENT = 9.5;
 
-/** The fill sits opposite the key and much lower — open sky, not a second sun. */
+/**
+ * The fill sits across from the key and well above the horizon — a broad open
+ * sky, not a second sun and not a kicker.
+ *
+ * It used to be pinned at 0.42x the key's elevation, which was fine while the
+ * key sat at 49 degrees and became a raking under-light the moment the key came
+ * down to 40 (see the elevation note below). An illustration's fill is a large
+ * soft source high in the room; anchoring it to a floor of its own keeps it
+ * there at every mood instead of following the key into the skirting board.
+ */
 const FILL_AZIMUTH_OFFSET = 2.35;
-const FILL_ELEVATION_SCALE = 0.42;
+const FILL_ELEVATION_FLOOR = 0.42;
+const FILL_ELEVATION_SCALE = 0.30;
+
+// ---------------------------------------------------------------------------
+// The gongbi key elevation ladder — measured, not chosen
+// ---------------------------------------------------------------------------
+
+/**
+ * `MOODS` places the key the way a photographer would: wide 49 degrees, close
+ * 39, endgame 19. Measured over a real frame, that placement is the single
+ * biggest reason the four-band ramp behaves like a two-band one, and the reason
+ * is geometry rather than taste.
+ *
+ * The surface shader's band axis is `0.62·(N·L) + 0.38` off ONE direction —
+ * this rig's key. No fill, bounce or ambient term reaches it. So for a key at
+ * elevation e, every surface in the frame lands at one of these:
+ *
+ *   upward-facing plane          0.62·sin(e) + 0.38
+ *   vertical plane facing the key 0.62·cos(e) + 0.38
+ *   vertical plane side-on        0.38
+ *   vertical plane turned away    0.38 − 0.62·cos(e)
+ *   anything in cast shadow       ×0.12, i.e. 0.00 – 0.12
+ *
+ * At e = 49° the first two are 0.850 and 0.785. They are 0.065 apart, which is
+ * *less* than the ±0.045 of per-unit variation the shader already adds — so the
+ * top of a helmet and the front of a breastplate are the same band no matter
+ * where the cuts are put, and no re-cut of `thresholds` can separate them. At
+ * the same time cos(49°) = 0.66 leaves the vertical surfaces — most of a
+ * standing figure — sweeping only [0.03, 0.79], piled at both ends.
+ *
+ * Bringing the key down to 40° pulls them apart (top 0.779, front 0.854) and
+ * lets the verticals sweep the whole [0, 0.854]. Measured per material class
+ * over the 32-figure board at the `default` pose, the mass of lacquer landing
+ * in N·L 0.16–0.42 — which is exactly where band 1 has to live — goes from
+ * 10.3% at 49° to 20.6% at 40°. Raising the key instead makes it worse (7.7% at
+ * 66°), because every upward-facing plane then piles into the top band.
+ *
+ * So the ladder is remapped, affinely, onto a lower and shallower range. Affine
+ * matters: `blend()` interpolates the authored elevation, and an affine remap
+ * commutes with a lerp, so a mood cross-fade is exactly as smooth after the
+ * remap as before it and still passes monotonically through every angle
+ * between. Nothing cuts.
+ *
+ * The authored ORDER and spacing are preserved, which is what keeps the three
+ * moods distinct: wide stays the highest and most frontal key, endgame stays
+ * the low raking one, and every other field of the mood — both light colours,
+ * the intensities, the azimuth swing, the shadow stretch and the grade — is
+ * untouched.
+ *
+ * These numbers want to live in `MOODS`; `core/palette.ts` is frozen, so they
+ * live here instead and the exact edit is written up in the task report.
+ */
+export const AUTHORED_ELEVATION = { low: 0.34, high: 0.86 } as const;
+export const GONGBI_ELEVATION = { low: 0.4, high: 0.7 } as const;
+
+/** The authored key elevation, remapped onto the gongbi ladder. Affine. */
+export function gongbiElevation(authored: number): number {
+  const a = AUTHORED_ELEVATION;
+  const g = GONGBI_ELEVATION;
+  const t = (authored - a.low) / (a.high - a.low);
+  return g.low + (g.high - g.low) * t;
+}
 
 export interface MoodState {
   key: LightMood['key'];
@@ -67,7 +137,9 @@ function snapshotOf(m: LightMood): MoodState {
     bounceColour: srgb(m.bounceColour),
     keyIntensity: m.keyIntensity,
     fillIntensity: m.fillIntensity,
-    keyElevation: m.keyElevation,
+    // The live state carries the elevation the lights actually use, not the
+    // authored one — anything reading `state` is reading the real rig.
+    keyElevation: gongbiElevation(m.keyElevation),
     keyAzimuth: m.keyAzimuth,
     shadowStretch: m.shadowStretch,
     gradeTint: srgb(m.gradeTint),
@@ -110,6 +182,19 @@ export interface LightConsumer {
     fillColour: THREE.Color;
     keyIntensity: number;
     fillIntensity: number;
+    /**
+     * Light coming back off the tabletop. This used to be missing from the
+     * push, and the consequence was not cosmetic: the surface shader takes
+     * ownership of its light uniforms the first time a consumer is fed, after
+     * which it stops driving `uBounceColour` from the mood itself. With the
+     * bounce absent from the push it stayed frozen at the boot mood's warm
+     * 赭石 for the whole match — so every downward-facing plane in the endgame
+     * was still catching summer light off a table that had gone cold.
+     *
+     * It is the one term in the shader that reaches surfaces the key cannot,
+     * which is exactly the broad low term an evenly lit illustration needs.
+     */
+    bounceColour: THREE.Color;
     gradeTint: THREE.Color;
     gradeAmount: number;
   }): void;
@@ -210,6 +295,7 @@ export class LightingRig {
       fillColour: new THREE.Color(),
       keyIntensity: 0,
       fillIntensity: 0,
+      bounceColour: new THREE.Color(),
       gradeTint: new THREE.Color(),
       gradeAmount: 0,
     };
@@ -267,7 +353,11 @@ export class LightingRig {
     s.gradeTint.copy(a.gradeTint).lerp(srgb(b.gradeTint), k);
     s.keyIntensity = a.keyIntensity + (b.keyIntensity - a.keyIntensity) * k;
     s.fillIntensity = a.fillIntensity + (b.fillIntensity - a.fillIntensity) * k;
-    s.keyElevation = a.keyElevation + (b.keyElevation - a.keyElevation) * k;
+    // `a` is already on the gongbi ladder (snapshotOf mapped it); `b` is a raw
+    // authored mood, so it is mapped here. The map is affine, so this is the
+    // same curve as interpolating the authored angles and mapping afterwards.
+    const bElevation = gongbiElevation(b.keyElevation);
+    s.keyElevation = a.keyElevation + (bElevation - a.keyElevation) * k;
     s.keyAzimuth = a.keyAzimuth + (b.keyAzimuth - a.keyAzimuth) * k;
     s.shadowStretch = a.shadowStretch + (b.shadowStretch - a.shadowStretch) * k;
     s.gradeAmount = a.gradeAmount + (b.gradeAmount - a.gradeAmount) * k;
@@ -294,7 +384,7 @@ export class LightingRig {
     cam.bottom = -extent;
     cam.updateProjectionMatrix();
 
-    const fe = s.keyElevation * FILL_ELEVATION_SCALE;
+    const fe = FILL_ELEVATION_FLOOR + s.keyElevation * FILL_ELEVATION_SCALE;
     const fa = s.keyAzimuth + FILL_AZIMUTH_OFFSET;
     _fillDir.set(Math.cos(fe) * Math.sin(fa), Math.sin(fe), Math.cos(fe) * Math.cos(fa));
     this.fill.position.copy(_fillDir).multiplyScalar(FILL_DISTANCE);
@@ -325,6 +415,7 @@ export class LightingRig {
     l.fillColour.copy(this.state.fillColour);
     l.keyIntensity = this.state.keyIntensity;
     l.fillIntensity = this.state.fillIntensity;
+    l.bounceColour.copy(this.state.bounceColour);
     l.gradeTint.copy(this.state.gradeTint);
     l.gradeAmount = this.state.gradeAmount;
     for (let i = 0; i < this.consumers.length; i++) this.consumers[i].setLight(l);

@@ -75,6 +75,122 @@ const WASH_LIGHTNESS = -0.045;
 const WASH_SATURATION = -0.12;
 
 // ---------------------------------------------------------------------------
+// Band cuts — re-cut against a measured frame
+// ---------------------------------------------------------------------------
+
+/**
+ * WHERE EACH CLASS'S BANDS CHANGE OVER, IN N·L.
+ *
+ * These replace `RAMPS[cls].thresholds`. `core/palette.ts` is frozen, so the
+ * measured numbers live here; they are the same shape and the same meaning, and
+ * the exact edit that would fold them back into the palette is written up in the
+ * task report. `bandThresholds()` is the one accessor — nothing in this file
+ * reads `spec.thresholds` any more.
+ *
+ * HOW THEY WERE ARRIVED AT
+ * The atlas alpha channel is the band index, and it is ours at runtime, so it
+ * can be re-baked into a measurement encoding: one pass per material class to
+ * mask the frame by class, then a pass per texel triple to bin N·L. 43 passes
+ * recover the exact cumulative distribution of N·L, per class, at every one of
+ * this row's 128 texels, over a real frame at `setQuality('ultra')`. Every
+ * number below is a quantile of that distribution over the full 32-figure board
+ * at the `default` pose, not an intuition.
+ *
+ * WHAT THE MEASUREMENT SAID, AND WHY THE OLD CUTS COULD NOT WORK
+ *
+ * 1. Cast shadow is not a tail of the distribution, it is a separate
+ *    POPULATION. The surface shader multiplies N·L by 0.12 in shadow, so every
+ *    shadowed fragment in the build lands in 0.00–0.14 regardless of how it
+ *    faces. On a close showcase that is 60–75% of a figure. The first cut
+ *    therefore sits just above that ceiling on every class: band 0 is "in
+ *    shadow, or turned right away", and bands 1–3 divide the LIT range. Putting
+ *    the first cut higher (lacquer's old 0.18, silk's old 0.36) spent two bands
+ *    on a population that has no spread to divide.
+ *
+ * 2. Horizontal surfaces are a spike, not a spread. Under a key at elevation e
+ *    every upward-facing plane in the frame lands at exactly 0.62·sin(e) + 0.38
+ *    — 0.779 at the rig's `wide` mood. Measured, that spike is 87% of the board
+ *    deck, 82% of the table's timber, and 43% of a chariot's lacquer, inside a
+ *    SINGLE texel. A cut placed on the spike does not separate two things, it
+ *    dithers one thing along the tooth, so no cut sits on one.
+ *
+ *    The spike also MOVES: the rig's mood ladder walks it from 0.779 (wide)
+ *    through 0.728 (close) to 0.621 (endgame). The board's three classes —
+ *    silk, timber, stone — are almost entirely spike, so where their upper cut
+ *    sits relative to that walk decides what the ground does across a match.
+ *    It is placed deliberately BETWEEN the close and endgame positions, so the
+ *    deck, the table and the piece bases hold one value through the opening and
+ *    the middlegame and step down exactly one rung as the endgame light falls.
+ *    That step is what makes the endgame read cold rather than merely bluer, it
+ *    is what the build already did before this re-cut, and moving the cut clear
+ *    of the walk to avoid it was measurably worse: the endgame board came out
+ *    pale and sandy and the mood stopped reading.
+ *
+ *    It crosses during a 2.4 s cross-fade rather than on one frame, and the
+ *    tooth spreads the crossing over roughly a third of a second along the
+ *    weave, so it dissolves rather than cuts.
+ *
+ * 3. The old cuts put the mass in band 2. Measured before: 73–95% of every
+ *    three-step class and 34% of lacquer sat in band 2, with band 1 under 8% on
+ *    gold and iron. But band 1 is the BODY COLOUR and band 2 is the lifted
+ *    plane; a painting whose lifted plane covers four fifths of every figure has
+ *    no body colour left, which is exactly the "everything reads as one material
+ *    in different colours" the critic named. The cuts below deliberately move
+ *    the mass down one rung, into the body colour, and leave band 2 for the
+ *    planes that genuinely turn toward the key.
+ *
+ * These are all valid only for the light rig in `scene/lighting.ts`. They are
+ * quantiles of a distribution that the key direction produces; move the key and
+ * they want re-measuring. That coupling is the whole point of P0.1 — the ramp
+ * and the rig are one tuning surface, not two.
+ */
+export const BAND_CUTS: Record<MaterialClass, number[]> = {
+  // Four-step. The top cut sits ABOVE the horizontal-plane spike at 0.779, so
+  // the 提白 accent lands on facets tilted toward the key rather than flooding
+  // every shoulder and helmet crown in the frame.
+  lacquer: [0.15, 0.7, 0.805],
+  // 泥金 keeps its razor: the top cut is the highest in the table, so only a
+  // facet nearly square to the light takes leaf.
+  gold: [0.15, 0.62, 0.93],
+  iron: [0.16, 0.69, 0.89],
+
+  // Three-step. Band 1 is the body colour and carries the mass.
+  cloth: [0.16, 0.72],
+  leather: [0.15, 0.7],
+  ivory: [0.16, 0.66],
+  flesh: [0.15, 0.68],
+  hair: [0.16, 0.7],
+
+  // The board's three classes: deck, table frame, piece bases. Their upper cut
+  // sits between the close mood's spike (0.728) and the endgame's (0.621) — see
+  // note 2 — so the ground holds one value until the endgame and then steps
+  // down a rung. Stone's cut is the lowest of the three because 石色 carries the
+  // heaviest granulation in the build (0.065), and a cut too near the spike
+  // would break the piece bases into a mottle rather than a value.
+  silk: [0.11, 0.66],
+  timber: [0.17, 0.66],
+  stone: [0.15, 0.65],
+};
+
+/**
+ * The cut points a class's ramp is actually baked with, validated against the
+ * step count the palette authored. A mismatch here would bake a band the shader
+ * can never select, and the failure is silent, so it throws.
+ */
+export function bandThresholds(cls: MaterialClass): number[] {
+  const cuts = BAND_CUTS[cls];
+  const want = RAMPS[cls].steps - 1;
+  if (!cuts || cuts.length !== want) {
+    throw new Error(`BAND_CUTS.${cls}: ${cuts?.length ?? 0} cuts for a ${RAMPS[cls].steps}-step ramp`);
+  }
+  for (let i = 0; i < cuts.length; i++) {
+    if (!(cuts[i] > 0 && cuts[i] < 1)) throw new Error(`BAND_CUTS.${cls}[${i}] out of (0,1)`);
+    if (i > 0 && cuts[i] <= cuts[i - 1]) throw new Error(`BAND_CUTS.${cls} is not ascending`);
+  }
+  return cuts;
+}
+
+// ---------------------------------------------------------------------------
 // Row indexing
 // ---------------------------------------------------------------------------
 
@@ -202,6 +318,7 @@ export function bakeRampRow(
   offset = 0,
 ): void {
   const spec = RAMPS[cls];
+  const cuts = bandThresholds(cls);
   const hexes = bandHexes(cls, pigment);
   const cols = hexes.map(toLinear);
   // `edgeSoftness` is the full width of the cut, so the smoothstep runs from
@@ -213,8 +330,8 @@ export function bakeRampRow(
 
     // Continuous band position in [0, steps-1].
     let b = 0;
-    for (let k = 0; k < spec.thresholds.length; k++) {
-      const t = spec.thresholds[k];
+    for (let k = 0; k < cuts.length; k++) {
+      const t = cuts[k];
       b += smoothstep01(t - half, t + half, ndl);
     }
 
