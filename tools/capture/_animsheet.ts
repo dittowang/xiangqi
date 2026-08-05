@@ -179,7 +179,7 @@ async function main(): Promise<void> {
     // rider's shin instead of the horse's leg.
     await page.evaluate(() =>
       window.__XQ.setPose(
-        { target: [-2.5, 0.45, 3.4], distance: 3.6, pitch: 0.14, yaw: Math.PI / 2, fov: 36 },
+        { target: [-2.25, 0.36, 3.05], distance: 2.5, pitch: 0.12, yaw: Math.PI / 2, fov: 34 },
         true,
       ),
     );

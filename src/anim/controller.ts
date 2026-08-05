@@ -1340,18 +1340,32 @@ export class Animator implements UnitAnimator {
   }
 
   /**
-   * Finish the step that was in the air when the walk stopped.
+   * Close up. Both feet come under their own hips when the walk stops.
    *
    * A gait that simply switches off leaves one foot hanging where the swing
    * happened to be, and the next state's IK either snaps it down or, worse,
    * locks it there. The closing step brings it under its own hip on the same
    * arc a normal swing would have used.
+   *
+   * **Both** feet, not only the swinging one. The trailing foot is still planted
+   * a third of a stride behind the hip at the moment a walk ends, and leaving it
+   * there is not a neutral choice: the figure is then standing in a split stance
+   * it never leaves, the hip solve drops the pelvis far enough to reach both
+   * plants, and it *stays* dropped — a soldier who has just walked one square
+   * stands eight per cent shorter than one who has not, for the rest of the
+   * match. After a capture, where the last plant is further back still, it is
+   * twenty per cent and reads as a permanent crouch. The standing foot's close
+   * is a weight shift rather than a step, and the arc it rides is short enough
+   * that it looks like one.
    */
   private beginClosingStep(): void {
     for (const side of SIDES) {
       const leg = this.legs[side];
       const lock = leg.lock;
-      if (!lock.primed || lock.locked) continue;
+      if (!lock.primed) continue;
+      // It is moving now, so it does not own its world position any more; the
+      // close re-plants it at the end.
+      lock.locked = false;
       lock.from.copy(lock.world);
       // Under the hip, not ahead of it: the figure is stopping, not stepping.
       lock.to.setFromMatrixPosition(leg.chain.a.matrixWorld);
@@ -1471,6 +1485,16 @@ export class Animator implements UnitAnimator {
       lock.weight = 0.9;
       if (lock.closing >= 1) {
         lock.locked = true;
+        // Take the *plant* as well as the lock. `plant` is what the stance
+        // branch below copies back into `world` every frame once heel-off is
+        // done, so a close that moves `world` and leaves `plant` behind is
+        // undone on the very next frame: the foot walks to its closing position,
+        // re-locks, and then snaps back to where it was standing before. That
+        // snap is why the closing step has never done anything.
+        lock.plant.copy(lock.world);
+        this.toeOf(lock.world, lock.toe);
+        lock.yaw = this.yaw;
+        lock.heelOff = 0;
         this.onFootfall(side, lock.world);
       }
       return;

@@ -518,6 +518,16 @@ export class Choreography implements Choreographer {
     const tDisperseEnd = CAPTURE.disperseEnd + H;
     const tEnd = CAPTURE.settleEnd + H;
 
+    // The finishing step: the attacker leaves the follow-through and walks the
+    // rest of the gap. It is a real walk with a real duration, taken from the
+    // same table every other walk in the game is taken from.
+    const tAdvance = CAPTURE.contact + CAPTURE.recover + H;
+    const advanceTime = Math.max(
+      1e-4,
+      walkSeconds(attacker.meta.gait as GaitName, gap * (1 - approachFrac)),
+    );
+    const tAdvanceEnd = tAdvance + advanceTime;
+
     const startY = attacker.root.position.y;
     let lastApproach = 0;
     let lastFinish = 0;
@@ -585,10 +595,22 @@ export class Choreography implements Choreographer {
         def?.setLookTarget(null);
         this.audio.play('bodyFall', { gain: 0.8, pan: clamp(B.x / 6, -1, 1), delay: 0.09 });
       }),
-      mark(CAPTURE.contact + CAPTURE.recover + H, () => {
-        atk?.play('idle', 0.32);
+      mark(tAdvance, () => {
+        // Out of the follow-through and *walking*, because the next thing the
+        // attacker does is cover the rest of the gap onto the square it just
+        // cleared. Returning to `idle` here and translating the root anyway is
+        // what put it in a crouch: `idle` locks both feet where they stand, the
+        // choreographer then slides the root a third of a square past them, and
+        // the hip solve does the only thing it can — it drops the pelvis until
+        // the legs can still reach the plants. The figure arrives on its square
+        // squatting, and stays that way until its next move.
+        atk?.play('move', 0.3);
         atk?.setLookTarget(null);
         atk?.setTrunkTarget(null);
+      }),
+      mark(tAdvanceEnd, () => {
+        atk?.play('idle');
+        this.audio.play('pieceLand', { gain: 0.5, pan: clamp(B.x / 6, -1, 1) });
       }),
       mark(tDisperse, () => {
         bus.emit('capture:beat', { ...cc, beat: 3 });
@@ -612,8 +634,11 @@ export class Choreography implements Choreographer {
         const moved = Math.max(0, s - lastApproach);
         lastApproach = s;
         atk?.reportTravel(moved);
-      } else if (t >= tKnockEnd) {
-        const u = clamp((t - tKnockEnd) / Math.max(1e-4, tDisperseEnd - tKnockEnd), 0, 1);
+      } else if (t >= tAdvance) {
+        // The finishing step, over its own walk-shaped window rather than
+        // smeared across the whole tail. A third of a square taken at a fifth of
+        // marching pace is a figure being dragged, not a figure stepping.
+        const u = clamp((t - tAdvance) / advanceTime, 0, 1);
         const s = gap * (approachFrac + (1 - approachFrac) * this.travelEase(u));
         attacker.root.position.set(A.x + D.x * s, startY, A.z + D.z * s);
         const moved = Math.max(0, s - lastFinish - gap * approachFrac);
