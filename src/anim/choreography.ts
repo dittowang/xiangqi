@@ -679,7 +679,7 @@ export class Choreography implements Choreographer {
         bus.emit('capture:beat', { ...cc, beat: 1 });
         // Fired, never awaited: the director resolves this from inside its own
         // update, and awaiting it with the clock stalled would deadlock.
-        void this.camera.pushToCapture(ctx.attackerSq, ctx.defenderSq);
+        void this.camera.pushToCapture(ctx.attackerSq, ctx.defenderSq, approachFrac);
         atk?.play('move', 0.18);
         _look.copy(B);
         _look.y += defender.meta.size[1] * 0.62;
@@ -905,7 +905,10 @@ export class Choreography implements Choreographer {
     const marks: Mark[] = [
       mark(RANGED.haulStart, () => {
         bus.emit('capture:beat', { ...cc, beat: 1 });
-        void this.camera.pushToCapture(ctx.attackerSq, ctx.defenderSq);
+        // 0, not the melee default: a 砲 never leaves its square, so the near
+        // end of this exchange is the attacker's own intersection. Framing it
+        // partway down the gap puts the camera on empty board.
+        void this.camera.pushToCapture(ctx.attackerSq, ctx.defenderSq, 0);
         atk?.play('attackWindup');
         _look.copy(B);
         _look.y += defender.meta.size[1] * 0.6;

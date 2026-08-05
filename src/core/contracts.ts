@@ -333,7 +333,24 @@ export interface CameraDirector {
   update(dt: number): void;
   setMode(mode: CameraMode, seconds?: number): void;
   /** Over-the-shoulder push for a capture; resolves when the push has landed. */
-  pushToCapture(attackerSq: number, defenderSq: number): Promise<void>;
+  /**
+   * Over-the-shoulder push for a capture; resolves when the push has landed.
+   *
+   * `contactFraction` is how far down the attacker→defender gap the blow
+   * actually lands, and it is NOT a constant: the attacker stops at a distance
+   * derived from its own measured strike reach, so a 兵 closes the whole gap
+   * while an 象 stops nearly three gaps back — a mounted attacker that closed
+   * further would put its animal's head through the man it is killing. A 砲
+   * passes 0: it never leaves its square.
+   *
+   * The camera takes it as a parameter rather than re-deriving it because the
+   * only other route is for scene/ to read Animator.strikeReach and UnitMeta,
+   * which inverts the module graph. It was previously mirrored as a constant in
+   * two files and they drifted the moment the choreographer stopped using a
+   * fixed fraction — so the value now travels with the request that needs it.
+   * Omitted, the director falls back to its own documented default.
+   */
+  pushToCapture(attackerSq: number, defenderSq: number, contactFraction?: number): Promise<void>;
   /** Snap attention to a general under check. */
   pushToCheck(square: number): void;
   /** Return to whatever the phase's resting framing is. */
