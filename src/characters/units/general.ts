@@ -291,6 +291,10 @@ function buildGeneral(ctx: UnitBuildContext): PartGroup {
  * low. Octagonal rather than round because a lathe at eight facets gives eight
  * flat planes, and a quantised ramp puts each of them in a different band; a
  * cylinder would give one band all the way round and read as a drum.
+ *
+ * The `'root'` bone hints below are for material grouping only: the caller runs
+ * the whole group through `pinStatic`, which rebinds every piece of it to the
+ * unit root so no clip can move it. See the note at the call site.
  */
 function hanDais(ctx: UnitBuildContext, h: number, top: number): PartGroup {
   const P = ctx.parts;
@@ -360,6 +364,9 @@ function hanDais(ctx: UnitBuildContext, h: number, top: number): PartGroup {
  * the top. Square in plan, so from any angle its outline has corners where the
  * Han dais has facets — and the cleats put four small verticals at the base of
  * a figure whose Han counterpart has none.
+ *
+ * As with `hanDais`, the `'root'` bone hints are for material grouping only —
+ * `pinStatic` at the call site rebinds the whole group to the unit root.
  */
 function chuPlinth(ctx: UnitBuildContext, h: number, top: number): PartGroup {
   const P = ctx.parts;

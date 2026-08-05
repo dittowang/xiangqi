@@ -100,20 +100,24 @@
  * along-rank reach from 0.85 to 1.04 and it starts covering the next
  * intersection, so the increase is spent where there is room for it:
  *
- *   | family                       | factor | what stops it                  |
- *   |------------------------------|--------|--------------------------------|
- *   | foot (兵 卒 仕 士)            | 1.218  | nothing — reach 0.24 at worst  |
- *   | 帥 將 on his dais            | 1.370  | nothing — reach 0.51 at worst  |
- *   | 砲 crew + trebuchet          | 1.170  | reachZ 0.90                    |
- *   | 傌 horse, 俥 chariot          | 1.13 / 1.12 | reachZ 0.87 / 0.92        |
- *   | 相 elephant                  | 1.100  | reachZ 0.93 — the binding one  |
+ *   | family                | factor | what stops it                         |
+ *   |-----------------------|--------|---------------------------------------|
+ *   | 兵 卒 conscript        | 1.218  | nothing — worst reach 0.18            |
+ *   | 仕 士 guard            | 1.218  | nothing — worst reach 0.29            |
+ *   | 帥 將 on his dais      | 1.370  | nothing — worst reach 0.51            |
+ *   | 砲 trebuchet + crew    | 1.170  | reachZ 0.90                           |
+ *   | 俥 chariot            | 1.080  | reachZ 0.89, and the 8% height step   |
+ *   | 傌 horse              | 1.058  | the 8% height step under the 俥        |
+ *   | 相 elephant           | 1.100  | reachZ 0.93 — the binding constraint  |
  *
- * So the ladder's two ends are on spec and its middle is 6-10% below where a
+ * So the ladder's two ends are on spec and its middle sits 5-13% below where a
  * proportional restoration would put it. The elephant is what stops it: it is
- * the deepest silhouette in the cast relative to its own origin, and its reach
- * is the first thing that would cover a neighbour's intersection. Buying the
- * rest of the ladder means making the elephant shallower, which is a change to
- * `units/elephant.ts`, not to this table.
+ * the deepest silhouette in the cast relative to its own origin, so its reach
+ * is the first thing that would cover a neighbour's intersection. It caps the
+ * top of the beast-and-vehicle band, and the rule that every declared height
+ * must be 8% clear of every other then caps the 俥 and the 傌 beneath it.
+ * Buying the rest of the ladder means making the elephant shallower, which is
+ * a change to `units/elephant.ts`, not to this table.
  *
  * SCALE AND HEIGHT ARE STILL NOT THE SAME KNOB
  * --------------------------------------------

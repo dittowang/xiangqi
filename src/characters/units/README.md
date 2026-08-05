@@ -98,7 +98,8 @@ interface Part {
   boneHint: BoneName;             // its anchor in the skeleton
   name?: string;
   rigid?: boolean;                // 100% weight to boneHint
-  mountBone?: string;             // rigid on a mount bone instead
+  mountBone?: string;             // rigid on a mount bone instead, or
+                                  // STATIC_BONE for furniture (see §3)
   allow?: BoneName[];             // extra bones allowed to influence it
   noSilk?: boolean;               // opt out of the silk-weave shadow wash
 }
@@ -194,6 +195,16 @@ You never call the skinner. The factory does, and `boneHint` controls it:
   cloak wants `pelvis`).
 - **`mountBone: 'horse.legFL02'`** → rigid on a mount bone. Geometry still in
   rig space; the factory handles the rest.
+- **`mountBone: STATIC_BONE`** (or `pinStatic(group)`) → pinned to the **unit
+  root** instead of to the skeleton, so no clip, IK pass or contact correction
+  can move it. This is for *furniture the figure stands on*, not for anything it
+  wears: the 帥's command dais is the case it exists for. Bound to `root` — the
+  obvious choice, and the wrong one — it followed the bone every clip writes its
+  root translation to, and the death collapse's 238 mm drop took the platform
+  under the board with the body. It still travels and turns with the piece,
+  because it hangs off the unit root; it just does not listen to the skeleton.
+  Costs no extra draw call: the geometry merges into the unit's skinned mesh as
+  usual, weighted to a bone that never moves.
 
 Measured deformation at a 90° bend, from `verify.ts` (1.00 = no loss):
 shoulder **0.879**, elbow **0.943**, hip **0.909**, knee **0.898**. If a part

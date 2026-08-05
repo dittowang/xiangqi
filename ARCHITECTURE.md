@@ -72,10 +72,17 @@ Arrows are the only permitted import directions. `render` never imports
 - What governs whether a piece hides its neighbour is **not** its bounding box
   but how far its silhouette reaches from its own intersection — a shape centred
   off its origin crowds one side twice as hard as the box size implies.
-  `verify.ts` therefore asserts `reachX < 1.0` and `reachZ < 1.0`. Across the
-  files every unit is inside its own square (`reachX ≤ 0.49`); along the ranks
-  the beast and vehicle units lean up to 0.85 forward, stopping short of the
-  next intersection, which reads as presence rather than as crowding.
+  `verify.ts` therefore asserts `reachX < 1.0` and `reachZ < 1.0`. Measured:
+  worst `reachX` is 0.57 (cannon) and worst `reachZ` is 0.93 (Chu elephant), so
+  every unit is inside its own square across the files, and along the ranks the
+  beast and vehicle units lean forward without covering the next intersection —
+  presence rather than crowding.
+- The ladder above is a contract and `proportions.ts` records how far it can be
+  honoured. Both ENDS are exactly on spec; the middle sits 5–13% below a
+  proportional restoration, because the Chu elephant is the deepest silhouette
+  relative to its own origin in the cast and a proportional increase would take
+  its `reachZ` past 1.0. Buying the rest means making that unit shallower, which
+  is a change in its builder, not in the table.
 - Time is seconds; angles are radians.
 
 ## Rendering pipeline order
