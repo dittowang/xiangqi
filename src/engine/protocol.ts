@@ -15,7 +15,7 @@ export type EngineRequest =
   | { id: number; kind: 'newGame' }
   | { id: number; kind: 'setPosition'; fen: string; moves: Move[] }
   | { id: number; kind: 'search'; difficulty: Difficulty; timeMs?: number; maxDepth?: number }
-  | { id: number; kind: 'analyse'; fen: string; timeMs: number }
+  | { id: number; kind: 'analyse'; fen: string; timeMs: number; depth?: number }
   | { id: number; kind: 'perft'; fen: string; depth: number }
   | { id: number; kind: 'stop' };
 

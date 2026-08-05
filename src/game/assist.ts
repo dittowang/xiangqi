@@ -56,6 +56,13 @@ import type { ReviewPanel, ReviewRow } from '@ui/review.ts';
 /** Analysis budget per position during a review sweep, milliseconds. */
 const REVIEW_MS = 320;
 /** Analysis budget for a hint. The brief's number, and it is the right one. */
+/**
+ * Search depth for review annotation. Fixed rather than clock-bounded so the
+ * same game always grades identically; the wall-clock budget alongside it is
+ * only a safety cap for a pathological position.
+ */
+const REVIEW_DEPTH = 8;
+
 const HINT_MS = 800;
 /** Seconds a hint's marks stay on the board before they lift on their own. */
 const HINT_LINGER = 6;
@@ -540,7 +547,11 @@ export class Assist {
     for (let i = fens.length - 1; i >= 0; i--) {
       let r: SearchResult;
       try {
-        r = await this.opts.engine.analyse(fens[i], budget);
+        // Depth-bounded, not clock-bounded: a review must annotate the same
+        // game the same way every time. Three runs of one game used to grade the
+        // same ply blunder, blunder, then mistake purely from machine load.
+        // `budget` stays as a safety cap.
+        r = await this.opts.engine.analyse(fens[i], budget, REVIEW_DEPTH);
       } catch (err) {
         console.warn('[assist] review analysis failed at ply', i, err);
         break;

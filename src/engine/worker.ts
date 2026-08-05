@@ -63,6 +63,9 @@ self.onmessage = (event: MessageEvent<EngineRequest>) => {
 
       case 'analyse': {
         const result = host.analyse(req.fen, req.timeMs, {
+          // Depth-bounded when the caller asks for it, so a review annotates the
+          // same game the same way on every run.
+          ...(req.depth ? { maxDepth: req.depth } : {}),
           shouldStop,
           onProgress: (p) =>
             post({ id: req.id, kind: 'progress', depth: p.depth, score: p.score, nodes: p.nodes, pv: p.pv }),

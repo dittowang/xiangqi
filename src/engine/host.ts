@@ -82,11 +82,19 @@ export class EngineHost {
     return stripInternals(full);
   }
 
-  /** Full-strength fixed-time analysis: no book, no noise, no slip. */
+  /**
+   * Full-strength analysis: no book, no noise, no slip.
+   *
+   * With `opts.maxDepth` set the search is bounded by DEPTH and `timeMs` is only
+   * a safety cap, so the same position always returns the same answer. Without
+   * it the wall clock decides how deep the search got, and a review of the same
+   * game annotates differently on every run.
+   */
   analyse(fen: string, timeMs: number, opts: HostSearchOptions = {}): SearchResult {
     this.analysisPosition.setFen(fen);
     const full = findBestMove(this.analysisSearcher, this.analysisPosition, 'hard', {
       timeMs,
+      ...(opts.maxDepth ? { maxDepth: opts.maxDepth } : {}),
       useBook: false,
       onProgress: opts.onProgress,
       shouldStop: opts.shouldStop,

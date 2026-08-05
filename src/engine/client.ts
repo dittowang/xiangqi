@@ -121,9 +121,9 @@ class WorkerEngineClient implements EngineClient {
     return res.result;
   }
 
-  async analyse(fen: string, timeMs: number): Promise<SearchResult> {
+  async analyse(fen: string, timeMs: number, depth?: number): Promise<SearchResult> {
     this.clearStop();
-    const res = await this.request({ kind: 'analyse', fen, timeMs });
+    const res = await this.request({ kind: 'analyse', fen, timeMs, ...(depth ? { depth } : {}) });
     if (res.kind !== 'result') throw new Error('unexpected engine response');
     return res.result;
   }
@@ -190,10 +190,11 @@ export class LocalEngineClient implements EngineClient {
     });
   }
 
-  async analyse(fen: string, timeMs: number): Promise<SearchResult> {
+  async analyse(fen: string, timeMs: number, depth?: number): Promise<SearchResult> {
     this.stopping = false;
     await Promise.resolve();
     return this.host.analyse(fen, timeMs, {
+      ...(depth ? { maxDepth: depth } : {}),
       onProgress: this.opts.onProgress,
       shouldStop: () => this.stopping,
     });

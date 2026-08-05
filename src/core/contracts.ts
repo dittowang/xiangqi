@@ -429,8 +429,16 @@ export interface EngineClient {
   /** Push the authoritative position. `moves` are applied on top of `fen`. */
   setPosition(fen: string, moves: Move[]): Promise<void>;
   search(difficulty: Difficulty, opts?: { timeMs?: number }): Promise<SearchResult>;
-  /** Fixed-strength analysis for hints and post-game review. */
-  analyse(fen: string, timeMs: number): Promise<SearchResult>;
+  /**
+   * Fixed-strength analysis for hints and post-game review.
+   *
+   * `timeMs` alone bounds the search by WALL CLOCK, which is right for a hint —
+   * the player is waiting — and wrong for a review, because the same game
+   * analysed twice then annotates differently depending on machine load. Passing
+   * `depth` bounds it by search depth instead and makes the result reproducible;
+   * `timeMs` becomes a safety cap rather than the thing that decides the answer.
+   */
+  analyse(fen: string, timeMs: number, depth?: number): Promise<SearchResult>;
   stop(): void;
   perft(fen: string, depth: number): Promise<number>;
   dispose(): void;
