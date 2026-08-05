@@ -1235,6 +1235,16 @@ export class Choreography implements Choreographer {
     // corrections, foot locks and damped followers are all functions of history.
     atk?.reset();
     def?.reset();
+    // Nor may it inherit a *position*. `reset()` clears the animators and the
+    // exchange rewrites the attacker's root from its first tick, but nothing
+    // rewrites the defender's until it is struck: a seek taken after one that
+    // ran past the knockback therefore started with the body already driven
+    // back and sinking, and the same `t` gave two different frames depending on
+    // what had been scrubbed before it. Both figures go back on their squares.
+    this.squareWorld(ctx.attackerSq, _a);
+    this.place(attacker, _a.x, _a.z);
+    this.squareWorld(ctx.defenderSq, _a);
+    this.place(defender, _a.x, _a.z);
     void this.capture(attacker, defender, ctx);
     const seq = this.running[this.running.length - 1];
     if (!seq) return;

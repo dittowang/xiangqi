@@ -829,9 +829,31 @@ export class Animator implements UnitAnimator {
       prev.stop();
     }
 
-    // Entering `move` from rest starts on the phase we already hold, so a unit
-    // that stops and starts does not teleport its feet.
-    if (state === 'move') next.time = this.gaitPhase * clip.duration;
+    // Entering `move` from rest starts at the top of a step, not wherever the
+    // phase happened to stop.
+    //
+    // A standing figure has both feet under its hips; a walking one has them
+    // `duty × stride` apart. Whatever phase a walk resumes on, the standing
+    // foot it inherits is that much further forward than that phase expects,
+    // and it holds its plant until the phase says to let go — so the leg ends
+    // the first stance over-extended by the difference and the hip solve takes
+    // the pelvis down to reach it. Measured on the 兵: 30 mm of pelvis, once
+    // per move, at the start, which is two and a half times the bob of the walk
+    // it introduces.
+    //
+    // Starting the cycle at the instant the *other* foot leaves the ground is
+    // the shortest first stance available without putting a foot in mid-swing
+    // on the frame the state changes — which would be a real pop rather than a
+    // dip. It halves the excess. The rest of it is the honest thing a body does
+    // when it starts walking from standing, and taking it out entirely needs a
+    // start-up step that is shorter than a stride, which is a change to the
+    // contact geometry rather than to a phase.
+    if (state === 'move') {
+      if (this.state !== 'move' && !this.plan.seated) {
+        this.gaitPhase = wrap01(this.plan.contactL + this.plan.duty);
+      }
+      next.time = this.gaitPhase * clip.duration;
+    }
     if (this.state === 'move' && state !== 'move' && !this.plan.seated) this.beginClosingStep();
     if (state === 'death') this.releaseFeet();
 

@@ -180,14 +180,60 @@ export interface GaitPlan {
   bob: number;
 }
 
+/**
+ * ## Why these cycles are short
+ *
+ * A cycle time is not a free parameter either, but it is the *only* one left
+ * once the stride is fixed — and the stride is fixed by geometry, not by taste.
+ * Measured on the shipped 兵, walking one square through the choreographer:
+ *
+ * | stride ÷ leg | stride | pelvis bob | toe slide | one square |
+ * |---|---|---|---|---|
+ * | 1.32 (shipped) | 0.308 | **12.3 mm** | 0 | 3.90 s at 1.03 s/cycle |
+ * | 1.60 | 0.373 | 25.9 mm | 0 | 3.22 s |
+ * | 1.80 | 0.419 | 40.3 mm | 0 | 2.87 s |
+ * | 2.00 | 0.466 | 66.1 mm | 0 | 2.58 s |
+ * | 2.20 | 0.512 | 74.0 mm | **1.4 mm/frame — the lock breaks** | 2.35 s |
+ *
+ * The bob is the pelvis dropping to keep a planted foot inside the leg's reach:
+ * `L − √(L² − (ahead·stride)²)`, which is quadratic in the stride and inversely
+ * proportional to the leg. This cast's legs are 43% of stature, so every 20% of
+ * extra stride roughly doubles the bob — and a 5.9%-of-stature bob is exactly
+ * the duck-walk the motion critic named. `plantAhead` is already at the optimum
+ * split (half of duty, less the credit heel-off buys back); raising `heelRise`
+ * past ~40° buys a little more but puts the figure on pointe. **The stride
+ * cannot grow.**
+ *
+ * The cadence can, and it is free: the gait phase comes from the ground
+ * covered, so retiming a cycle changes the speed and *nothing else*. Measured
+ * across the same walk, stride held at 1.32:
+ *
+ * | cycle | steps/min | statures/s | bob | one square |
+ * |---|---|---|---|---|
+ * | 1.03 | 116 | 0.55 | 12.3 mm | 3.90 s |
+ * | 0.80 | 150 | 0.71 | 11.6 mm | 3.03 s |
+ * | 0.68 | 176 | 0.83 | 11.7 mm | 2.60 s |
+ * | 0.60 | 200 | 0.95 | 11.5 mm | 2.28 s |
+ *
+ * So the cadences below are a short-legged figure's, not a 1.8 m infantryman's.
+ * A cadence scales as √(leg length): this rig's leg is a quarter of a metre at
+ * face value, and 116 steps a minute is the rhythm of a man three times its
+ * size. At 176 the 兵 covers 0.83 statures a second — a real walking speed for
+ * its own body — while still taking the 6.5 steps its short legs need to cross
+ * a square. That last number is the one that cannot be fixed here: **one square
+ * is 1.85 times the 兵's height**, and no honest walk crosses 1.85 statures in
+ * the 1.0–1.4 s a fast game wants. That is the figure-to-square scale, and it
+ * lives in `characters/proportions.ts`.
+ */
 export const GAIT: Record<GaitName, GaitPlan> = {
   /**
    * Infantry march. Duty 0.62 gives two 12% double-support windows per cycle.
-   * 1.03 s per cycle is 116 steps a minute, which is a real quick-march cadence.
+   * 0.68 s per cycle is 176 steps a minute — the double-time rhythm, and the
+   * cadence a figure with a 0.23-unit leg actually keeps.
    */
   march: {
     name: 'march',
-    cycle: 1.03,
+    cycle: 0.68,
     strideOverLeg: 1.32,
     duty: 0.62,
     contactL: 0.5,
@@ -199,10 +245,15 @@ export const GAIT: Record<GaitName, GaitPlan> = {
   /**
    * The robed walk. Longer double support, shorter steps, and a bob small
    * enough that the hem does not pump — the brief's "almost no vertical bob".
+   *
+   * 0.70 s rather than a statelier number because the 仕 moves *diagonally*:
+   * its square is 1.414 units, and at anything slower its move runs past
+   * `maxSeconds` and gets compressed anyway. Short steps at a brisk rate under
+   * a robe read as a glide; the hem hides the feet and only the speed shows.
    */
   stride: {
     name: 'stride',
-    cycle: 1.19,
+    cycle: 0.70,
     strideOverLeg: 1.10,
     duty: 0.66,
     contactL: 0.5,
@@ -211,10 +262,16 @@ export const GAIT: Record<GaitName, GaitPlan> = {
     seated: false,
     bob: 0.0058,
   },
-  /** The rider's clock. The horse's three beats live in `CANTER` below. */
+  /**
+   * The rider's clock. The horse's three beats live in `CANTER` below.
+   *
+   * 0.62 s is 97 strides a minute, which is a real canter — the old 0.83 was a
+   * lope no horse carrying a rider into contact would use, and it made the 馬
+   * the slowest thing on the board despite having the longest stride.
+   */
   canter: {
     name: 'canter',
-    cycle: 0.83,
+    cycle: 0.62,
     strideOverLeg: 2.42,
     duty: 1.0,
     contactL: 0.0,
@@ -223,10 +280,17 @@ export const GAIT: Record<GaitName, GaitPlan> = {
     seated: true,
     bob: 0.026,
   },
-  /** The elephant's four-beat lateral walk, seen from the mahout's seat. */
+  /**
+   * The elephant's four-beat lateral walk, seen from the mahout's seat.
+   *
+   * 1.0 s per cycle: a real elephant's stride frequency at a purposeful walk,
+   * and the number that just keeps the 象's two-square diagonal (2.83 units)
+   * inside `maxSeconds` without compression. At the authored 2.13 it took 8.4 s
+   * and was clamped to less than half of that, which is the worst of both.
+   */
   lumber: {
     name: 'lumber',
-    cycle: 2.13,
+    cycle: 1.00,
     strideOverLeg: 2.05,
     duty: 1.0,
     contactL: 0.0,
@@ -235,10 +299,14 @@ export const GAIT: Record<GaitName, GaitPlan> = {
     seated: true,
     bob: 0.019,
   },
-  /** The charioteer's clock. Wheel phase comes from travel, never from here. */
+  /**
+   * The charioteer's clock. Wheel phase comes from travel, never from here.
+   * 0.95 s is one wheel revolution a second — 2.07 units per second, which is
+   * the fastest thing on the board, as it should be.
+   */
   roll: {
     name: 'roll',
-    cycle: 1.31,
+    cycle: 0.95,
     strideOverLeg: 1.0,
     duty: 1.0,
     contactL: 0.0,
@@ -250,10 +318,18 @@ export const GAIT: Record<GaitName, GaitPlan> = {
   /**
    * The artillery crew's shuffle. Duty 0.73 — three-quarters of the cycle with
    * both feet down is what makes a shuffle a shuffle rather than a walk.
+   *
+   * 0.62 s of it: very short steps taken very quickly, which is exactly what
+   * men dragging a machine on ropes do, and the only way a 0.21-unit stride
+   * covers a square in a playable time. The 砲 is still the slowest unit on the
+   * board — 3.4 s for a square against the 兵's 2.6 — and a long haul along a
+   * file is still compressed by `maxSeconds`. Lengthening its stride instead
+   * was measured and rejected: at 1.0 leg lengths the crew's ankle picks up
+   * 0.14 mm of slide a frame, and an exact lock is worth more than a second.
    */
   crew: {
     name: 'crew',
-    cycle: 1.47,
+    cycle: 0.62,
     strideOverLeg: 0.76,
     duty: 0.73,
     contactL: 0.5,
