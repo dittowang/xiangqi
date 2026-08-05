@@ -167,6 +167,20 @@ class Sequence {
 
 const mark = (at: number, fn: () => void): Mark => ({ at, fn, fired: false });
 
+/**
+ * How far a figure has to be put from where it already is before the placement
+ * counts as a **teleport** rather than one more frame of a tween, in world
+ * units.
+ *
+ * An eighth of a square. Comfortably above anything a legitimate step covers —
+ * the quickest gait in the game crosses about 0.03 of a square in a frame, and
+ * even a harness stepping a quarter second at a time stays under a tenth — and
+ * comfortably below anything that is actually a jump: a cancelled move has at
+ * least a fraction of a square left in it, and the march-in snap is four and a
+ * half squares.
+ */
+const TELEPORT_MIN = 0.12;
+
 // ===========================================================================
 // Options
 // ===========================================================================
@@ -336,6 +350,65 @@ export class Choreography implements Choreographer {
     unit.root.position.set(x, this.ground ? this.ground(x, z) : 0, z);
   }
 
+  /**
+   * Put a figure on a square it did not walk to, and say so.
+   *
+   * Every `finish()` in this file runs on two paths: the sequence ended
+   * normally, in which case the tick has already carried the figure to exactly
+   * this point and this is a no-op; or the sequence was skipped or cancelled, in
+   * which case this is a **teleport** — a takeback, a position load, a player's
+   * key during the march, `__XQ.pause()` taking the clock. A foot lock is a
+   * world position, so a teleport falsifies it, and the contact solver's job is
+   * then to drag the drawn figure back to plants that are no longer anywhere
+   * near it. `TELEPORT_MIN` is what separates the two paths.
+   *
+   * Safe to call from a tick as well as from a `finish()`: a figure that is
+   * being walked moves a fraction of the threshold per frame and is never
+   * re-primed, and the one call that does cross it is the snap `complete()`
+   * makes when a sequence is skipped. That matters because `complete()` runs
+   * the tick at `duration` *before* it runs `finish()` — the march-in's snap
+   * happens in the tick, and a `finish()` that only looked at its own placement
+   * would find the figure already moved and conclude nothing had happened.
+   */
+  private teleport(unit: UnitInstance, x: number, z: number): void {
+    const jumped = Math.hypot(x - unit.root.position.x, z - unit.root.position.z) > TELEPORT_MIN;
+    this.place(unit, x, z);
+    if (jumped) this.animator(unit)?.teleported();
+  }
+
+  /**
+   * How much of the gap the attacker closes before it strikes, from its own
+   * reach rather than from one number for the whole cast.
+   *
+   * The attacker stops where **either its weapon or its own body** is against
+   * the defender, whichever happens first:
+   *
+   *     standoff = max(reach, own half-depth) + defender's torso radius − bite
+   *
+   * `reach` is measured off the figure's own strike clip at the contact frame
+   * (`Animator.strikeReach`), so a 兵's short spear (176 mm past its root), a
+   * 士's sword (234 mm) and a 象 rider's goad (593 mm) each get their own
+   * answer, and a 將 — whose blade has swept past by the contact frame — gets
+   * its fist (174 mm), which is what actually lands. The half-depth term is
+   * what keeps a mounted attacker from putting its horse's head through the man
+   * it is killing; for a 兵 it is smaller than the reach and never binds.
+   *
+   * The result is a fraction because the gap varies as much as the reach does:
+   * one square for a 兵, 1.41 for a 士, 2.24 for a 馬, 2.83 for a 象.
+   */
+  private approachFraction(
+    attacker: UnitInstance,
+    atk: Animator | undefined,
+    defender: UnitInstance,
+    gap: number,
+  ): number {
+    if (!atk) return CAPTURE.approachFraction;
+    const halfDepth = attacker.meta.size[2] * 0.5;
+    const torso = Math.min(defender.meta.size[0], defender.meta.size[2]) * 0.5;
+    const standoff = Math.max(atk.strikeReach, halfDepth) + torso - CAPTURE.contactBite;
+    return clamp((gap - standoff) / gap, CAPTURE.approachMin, CAPTURE.approachMax);
+  }
+
   /** Yaw that points a unit's −Z forward axis along a world direction. */
   private yawTo(dx: number, dz: number): number {
     if (Math.abs(dx) < 1e-9 && Math.abs(dz) < 1e-9) return 0;
@@ -411,7 +484,11 @@ export class Choreography implements Choreographer {
     const path: THREE.Vector3[] = [];
     const length = this.buildPath(unit, fromSq, toSq, path);
     const gait = unit.meta.gait as GaitName;
-    const travelTime = walkSeconds(gait, length);
+    // The figure's own stride, so the time it takes to cross the ground and the
+    // rate its legs cycle at are the same statement. `walkSeconds` divides one
+    // by the other; handing it the animator's stride is what keeps a 0.60-scale
+    // conscript and a 1.12-scale general both marching at their own cadence.
+    const travelTime = walkSeconds(gait, length, anim?.stride);
     const total = travelTime + WALK.settle;
 
     this.place(unit, path[0].x, path[0].z);
@@ -447,7 +524,13 @@ export class Choreography implements Choreographer {
 
     const finish = (): void => {
       this.samplePath(path, length, _a, _dir);
-      this.place(unit, _a.x, _a.z);
+      // `teleport`, not `place`: a walk that was cancelled mid-stride — a
+      // takeback, a position load — jumps the figure to its destination, and
+      // the feet it left behind have to be told. A walk that ended normally
+      // lands here to float precision and nothing is dropped, which matters:
+      // the closing step `play('idle')` is about to start is what stops the
+      // figure standing in the split stance the walk left it in.
+      this.teleport(unit, _a.x, _a.z);
       anim?.play('idle', FADE_SNAP);
     };
 
@@ -509,29 +592,84 @@ export class Choreography implements Choreographer {
     // A chariot does not stop in front of what it kills, so it covers almost
     // the whole gap before contact and finishes the move through the wreck.
     const rollingThrough = attacker.meta.type === PieceType.Chariot;
-    const approachFrac = rollingThrough ? 0.86 : CAPTURE.approachFraction;
+    const approachFrac = rollingThrough
+      ? 0.86
+      : this.approachFraction(attacker, atk, defender, gap);
 
-    const tHoldEnd = CAPTURE.contact + H;
-    const tKnockEnd = CAPTURE.knockbackEnd + H;
-    const tCollapseEnd = CAPTURE.collapseEnd + H;
-    const tDisperse = CAPTURE.disperseStart + H;
-    const tDisperseEnd = CAPTURE.disperseEnd + H;
-    const tEnd = CAPTURE.settleEnd + H;
+    // The approach is a WALK, and it ends before the coil starts.
+    //
+    // It used to run until contact while `attackWindup` played from 0.43 s, and
+    // that overlap is the whole of the crouch the critic measured: outside the
+    // `move` state both feet lock at weight 1, the tick goes on sliding the root
+    // toward the defender, and `solveHips` buys the missing reach the only way
+    // it can — it drops the pelvis and drags the skeleton root back toward the
+    // plants. 127 mm of pelvis, 96 mm of trail, a figure 27% shorter than it
+    // stands, held for half a second with the camera pushed in on it. It is the
+    // same failure the note at `tAdvance` says was cured for the tail; it was
+    // still here, on camera, and lasting three times as long.
+    //
+    // So the translation and the `move` state have the same extent, and the
+    // exchange waits for the walk rather than the walk racing the exchange:
+    // beat 1 is now "the attacker walks up to its victim" at the figure's own
+    // authored cadence, and every mark after it slides by however long that
+    // took. A 兵 closing three quarters of a square spends 2.8 s doing it, the
+    // same 116-per-minute quick march it uses to cross an empty square; a 俥
+    // charging down a file takes as long as a 俥 takes. Cramming either into
+    // the 0.43 s the beat originally allowed would put the gait back where
+    // `WALK.referenceStride` says it must never go — six scurrying steps to a
+    // square, because the phase comes from the ground and the ground was being
+    // covered six times too fast.
+    const closeDist = gap * approachFrac;
+    const gait = attacker.meta.gait as GaitName;
+    const approachTime = Math.max(1e-4, walkSeconds(gait, closeDist, atk?.stride));
+    const lead = Math.max(0, approachTime - CAPTURE.windupStart);
+
+    const tWindup = CAPTURE.windupStart + lead;
+    const tWindupTop = CAPTURE.windupTop + lead;
+    const tStrike = CAPTURE.strikeStart + lead;
+    const tContact = CAPTURE.contact + lead;
+    const tHoldEnd = tContact + H;
+    const tKnockEnd = CAPTURE.knockbackEnd + lead + H;
+    const tCollapseEnd = CAPTURE.collapseEnd + lead + H;
+    const tDisperse = CAPTURE.disperseStart + lead + H;
+    const tDisperseEnd = CAPTURE.disperseEnd + lead + H;
+    const tEnd = CAPTURE.settleEnd + lead + H;
 
     // The finishing step: the attacker leaves the follow-through and walks the
     // rest of the gap. It is a real walk with a real duration, taken from the
     // same table every other walk in the game is taken from.
-    const tAdvance = CAPTURE.contact + CAPTURE.recover + H;
+    const tAdvance = tContact + CAPTURE.recover + H;
     const advanceTime = Math.max(
       1e-4,
-      walkSeconds(attacker.meta.gait as GaitName, gap * (1 - approachFrac)),
+      walkSeconds(gait, gap * (1 - approachFrac), atk?.stride),
     );
     const tAdvanceEnd = tAdvance + advanceTime;
 
-    const startY = attacker.root.position.y;
     let lastApproach = 0;
     let lastFinish = 0;
     const knock = new THREE.Vector3();
+
+    // The defender's brace, as a function of capture time. Two stages, each with
+    // its own cause: the weight settles once the attacker is committed and
+    // moving, and it tightens over the coil, taking the last of it in the frames
+    // before the blade lands. Released the instant the hit clip takes over —
+    // after that the body is not bracing, it is being moved.
+    const braceAt = (t: number): number => {
+      if (t >= tHoldEnd) return 0;
+      const settle = clamp((t - CAPTURE.approachStart) / 0.62, 0, 1);
+      const set = clamp((t - tWindupTop) / Math.max(1e-4, tContact - tWindupTop), 0, 1);
+      return clamp(0.46 * (settle * settle * (3 - 2 * settle)) + 0.54 * set * set, 0, 1);
+    };
+
+    // The corpse's exit, anchored to the end of the collapse — the body lands
+    // when the death clip says it lands, whatever the pigment is doing. Two
+    // thirds of the figure's own height of sink clears anything the collapse
+    // leaves proud of the surface at any angle that can see the board at all.
+    const defenderY = defender.root.position.y;
+    const sinkDepth = defender.meta.size[1] * 0.66;
+    const tCollapsed = tKnockEnd + (def?.duration('death') ?? 0);
+    const tSinkFrom = tCollapsed + CAPTURE.corpseLinger;
+    const tGone = tSinkFrom + CAPTURE.corpseSink;
 
     atk?.setFacing(yaw, true);
     def?.setFacing(this.yawTo(-D.x, -D.z), true);
@@ -552,14 +690,18 @@ export class Choreography implements Choreographer {
         def?.setLookTarget(_look);
         this.audio.play('armourShift', { gain: 0.4, pan: clamp(A.x / 6, -1, 1) });
       }),
-      mark(CAPTURE.windupStart, () => {
+      mark(tWindup, () => {
+        // The walk is over and the figure is standing on its own two feet. Both
+        // facts matter: leaving `move` is what triggers the closing step that
+        // brings the feet under the hips, and the root stops moving here so
+        // there is nothing left for the hip solve to compensate for.
         atk?.play('attackWindup');
       }),
-      mark(CAPTURE.windupTop, () => {
+      mark(tWindupTop, () => {
         // Hold at the top of the coil. This is the pose the harness parks on.
         atk?.hold('attackWindup', 1);
       }),
-      mark(CAPTURE.strikeStart, () => {
+      mark(tStrike, () => {
         atk?.release();
         atk?.play('attackStrike');
         this.audio.play(ATTACK_CUE[attacker.meta.key], {
@@ -567,7 +709,7 @@ export class Choreography implements Choreographer {
           pan: clamp(A.x / 6, -1, 1),
         });
       }),
-      mark(CAPTURE.contact, () => {
+      mark(tContact, () => {
         bus.emit('capture:beat', { ...cc, beat: 2 });
         // One flash, high contrast, in the defender's own pigment: the frame
         // goes white-hot for two frames and comes back.
@@ -619,18 +761,26 @@ export class Choreography implements Choreographer {
         this.pigment.burstUnit(defender, _look, `${ctx.attackerSq}:${ctx.defenderSq}`);
         this.camera.release();
       }),
-      mark(tDisperseEnd, () => {
+      mark(tGone, () => {
+        // Already below the board by the time this fires; the flag only stops
+        // it being drawn.
         defender.root.visible = false;
       }),
     ];
 
     const tick = (t: number): void => {
-      // Beat 1–2: the attacker closes. Beat 3 tail: it finishes the move onto
-      // the square it just cleared, which is where the rules say it ends up.
-      if (t <= CAPTURE.contact) {
-        const u = clamp(t / CAPTURE.contact, 0, 1);
-        const s = this.travelEase(u) * gap * approachFrac;
-        attacker.root.position.set(A.x + D.x * s, startY, A.z + D.z * s);
+      // Beat 1: the attacker closes, and it is *finished* closing before the
+      // coil starts. Between `approachTime` and `tAdvance` the root is not
+      // written at all — the figure stands, winds up, strikes and follows
+      // through from one place, which is the only way the feet it planted on
+      // arrival can still be under it when the blow lands.
+      //
+      // Beat 3 tail: it finishes the move onto the square it just cleared,
+      // which is where the rules say it ends up.
+      if (t <= approachTime) {
+        const u = clamp(t / approachTime, 0, 1);
+        const s = this.travelEase(u) * closeDist;
+        this.place(attacker, A.x + D.x * s, A.z + D.z * s);
         const moved = Math.max(0, s - lastApproach);
         lastApproach = s;
         atk?.reportTravel(moved);
@@ -639,10 +789,10 @@ export class Choreography implements Choreographer {
         // smeared across the whole tail. A third of a square taken at a fifth of
         // marching pace is a figure being dragged, not a figure stepping.
         const u = clamp((t - tAdvance) / advanceTime, 0, 1);
-        const s = gap * (approachFrac + (1 - approachFrac) * this.travelEase(u));
-        attacker.root.position.set(A.x + D.x * s, startY, A.z + D.z * s);
-        const moved = Math.max(0, s - lastFinish - gap * approachFrac);
-        lastFinish = s - gap * approachFrac;
+        const s = closeDist + (gap - closeDist) * this.travelEase(u);
+        this.place(attacker, A.x + D.x * s, A.z + D.z * s);
+        const moved = Math.max(0, s - lastFinish - closeDist);
+        lastFinish = s - closeDist;
         atk?.reportTravel(moved);
       }
 
@@ -650,11 +800,33 @@ export class Choreography implements Choreographer {
       if (t > tHoldEnd && t < tCollapseEnd) {
         const u = clamp((t - tHoldEnd) / Math.max(1e-4, tKnockEnd - tHoldEnd), 0, 1);
         const e = 1 - (1 - u) * (1 - u) * (1 - u);
-        defender.root.position.set(
-          B.x + knock.x * e,
-          defender.root.position.y,
-          B.z + knock.z * e,
-        );
+        // Height held, not re-sampled: the sink below continues from `defenderY`
+        // and a mid-knockback step down off its own plinth would pop the moment
+        // the sink took over.
+        defender.root.position.set(B.x + knock.x * e, defenderY, B.z + knock.z * e);
+      }
+
+      // The defender braces. It measured constant to the millimetre through the
+      // whole of the approach and the coil — a man watched another man close on
+      // him with a spear and did not move a hair — and the head-look was the
+      // only thing on that side of the exchange that was alive. It sets its
+      // weight as the attacker arrives, holds through the windup, and takes the
+      // last of it in the fifth of a second before contact.
+      def?.setBrace(braceAt(t));
+
+      // The body leaves under its own weight rather than switching off.
+      //
+      // `visible = false` on a standing-height corpse is a single frame in which
+      // a body is there and then is not, and the eye catches it every time. It
+      // lands, it lies on the silk for a moment, and then it goes down into it —
+      // under the board, occluded by it — and the flag fires on a figure that is
+      // already out of sight. Nothing pops because by then there is nothing left
+      // to hide.
+      if (t > tSinkFrom) {
+        const u = clamp((t - tSinkFrom) / Math.max(1e-4, tGone - tSinkFrom), 0, 1);
+        // Slow, then away: the body lies still while most of the pigment leaves.
+        const e = u * u * u;
+        defender.root.position.y = defenderY - sinkDepth * e;
       }
     };
 
@@ -664,7 +836,14 @@ export class Choreography implements Choreographer {
       atk?.setLookTarget(null);
       atk?.setTrunkTarget(null);
       def?.setLookTarget(null);
-      this.place(attacker, B.x, B.z);
+      // The brace goes with the look: a cancelled exchange leaves nobody to
+      // brace against, and a figure that survives a takeback must not keep the
+      // crouch it took for a blow that never landed.
+      def?.setBrace(0);
+      defender.root.position.y = defenderY;
+      // A cancelled exchange snaps the attacker across the rest of the gap from
+      // wherever the coil had it; its feet are still planted on the start side.
+      this.teleport(attacker, B.x, B.z);
       atk?.setFacing(yaw, true);
       atk?.play('idle', FADE_SNAP);
       defender.root.visible = false;
@@ -708,8 +887,14 @@ export class Choreography implements Choreographer {
     const tKnockEnd = CAPTURE.knockbackEnd + shift + H;
     const tDisperse = CAPTURE.disperseStart + shift + H;
     const tDisperseEnd = CAPTURE.disperseEnd + shift + H;
-    const travelTime = walkSeconds(attacker.meta.gait as GaitName, gap);
-    const tTravel = tDisperseEnd + 0.18;
+    // The corpse leaves the same way it does in a melee: it lands, it lies
+    // there, it sinks. Anchored to the collapse, not to the pigment.
+    const defenderY = defender.root.position.y;
+    const sinkDepth = defender.meta.size[1] * 0.66;
+    const tSinkFrom = tKnockEnd + (def?.duration('death') ?? 0) + CAPTURE.corpseLinger;
+    const tGone = tSinkFrom + CAPTURE.corpseSink;
+    const travelTime = walkSeconds(attacker.meta.gait as GaitName, gap, atk?.stride);
+    const tTravel = Math.max(tDisperseEnd, tGone) + 0.18;
     const tEnd = tTravel + travelTime + WALK.settle;
 
     const muzzle = new THREE.Vector3();
@@ -783,7 +968,7 @@ export class Choreography implements Choreographer {
         this.pigment.burstUnit(defender, _look, `${ctx.attackerSq}:${ctx.defenderSq}`);
         this.camera.release();
       }),
-      mark(tDisperseEnd, () => {
+      mark(tGone, () => {
         defender.root.visible = false;
       }),
       mark(tTravel, () => {
@@ -801,6 +986,10 @@ export class Choreography implements Choreographer {
         const e = 1 - (1 - u) * (1 - u) * (1 - u);
         defender.root.position.set(B.x + knock.x * e, defender.root.position.y, B.z + knock.z * e);
       }
+      if (t > tSinkFrom) {
+        const u = clamp((t - tSinkFrom) / Math.max(1e-4, tGone - tSinkFrom), 0, 1);
+        defender.root.position.y = defenderY - sinkDepth * u * u * u;
+      }
       if (t >= tTravel) {
         const u = clamp((t - tTravel) / Math.max(1e-4, travelTime), 0, 1);
         const s = this.travelEase(u) * gap;
@@ -815,7 +1004,10 @@ export class Choreography implements Choreographer {
       def?.freeze(false);
       atk?.setLookTarget(null);
       def?.setLookTarget(null);
-      this.place(attacker, B.x, B.z);
+      defender.root.position.y = defenderY;
+      // The 砲 crosses the whole gap at the end of the exchange, so a cancel
+      // anywhere before that is a full-square jump.
+      this.teleport(attacker, B.x, B.z);
       atk?.play('idle', FADE_SNAP);
       defender.root.visible = false;
     };
@@ -873,7 +1065,12 @@ export class Choreography implements Choreographer {
       const anim = this.animator(unit);
       const yaw = this.yawTo(end.x - start.x, end.z - start.z);
       anim?.setFacing(yaw, true);
+      // Off the board in one frame, from a square it has been standing on since
+      // it was built: a teleport, and the far end of the march-in is the second
+      // one. Both have to drop the plants or the figure is drawn at the other
+      // end of the journey from the one it is on.
       unit.root.position.copy(start);
+      anim?.teleported();
       return {
         unit,
         anim,
@@ -928,7 +1125,10 @@ export class Choreography implements Choreographer {
         if (u <= 0) continue;
         const s = this.travelEase(u) * m.length;
         _a.lerpVectors(m.start, m.end, m.length > 1e-9 ? s / m.length : 1);
-        this.place(m.unit, _a.x, _a.z);
+        // Through `teleport`, because this is where the skip actually lands:
+        // `complete()` runs the tick at `duration` before it runs `finish()`,
+        // so the four-and-a-half-square jump onto the square happens here.
+        this.teleport(m.unit, _a.x, _a.z);
         m.anim?.reportTravel(Math.max(0, s - m.last));
         m.last = s;
       }
@@ -936,7 +1136,12 @@ export class Choreography implements Choreographer {
 
     const finish = (): void => {
       for (const m of marchers) {
-        this.place(m.unit, m.end.x, m.end.z);
+        // The skip. Thirty-two figures cross up to 4.6 units in one frame, and
+        // every one of them is standing on feet locked somewhere out beyond the
+        // table edge — which is where the contact solve dutifully dragged the
+        // drawn figures back to, for a quarter of a second, on the first frame
+        // the harness or a player ever saw.
+        this.teleport(m.unit, m.end.x, m.end.z);
         m.anim?.setFacing(m.yaw, true);
         m.anim?.play('idle', FADE_SNAP);
       }

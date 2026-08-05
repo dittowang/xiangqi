@@ -128,6 +128,37 @@ export class MeshBuilder {
     if (name) g.name = name;
     return g;
   }
+
+  /**
+   * One geometry from several builders, with a material group per builder.
+   *
+   * This is how a single instanced mesh can carry two pigments: the piece
+   * base's plinth is 石色 and the character cut into it is 墨, and a carved
+   * character that shades identically to the face it is cut into is not a
+   * carved character — from straight above the floor of the cut has exactly the
+   * normal of the face around it, so N·L is the same number and the glyph
+   * disappears. Two groups cost one extra draw call per base geometry and buy
+   * the only thing that makes an incision read from overhead: a different
+   * pigment in the trough.
+   *
+   * A builder that contributed nothing is dropped rather than emitted as an
+   * empty group, so a blank plinth is still a single-material mesh.
+   */
+  static grouped(parts: readonly MeshBuilder[], name = ''): THREE.BufferGeometry {
+    const used = parts.filter((p) => p.triangles > 0);
+    const merged = new MeshBuilder();
+    const groups: [number, number][] = [];
+    for (const p of used) {
+      const start = merged.pos.length / 3;
+      merged.append(p);
+      groups.push([start, merged.pos.length / 3 - start]);
+    }
+    const g = merged.build(name);
+    if (groups.length > 1) {
+      for (let i = 0; i < groups.length; i++) g.addGroup(groups[i][0], groups[i][1], i);
+    }
+    return g;
+  }
 }
 
 /**

@@ -63,6 +63,19 @@ export interface MatchOptions {
   stage: THREE.Group;
   difficulty?: Difficulty;
   humanSide?: Side;
+  /**
+   * A figure was put on a square *instantly* — it did not walk there.
+   *
+   * `placeAll()` is the only thing in this file that moves a figure, and it
+   * moves it in one frame: a takeback, a `setPosition`, a harness `forceMove`,
+   * the reconcile at the end of a move. The animation layer holds contact state
+   * in **world** coordinates (a planted foot does not move, and the legs and the
+   * root are whatever they have to be to satisfy that), so a teleport falsifies
+   * it and the solver will otherwise spend a quarter of a second hauling the
+   * drawn figure back toward plants that are a board's width away. Only fired
+   * for figures that actually moved.
+   */
+  onPlaced?: (view: PieceView) => void;
 }
 
 let nextPieceId = 0;
@@ -293,8 +306,15 @@ export class Match {
       const x = worldX(fileOf(square));
       const z = worldZ(rankOf(square));
       const top = this.opts.board.bases.topOf(view.id);
-      view.unit.root.position.set(x, top ?? this.opts.board.heightAt(x, z), z);
+      const p = view.unit.root.position;
+      // Whether this is a teleport or the last millimetre of a move that has
+      // already arrived. A move that just played its choreography ends on its
+      // square to float precision; a takeback or a `setPosition` does not, and
+      // the animation layer has to be told which of the two happened.
+      const jumped = Math.abs(p.x - x) > 1e-5 || Math.abs(p.z - z) > 1e-5;
+      p.set(x, top ?? this.opts.board.heightAt(x, z), z);
       view.unit.root.rotation.y = facingY(view.side);
+      if (jumped) this.opts.onPlaced?.(view);
     }
   }
 

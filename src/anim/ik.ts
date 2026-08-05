@@ -535,6 +535,11 @@ export interface FootLock {
    * Progress of the closing step, 0..1. Coming to a halt mid-swing would leave
    * a foot locked in mid-air, so the last step is finished under the hip rather
    * than abandoned. ≥ 1 means there is no closing step in flight.
+   *
+   * **Negative means this foot is waiting its turn**, and it counts up to 0 at
+   * the same rate it then counts up to 1: a foot at −1 stands on the board for
+   * one full close while the other foot takes its step, and starts its own the
+   * instant that one lands. A walk closes one foot at a time or it is a hop.
    */
   closing: number;
 }

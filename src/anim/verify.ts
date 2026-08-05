@@ -45,7 +45,16 @@ import { solveTwoBoneRaw, stanceWeight } from './ik.ts';
 import { Animator, createAnimator } from './controller.ts';
 import { PigmentField } from './pigment.ts';
 import { Choreography } from './choreography.ts';
-import { CAPTURE, CAPTURE_HOLD, CLIP, GAIT, IK, WALK, type GaitName } from './timing.ts';
+import {
+  CAPTURE,
+  CAPTURE_HOLD,
+  CLIP,
+  GAIT,
+  IK,
+  WALK,
+  gaitSpeed,
+  type GaitName,
+} from './timing.ts';
 
 // `@types/node` is not a dependency and the brief forbids adding one, so the
 // two Node globals this script touches are declared locally.
@@ -574,7 +583,9 @@ function verifyContact(factory: ReturnType<typeof createCharacters>): void {
     anim.setFacing(0, true);
     b.unit.root.position.set(0, 0, 4);
     const dtH = 1 / 60;
-    const speedH = 1 / WALK.secondsPerUnit[gait];
+    // The animal's own speed: one stride per cycle, which is the only speed at
+    // which its cadence and the ground agree.
+    const speedH = gaitSpeed(gait, anim.stride);
     const tgt = new THREE.Vector3();
     const act = new THREE.Vector3();
     const prevAct: THREE.Vector3[] = [];
@@ -1022,20 +1033,27 @@ async function verifyChoreography(factory: ReturnType<typeof createCharacters>):
     });
 
   const dt = 1 / 60;
-  const expected = CAPTURE.settleEnd + CAPTURE_HOLD;
+  // The exchange is no longer a fixed length: the approach is a real walk at
+  // the attacker's own gait, and beats 2 and 3 wait for it, so a two-square
+  // capture runs longer than a one-square capture by exactly the extra walking.
+  // Run until it says it is done rather than assuming a constant.
+  const floor = CAPTURE.settleEnd + CAPTURE_HOLD;
   let frozenFrames = 0;
-  for (let i = 0; i < Math.ceil((expected + 0.5) * 60); i++) {
+  let measured = 0;
+  for (let i = 0; i < Math.ceil((floor + 4) * 60) && choreo.busy; i++) {
     choreo.update(dt);
     for (const a of animators.values()) a.update(dt);
     if (animators.get(defender)!.isFrozen) frozenFrames++;
     clock += dt;
+    measured = clock;
   }
   // The sequence resolves synchronously inside `update`, but a `then` callback
   // is a microtask: it cannot have run until the stack unwinds. Yielding once is
   // the difference between measuring the promise and measuring the event loop.
   await capturePromise;
 
-  console.log(`  total duration         ${f(expected, 4)} s  (settle ${CAPTURE.settleEnd} + hold ${f(CAPTURE_HOLD, 4)})`);
+  console.log(`  total duration         ${f(measured, 4)} s  (floor ${f(floor, 4)} = settle ${CAPTURE.settleEnd} + hold ${f(CAPTURE_HOLD, 4)}, plus the walk-in)`);
+  check(measured >= floor - dt, `the exchange ran ${f(measured, 3)} s, under its own floor`);
   console.log(`  beats fired            ${beats.map((b) => `${b.beat}@${f(b.at, 3)}`).join('  ')}`);
   console.log(`  frozen-time hold       ${frozenFrames} frames  (target ${CAPTURE.holdFrames})`);
   console.log(`  flashes                ${flashes.length} (strength ${flashes.map((v) => f(v, 2)).join(',')})`);
@@ -1100,12 +1118,18 @@ async function verifyChoreography(factory: ReturnType<typeof createCharacters>):
   let hoofArc = 0;
   let walked = 0;
   const prevPos = rider.root.position.clone();
-  for (let i = 0; i < 60 * 4; i++) {
+  // Driven until the sequence says it is finished, not for a fixed number of
+  // frames. A budget in frames is a second, hidden copy of the timing table:
+  // when a gait was retimed the loop ran out before the walk did, the promise
+  // never settled, and node exited *zero* with half the checks unrun. A run
+  // that stops early has to fail, not pass quietly.
+  for (let i = 0; i < 60 * 30 && (choreo.busy || i < 2); i++) {
     choreo.update(dt);
     for (const a of animators.values()) a.update(dt);
     walked += rider.root.position.distanceTo(prevPos);
     prevPos.copy(rider.root.position);
   }
+  check(!choreo.busy, 'walk() was still running after 30 s of stepping');
   await wp;
   hoofArc = walked;
   const endSq = new THREE.Vector3(worldXOf(hTo), 0, worldZOf(hTo));
@@ -1140,12 +1164,13 @@ async function verifyChoreography(factory: ReturnType<typeof createCharacters>):
     });
   const startPos = cannon.root.position.clone();
   let sawProjectile = false;
-  for (let i = 0; i < 60 * 8; i++) {
+  for (let i = 0; i < 60 * 30 && (choreo.busy || i < 2); i++) {
     choreo.update(dt);
     for (const a of animators.values()) a.update(dt);
     if (pigment.projectileActive) sawProjectile = true;
     if (i * dt < 3.0) movedEarly = Math.max(movedEarly, cannon.root.position.distanceTo(startPos));
   }
+  check(!choreo.busy, 'the ranged capture was still running after 30 s of stepping');
   await rangedPromise;
   console.log(`  ranged: projectile seen ${sawProjectile}, attacker moved before 3.0 s: ${f(movedEarly, 4)}`);
   check(sawProjectile, 'the ranged capture never launched a projectile');
@@ -1218,7 +1243,7 @@ async function verifySetPieces(factory: ReturnType<typeof createCharacters>): Pr
     formationDone = true;
   });
   let startedOffBoard = 0;
-  for (let i = 0; i < 60 * 14; i++) {
+  for (let i = 0; i < 60 * 40 && (choreo.busy || i < 2); i++) {
     choreo.update(dt);
     for (const a of animators.values()) a.update(dt);
     if (i === 1) {
@@ -1239,14 +1264,23 @@ async function verifySetPieces(factory: ReturnType<typeof createCharacters>): Pr
   check(formationDone, 'the formation never resolved');
 
   // --- skip ---------------------------------------------------------------
-  for (let k = 0; k < units.length; k++) units[k].root.position.copy(homes[k]);
+  // Standing baseline for the drawn figure: a rider sits behind the animal's
+  // centre and a trebuchet crewman stands on a deck, so their skeleton roots are
+  // legitimately off the square they occupy. Measured here, subtracted below.
+  const drawnBase: number[] = [];
+  for (let k = 0; k < units.length; k++) {
+    units[k].root.position.copy(homes[k]);
+    units[k].root.updateMatrixWorld(true);
+    const p = _pos(units[k].bones.root);
+    drawnBase.push(Math.hypot(p.x - homes[k].x, p.z - homes[k].z));
+  }
   let skipDone = false;
   let skipFrames = 0;
   let stoppedAt = -1;
   const sp = choreo.formation(units, () => skipFrames > 12).then(() => {
     skipDone = true;
   });
-  for (let i = 0; i < 60 * 14; i++) {
+  for (let i = 0; i < 60 * 40 && (choreo.busy || i < 2); i++) {
     skipFrames++;
     choreo.update(dt);
     for (const a of animators.values()) a.update(dt);
@@ -1261,6 +1295,36 @@ async function verifySetPieces(factory: ReturnType<typeof createCharacters>): Pr
   check(skipDone && stoppedAt > 0 && stoppedAt < 40, 'the skip did not take effect promptly');
   check(skipHome < 1e-6, 'the skip left units off their squares');
 
+  // The skip puts every `root` on its square — and used to leave every *drawn*
+  // figure somewhere else. The foot locks were still out beyond the table edge
+  // where the march had them, the contact solve hauled the skeleton root back
+  // toward them, and on the first rendered frame after a player's keypress (or
+  // `__XQ.pause()`, which takes the same path) twenty-two of thirty-two figures
+  // were up to 4.8 units off the board, some of them below it, streaming back
+  // in over the next quarter second. So the skeleton is measured, not the root.
+  let worstDrawn = 0;
+  let lowestDrawn = 99;
+  let drawnFrame1 = 0;
+  for (let frame = 1; frame <= 30; frame++) {
+    for (const a of animators.values()) a.update(dt);
+    for (let k = 0; k < units.length; k++) {
+      units[k].root.updateMatrixWorld(true);
+      const p = _pos(units[k].bones.root);
+      const d = Math.hypot(p.x - homes[k].x, p.z - homes[k].z);
+      // Baselined: a crewman's skeleton root stands off the unit root by design.
+      const off = Math.max(0, d - drawnBase[k]);
+      if (frame === 1) drawnFrame1 = Math.max(drawnFrame1, off);
+      worstDrawn = Math.max(worstDrawn, off);
+      lowestDrawn = Math.min(lowestDrawn, p.y);
+    }
+  }
+  console.log(
+    `  formation: skip, worst drawn figure off its square — frame 1 ${f(drawnFrame1, 4)} u,` +
+      ` over 30 frames ${f(worstDrawn, 4)} u, lowest skeleton root ${f(lowestDrawn, 4)}`,
+  );
+  check(drawnFrame1 < 0.1, `the skip tore a figure ${f(drawnFrame1, 3)} u off its square`);
+  check(lowestDrawn > -0.05, `the skip put a skeleton root ${f(-lowestDrawn, 3)} below the board`);
+
   // --- finale -------------------------------------------------------------
   let finaleDone = false;
   const fin = choreo
@@ -1268,10 +1332,11 @@ async function verifySetPieces(factory: ReturnType<typeof createCharacters>): Pr
     .then(() => {
       finaleDone = true;
     });
-  for (let i = 0; i < 60 * 9; i++) {
+  for (let i = 0; i < 60 * 40 && (choreo.busy || i < 2); i++) {
     choreo.update(dt);
     for (const a of animators.values()) a.update(dt);
   }
+  check(!choreo.busy, 'the finale was still running after 40 s of stepping');
   await fin;
   const gongs = audio.cues.filter((c) => c === 'gong').length;
   console.log(`  finale: resolved ${finaleDone}, gongs ${gongs}, cues ${audio.cues.length}`);
@@ -1328,6 +1393,221 @@ async function verifySetPieces(factory: ReturnType<typeof createCharacters>): Pr
 }
 
 // ---------------------------------------------------------------------------
+// 8. The strike lands, and it lands from a standing figure
+// ---------------------------------------------------------------------------
+
+/**
+ * The two things a capture has to be true about, measured on the frame that
+ * fires the flash:
+ *
+ *   **something touches.** The striking point — the far end of the weapon where
+ *   there is one, the fist where the blade has already swept past — is inside
+ *   the defender's silhouette, not hanging in the air in front of it. At a flat
+ *   0.58 of the gap a 兵 stopped 416 mm short of the man he was stabbing, which
+ *   is 42% of a square, and the flash, the camera impulse, the blade cue and
+ *   two and a half frames of frozen time all fired over an empty square.
+ *
+ *   **the attacker is standing up.** Translating the root while the feet are
+ *   locked at weight 1 — which is what every state except `move` does — makes
+ *   `solveHips` buy the missing reach by dropping the pelvis and hauling the
+ *   skeleton root back toward the plants. Measured: 127 mm of pelvis, 96 mm of
+ *   trail, a figure 27% shorter than it stands, held for half a second.
+ *
+ * Both are geometry, so both are measurable here rather than in a screenshot.
+ */
+async function verifyStrikeGeometry(
+  factory: ReturnType<typeof createCharacters>,
+): Promise<void> {
+  console.log('\n=== strike geometry ===');
+  const pigment = new PigmentField({ ground: () => 0 });
+  const animators = new Map<UnitInstance, Animator>();
+  const choreo = new Choreography({
+    camera: new StubCamera(),
+    audio: new StubAudio() as never,
+    pigment,
+    animatorFor: (u) => animators.get(u),
+    ground: () => 0,
+  });
+
+  // Attacker, its victim, and the squares of a legal capture for that piece.
+  const cases: { atk: PieceType; def: PieceType; from: number; to: number }[] = [
+    { atk: PieceType.Soldier, def: PieceType.Soldier, from: sq(4, 5), to: sq(4, 4) },
+    { atk: PieceType.General, def: PieceType.Soldier, from: sq(4, 8), to: sq(4, 7) },
+    { atk: PieceType.Advisor, def: PieceType.Soldier, from: sq(4, 8), to: sq(3, 7) },
+    { atk: PieceType.Horse, def: PieceType.Soldier, from: sq(4, 6), to: sq(3, 4) },
+    { atk: PieceType.Elephant, def: PieceType.Soldier, from: sq(4, 7), to: sq(2, 5) },
+    { atk: PieceType.Chariot, def: PieceType.Soldier, from: sq(4, 9), to: sq(4, 5) },
+  ];
+
+  const tip = new THREE.Vector3();
+  const chest = new THREE.Vector3();
+  const point = new THREE.Vector3();
+  const dir = new THREE.Vector3();
+  const dt = 1 / 60;
+
+  for (const c of cases) {
+    const attacker = factory.create(Side.Red, c.atk, 0);
+    const defender = factory.create(Side.Black, c.def, 0);
+    const atk = createAnimator(attacker, { ground: () => 0 });
+    const def = createAnimator(defender, { ground: () => 0 });
+    animators.set(attacker, atk);
+    animators.set(defender, def);
+    attacker.root.position.set(worldXOf(c.from), 0, worldZOf(c.from));
+    defender.root.position.set(worldXOf(c.to), 0, worldZOf(c.to));
+    for (let i = 0; i < 40; i++) {
+      atk.update(dt);
+      def.update(dt);
+    }
+    attacker.root.updateMatrixWorld(true);
+    const standPelvis = _pos(attacker.bones.pelvis).y;
+    const standHead = _pos(attacker.bones.head).y;
+    // The skeleton root does not sit on the scene root for every figure — a
+    // rider sits behind the animal's centre, a crewman stands on a deck — so
+    // the trail is measured against this figure's own standing offset.
+    const standTrail = _pos(attacker.bones.root).z - attacker.root.position.z;
+    // Unit vector from attacker to defender: the axis everything is measured on.
+    dir.set(
+      defender.root.position.x - attacker.root.position.x,
+      0,
+      defender.root.position.z - attacker.root.position.z,
+    );
+    dir.normalize();
+
+    let hit: {
+      reach: number; short: number; body: number; drop: number;
+      shrink: number; trail: number; pull: number; ankle: number;
+    } | null = null;
+    let armed = false;
+    const off = bus.on('capture:beat', (p) => {
+      if (p.beat === 2) armed = true;
+    });
+    const p = choreo.capture(attacker, defender, {
+      attackerSq: c.from,
+      defenderSq: c.to,
+      attackerType: c.atk,
+      defenderType: c.def,
+      ranged: false,
+    });
+    // The crouch is only a defect while the figure is *standing* — a walk has a
+    // real pelvis bob and a real dip at heel strike, and both are wanted. So the
+    // window measured is the one the bug lived in: from the moment the approach
+    // stops moving the root to the moment the blow lands.
+    let worstDrop = 0;
+    let worstTrail = 0;
+    let worstPull = 0;
+    let plantedFrames = 0;
+    let lastZ = attacker.root.position.z;
+    let lastX = attacker.root.position.x;
+    for (let i = 0; i < 60 * 12 && choreo.busy; i++) {
+      choreo.update(dt);
+      atk.update(dt);
+      def.update(dt);
+      attacker.root.updateMatrixWorld(true);
+      defender.root.updateMatrixWorld(true);
+      const planted =
+        Math.abs(attacker.root.position.z - lastZ) < 1e-7 &&
+        Math.abs(attacker.root.position.x - lastX) < 1e-7;
+      lastZ = attacker.root.position.z;
+      lastX = attacker.root.position.x;
+      if (!hit && planted) plantedFrames++;
+      // The first fifth of a second after the walk stops is the closing step,
+      // which lifts each foot clear to bring it under its own hip; the root
+      // follows it, correctly, and there is nothing to measure there. The
+      // window that matters is the one the figure spends *standing* — coiling,
+      // striking, following through.
+      if (!hit && plantedFrames > 20) {
+        worstDrop = Math.max(worstDrop, standPelvis - _pos(attacker.bones.pelvis).y);
+        const trail = _pos(attacker.bones.root).z - attacker.root.position.z - standTrail;
+        worstTrail = Math.max(worstTrail, Math.abs(trail));
+        worstPull = Math.max(worstPull, atk.contactPull);
+      }
+      if (armed && !hit) {
+        // The striking point: the weapon's far end, or the fist when the blade
+        // has already swept past it — the same rule the approach is sized on.
+        chest.setFromMatrixPosition(defender.bones.spine02.matrixWorld);
+        point.setFromMatrixPosition(attacker.bones.handR.matrixWorld);
+        if (attacker.attach.haftTip) {
+          tip.setFromMatrixPosition(attacker.attach.haftTip.matrixWorld);
+          if (tip.distanceTo(chest) < point.distanceTo(chest)) point.copy(tip);
+        }
+        hit = {
+          reach: atk.strikeReach,
+          // How far short of the chest the blow stops, measured along the
+          // attack line — the critic's own metric.
+          short: (chest.x - point.x) * dir.x + (chest.z - point.z) * dir.z,
+          // And how far short the attacker's own front stops, which is what
+          // touches when the mount arrives before the weapon does.
+          body:
+            (defender.root.position.x - attacker.root.position.x) * dir.x +
+            (defender.root.position.z - attacker.root.position.z) * dir.z -
+            attacker.meta.size[2] * 0.5,
+          drop: worstDrop,
+          shrink: 1 - _pos(attacker.bones.head).y / standHead,
+          trail: worstTrail,
+          pull: worstPull,
+          ankle: Math.min(_pos(attacker.bones.footL).y, _pos(attacker.bones.footR).y),
+        };
+      }
+    }
+    await p;
+    off();
+
+    const torso = Math.min(defender.meta.size[0], defender.meta.size[2]) * 0.5;
+    const label = UNIT_KEY[c.atk].padEnd(9);
+    if (!hit) {
+      fail(`${label}: contact never fired`);
+    } else {
+      const closest = Math.min(hit.short, hit.body);
+      console.log(
+        `  ${label} reach ${f(hit.reach, 3)}  blow stops ${f(hit.short, 3)} short, body ${f(hit.body, 3)} short` +
+          ` (torso ${f(torso, 3)})  |  planted: pelvis ${f(hit.drop, 4)} down, root pull ${f(hit.pull, 4)},` +
+          ` offset ${f(hit.trail, 4)}  |  at contact ${f(hit.shrink * 100, 1)}% shorter`,
+      );
+      // Something is inside the defender's silhouette on the frame that fires
+      // the flash: the weapon for a footman, the animal for a rider.
+      check(
+        closest <= torso,
+        `${UNIT_KEY[c.atk]}: nothing reached the defender — nearest stop ${f(closest, 3)} against a ${f(torso, 3)} torso`,
+      );
+      // The pull is the honest measurement of the defect: it is *only* the
+      // contact solver fighting the placement. The pelvis drop and the root
+      // offset above include the coil the windup clip authors, which is wanted.
+      //
+      // Not zero, and it should not be: the strike clip drives the root forward
+      // and the planted back foot restrains it, which is what a lunge is. Two
+      // centimetres of that on a 0.6 m conscript is a leg taking a load. Ninety
+      // — which is what translating the root through a locked stance produced —
+      // is a man sitting down.
+      check(
+        hit.pull <= 0.025,
+        `${UNIT_KEY[c.atk]}: the contact solver pulled the root ${f(hit.pull, 4)} while the figure stood still`,
+      );
+      // And the figure that lands the blow is standing up in the frame that
+      // fires the flash. It measured 27% shorter than it stands.
+      check(
+        hit.shrink <= 0.06,
+        `${UNIT_KEY[c.atk]}: the attacker is ${f(hit.shrink * 100, 1)}% shorter than it stands at contact`,
+      );
+    }
+
+    choreo.abort();
+    animators.delete(attacker);
+    animators.delete(defender);
+    atk.dispose();
+    def.dispose();
+    attacker.dispose();
+    defender.dispose();
+  }
+  pigment.dispose();
+}
+
+/** Scratch read of a bone's world position. Verification only; never a frame path. */
+const _posScratch = new THREE.Vector3();
+function _pos(o: THREE.Object3D): THREE.Vector3 {
+  return _posScratch.setFromMatrixPosition(o.matrixWorld);
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
@@ -1347,6 +1627,7 @@ async function main(): Promise<void> {
   if (only('--seq')) verifySequencing();
   if (only('--pigment')) verifyPigment(factory);
   if (only('--choreo')) await verifyChoreography(factory);
+  if (only('--strike')) await verifyStrikeGeometry(factory);
   if (only('--setpiece')) await verifySetPieces(factory);
 
   console.log('');

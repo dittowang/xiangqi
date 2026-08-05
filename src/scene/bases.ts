@@ -608,15 +608,32 @@ function faceDisc(radius: number, segments: number): number[] {
   return out;
 }
 
-/** Build one plinth geometry, origin at the base's centre, board surface at y=0. */
+/**
+ * Build one plinth geometry, origin at the base's centre, board surface at y=0.
+ *
+ * Two material groups: the plinth and the face it leaves behind in group 0, and
+ * the floor and walls of the incision in group 1.
+ *
+ * That split is not an optimisation, it is the only thing that makes the
+ * character read from overhead. Cut into the same 石色 the plinth is turned
+ * from, the floor of the stroke is a horizontal plane 8.5 mm under another
+ * horizontal plane: same normal, same N·L, same band, same pixel. From the
+ * `top` framing the glyph disintegrated into five or six specks — the fragments
+ * of wall that happened to catch a fraction of a pixel — and the character that
+ * is meant to be the fallback identifier when the figure is ambiguous
+ * identified nothing at all. The trough is now cut in 墨, which is what a real
+ * set fills an 陰刻 character with, and the read is luma 37 against 109 rather
+ * than 109 against 109.
+ */
 export function buildBaseGeometry(
   side: Side,
   type: PieceType,
   seal: SealSource | undefined,
   ownerFacing: boolean,
 ): THREE.BufferGeometry {
-  const b = new MeshBuilder();
-  latheProfile(b, BASE_SIDE_PROFILE, BASE_RADIAL_SEGMENTS, 0, 0, 0);
+  const face = new MeshBuilder();
+  const cut = new MeshBuilder();
+  latheProfile(face, BASE_SIDE_PROFILE, BASE_RADIAL_SEGMENTS, 0, 0, 0);
 
   // Red and Black use different characters for the same piece — 俥 against 車 —
   // and that asymmetry is part of the board's language, so the character comes
@@ -628,7 +645,7 @@ export function buildBaseGeometry(
   const yaw = ownerFacing && side === Side.Black ? Math.PI : 0;
 
   if (outline) {
-    inciseOutline(b, outline, faceDisc(BASE_FACE_RADIUS, BASE_RADIAL_SEGMENTS), {
+    inciseOutline({ face, cut }, outline, faceDisc(BASE_FACE_RADIUS, BASE_RADIAL_SEGMENTS), {
       cx: 0,
       cz: 0,
       y: BASE_TOP_Y,
@@ -638,10 +655,10 @@ export function buildBaseGeometry(
     });
   } else {
     // No glyph source: a plain unmarked plinth, as instructed.
-    disc(b, BASE_FACE_RADIUS, BASE_TOP_Y, BASE_RADIAL_SEGMENTS);
+    disc(face, BASE_FACE_RADIUS, BASE_TOP_Y, BASE_RADIAL_SEGMENTS);
   }
 
-  return b.build(`scene/base/${side}/${type}`);
+  return MeshBuilder.grouped([face, cut], `scene/base/${side}/${type}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -724,8 +741,13 @@ export class PieceBases {
     // ratio between two pieces of furniture that carry no information — the
     // figure on top is what says which army this is. Worse, each lens then
     // matched the other army's palette closely enough to muddle the read at
-    // distance. One neutral 石色 plinth for all thirty-two.
-    const mat = this.opts.materials.get({ cls: 'stone', pigment: 'stone', variation: -0.1 });
+    // distance. One neutral 石色 plinth for all thirty-two — and the character
+    // cut into it filled with 墨 for both, which is the pigment the board's own
+    // line work is cut in and the only thing that separates the trough of a
+    // stroke from the face around it when the camera is directly overhead.
+    const stone = this.opts.materials.get({ cls: 'stone', pigment: 'stone', variation: -0.1 });
+    const ink = this.opts.materials.get({ cls: 'stone', pigment: 'ink' });
+    const mat = geo.groups.length > 1 ? [stone, ink] : stone;
 
     const capacity = Math.max(1, PIECE_COUNT[type]);
     const mesh = new THREE.InstancedMesh(geo, mat, capacity);

@@ -21,7 +21,7 @@
  */
 
 import * as THREE from 'three';
-import { FILES, RANKS, sq, worldX, worldZ } from '@core/coords.ts';
+import { BOARD_HALF_X, FILES, RANKS, sq, worldX, worldZ } from '@core/coords.ts';
 import { MOODS } from '@core/palette.ts';
 import { PieceType, Side } from '@core/types.ts';
 import {
@@ -31,6 +31,7 @@ import {
   Board,
   GRID_BOW_MAX,
   GRID_HALF_MAX,
+  GRID_MOUTH_MAX,
   INSCRIPTION_WEIGHT,
   FRAME_TOP_Y,
   FRAME_WIDTH,
@@ -701,28 +702,38 @@ section('grid incisions land on coords.ts');
   // them at all.
   {
     // A window on the rank-5 groove one third of the way along a span, so no
-    // file line is anywhere near it. Measuring the *width* of the vertex cloud
-    // rather than the offset from the nominal centreline cancels the line's bow.
+    // file line is anywhere near it. The section is measured out of the vertex
+    // cloud itself: the outermost vertices are the skirt where the silk's hole
+    // butts against the cut, the highest are the burr, and the lowest are the
+    // floor. The wall is the run from the burr in to the floor's outer edge —
+    // measuring against the skirt instead would report the mouth's slope and
+    // call a 55° wall a 25° one.
     const zLine = worldZ(5);
     let lipY = -Infinity;
     let bottomY = Infinity;
-    let minZ = Infinity;
-    let maxZ = -Infinity;
+    let mouth = 0;
     let n = 0;
+    const cloud: { z: number; y: number }[] = [];
     for (let i = 0; i < pos.count; i++) {
       const x = pos.getX(i);
       if (x < 2.3 || x > 2.37) continue;
       const z = pos.getZ(i);
       if (Math.abs(z - zLine) > 0.05) continue;
       n++;
-      if (pos.getY(i) > lipY) lipY = pos.getY(i);
-      if (pos.getY(i) < bottomY) bottomY = pos.getY(i);
-      if (z < minZ) minZ = z;
-      if (z > maxZ) maxZ = z;
+      const y = pos.getY(i);
+      cloud.push({ z: Math.abs(z - zLine), y });
+      if (y > lipY) lipY = y;
+      if (y < bottomY) bottomY = y;
+      if (Math.abs(z - zLine) > mouth) mouth = Math.abs(z - zLine);
     }
-    const halfWidth = (maxZ - minZ) / 2;
+    let burr = 0;
+    let floorEdge = 0;
+    for (const c of cloud) {
+      if (c.y > lipY - 1e-6 && c.z > burr) burr = c.z;
+      if (c.y < bottomY + 1e-6 && c.z > floorEdge) floorEdge = c.z;
+    }
     const deckY = silkSag(2.333, zLine);
-    const wallAngle = (Math.atan2(lipY - bottomY, halfWidth) * 180) / Math.PI;
+    const wallAngle = (Math.atan2(lipY - bottomY, burr - floorEdge) * 180) / Math.PI;
     check(
       'groove lips stand proud of the deck (no z-fight with the silk)',
       n > 0 && lipY > deckY,
@@ -730,27 +741,61 @@ section('grid incisions land on coords.ts');
     );
     between('groove wall angle from the board plane', wallAngle, 25, 65);
     process.stdout.write(
-      `      vee at rank 5, x≈2.33: half-width ${fmt(halfWidth)}, depth ${fmt(lipY - bottomY)}, wall ${fmt(wallAngle)}° off the plane\n`,
+      `      vee at rank 5, x≈2.33: mouth ${fmt(mouth * 2)} wide, floor ${fmt(floorEdge * 2)} wide,` +
+        ` depth ${fmt(lipY - bottomY)}, wall ${fmt(wallAngle)}° off the plane\n`,
     );
   }
 
   // Palace diagonals must terminate on palace corners.
-  let worstPalace = 0;
-  for (const [ax, az, bxx, bz] of palaceDiagonals()) {
-    for (const [px, pz] of [
-      [ax, az],
-      [bxx, bz],
-    ]) {
+  //
+  // The diagonal is gold leaf laid on the silk, not a groove — it is the one
+  // mark on this board that is applied rather than cut, because leaf is beaten
+  // metal pressed onto a ground and a leaf square hidden 5 mm down a trench is
+  // not leaf, it is a dark line. So this measures the leaf: every square of it
+  // must sit within its own half-width of the diagonal, and the run of squares
+  // must start and end exactly on the two palace corners rather than stopping a
+  // join short of them.
+  {
+    const lp = (board.parts.palaceLeaf as THREE.Mesh).geometry.getAttribute('position');
+    const diagonals = palaceDiagonals().map(([ax, az, bxx, bz]) => {
+      const dx = bxx - ax;
+      const dz = bz - az;
+      const len = Math.hypot(dx, dz);
+      return { ax, az, ux: dx / len, uz: dz / len, len };
+    });
+    // Every square of leaf is on one of the four diagonals, within its width.
+    let worstSide = 0;
+    for (let i = 0; i < lp.count; i++) {
       let best = Infinity;
-      for (let i = 0; i < pos.count; i++) {
-        const d = Math.hypot(pos.getX(i) - px, pos.getZ(i) - pz);
-        if (d < best) best = d;
-        if (best < 1e-6) break;
+      for (const d of diagonals) {
+        const rx = lp.getX(i) - d.ax;
+        const rz = lp.getZ(i) - d.az;
+        const t = Math.max(0, Math.min(d.len, rx * d.ux + rz * d.uz));
+        best = Math.min(best, Math.hypot(rx - d.ux * t, rz - d.uz * t));
       }
-      worstPalace = Math.max(worstPalace, best);
+      worstSide = Math.max(worstSide, best);
     }
+    // And the run of squares on each one starts and ends on the corner.
+    let worstEnd = 0;
+    for (const d of diagonals) {
+      let lo = Infinity;
+      let hi = -Infinity;
+      for (let i = 0; i < lp.count; i++) {
+        const rx = lp.getX(i) - d.ax;
+        const rz = lp.getZ(i) - d.az;
+        const t = rx * d.ux + rz * d.uz;
+        if (Math.abs(rx * d.uz - rz * d.ux) > 0.03) continue; // the other diagonal
+        lo = Math.min(lo, t);
+        hi = Math.max(hi, t);
+      }
+      worstEnd = Math.max(worstEnd, Math.abs(lo), Math.abs(hi - d.len));
+    }
+    check(
+      'palace diagonals end on palace corners',
+      worstEnd < 2e-5 && worstSide < 0.03,
+      `worst end ${worstEnd.toExponential(2)}; every square of leaf within ${fmt(worstSide)} of its diagonal`,
+    );
   }
-  check('palace diagonals end on palace corners', worstPalace < 2e-5, `worst ${worstPalace.toExponential(2)}`);
 
   // Interior files must be broken at the river; outer files must not.
   const zBank = worldZ(4);
@@ -764,9 +809,10 @@ section('grid incisions land on coords.ts');
   for (let i = 0; i < pos.count; i++) {
     const z = pos.getZ(i);
     // Stay clear of the rank-4/5 grooves themselves: they run along X, so they
-    // own vertices at every file's x, and a widened section brings their lips
-    // far enough into the band to be mistaken for a file crossing it.
-    if (Math.abs(z) > Math.abs(zBank) - GRID_HALF_MAX - GRID_BOW_MAX - 0.002) continue;
+    // own vertices at every file's x, and the full width of the mouth they cut
+    // in the silk reaches far enough into the band to be mistaken for a file
+    // crossing it.
+    if (Math.abs(z) > Math.abs(zBank) - GRID_MOUTH_MAX - GRID_BOW_MAX - 0.002) continue;
     if (Math.abs(z) < 0.02) continue; // rank lines do not exist here anyway
     const x = pos.getX(i);
     if (inPanel(x, z)) continue; // 楚河漢界 shares this geometry
@@ -855,22 +901,25 @@ section('楚河漢界');
     byChar.get('楚')!.cx > byChar.get('河')!.cx,
     `楚 x=${fmt(byChar.get('楚')!.cx)} before 河 x=${fmt(byChar.get('河')!.cx)}`,
   );
-  // Mirror symmetry across the channel. Each pair occupies the same two x
-  // positions on its own bank, so the inscription reads as one deliberate mark
-  // from any camera angle rather than as two marks placed diagonally.
+  // The traditional halves. 楚河 goes left and 漢界 right as seen from Red's
+  // seat — which is where every printed board puts them — and each pair is
+  // centred on the middle of its own half rather than huddled against the
+  // centre file. Both pairs stacked over the middle file is not a composition,
+  // it is what a xiangqi player reads as a mistake.
   {
     const xs = (a: string, b: string) => [byChar.get(a)!.cx, byChar.get(b)!.cx].sort((m, n) => m - n);
     const red = xs('漢', '界');
     const black = xs('楚', '河');
     check(
-      'the two pairs are mirrored across the channel',
-      Math.abs(red[0] - black[0]) < 1e-9 && Math.abs(red[1] - black[1]) < 1e-9,
-      `Red at [${red.map(fmt).join(', ')}], Black at [${black.map(fmt).join(', ')}]`,
+      '楚河 takes the left half of the board and 漢界 the right',
+      black[1] < 0 && red[0] > 0,
+      `楚河 at [${black.map(fmt).join(', ')}], 漢界 at [${red.map(fmt).join(', ')}]`,
     );
     check(
-      'and the whole inscription is centred on the board',
-      Math.abs(red[0] + red[1]) < 1e-9,
-      `pair spans ${fmt(red[0])} to ${fmt(red[1])}`,
+      'and each pair is centred on the middle of its own half',
+      Math.abs((red[0] + red[1]) / 2 - BOARD_HALF_X / 2) < 1e-9 &&
+        Math.abs((black[0] + black[1]) / 2 + BOARD_HALF_X / 2) < 1e-9,
+      `pair centres ${fmt((black[0] + black[1]) / 2)} and ${fmt((red[0] + red[1]) / 2)}, half-board centre ${fmt(BOARD_HALF_X / 2)}`,
     );
     const zs = board.inscription.map((c) => Math.abs(c.cz));
     check(
@@ -886,7 +935,7 @@ section('楚河漢界');
   let widest = 0;
   let tallest = 0;
   for (const c of board.inscription) {
-    const o = seal(c.ch)!;
+    const o = seal(c.ch, { weight: INSCRIPTION_WEIGHT })!;
     const box = glyphInkBox(o);
     const s = c.em / (o.em ?? 1);
     const h = (box.y1 - box.y0) * s;
@@ -916,7 +965,7 @@ section('楚河漢界');
   // groove running over a hole in the deck would float above the void.
   {
     // Rank lines 4 and 5, at their widest and at the full extent of their bow.
-    const rankInner = 0.5 - GRID_BOW_MAX - GRID_HALF_MAX;
+    const rankInner = 0.5 - GRID_BOW_MAX - GRID_MOUTH_MAX;
     let worstZ = -Infinity;
     let worstX = Infinity;
     for (const c of board.inscription) {
@@ -929,7 +978,7 @@ section('楚河漢界');
       worstZ < rankInner,
       `panel reaches |z|=${fmt(worstZ)}, the rank groove's inner edge is at ${fmt(rankInner)}`,
     );
-    const outerFileEdge = Math.abs(worldX(FILES - 1)) - GRID_HALF_MAX - GRID_BOW_MAX;
+    const outerFileEdge = Math.abs(worldX(FILES - 1)) - GRID_MOUTH_MAX - GRID_BOW_MAX;
     check(
       'no outer file line can reach a panel',
       Math.max(...board.inscription.map((c) => Math.abs(c.panel.x1))) < outerFileEdge,
@@ -941,7 +990,7 @@ section('楚河漢界');
     for (const c of board.inscription) {
       for (let f = 0; f < FILES; f++) {
         const fx = worldX(f);
-        if (fx > c.panel.x0 - GRID_HALF_MAX && fx < c.panel.x1 + GRID_HALF_MAX) filesTouched.add(f);
+        if (fx > c.panel.x0 - GRID_MOUTH_MAX && fx < c.panel.x1 + GRID_MOUTH_MAX) filesTouched.add(f);
       }
     }
     check(
@@ -953,10 +1002,13 @@ section('楚河漢界');
   }
 
   // --- the deck seam ------------------------------------------------------
-  // Area conservation is the decisive test that the panels tile their holes
-  // exactly: the silk left on the board must equal the silk that was there
-  // minus the river band minus the ink that was cut out of it, computed
-  // independently from the outlines.
+  // Area conservation is the decisive test that the deck's holes are exactly
+  // the holes the board asked for: the silk left on the board must equal the
+  // sheet, minus the river band, minus the union of every mouth the line work
+  // opened in it, minus the ink cut out of the four inscription panels. The
+  // union is computed here by a scanline over the declared rectangles — an
+  // independent route to the same number, so a deck that quietly failed to cut
+  // a groove (which is exactly what shipped twice) shows up as a surplus.
   const deckGeo = (board.parts.deck as THREE.Mesh).geometry;
   const dp = deckGeo.getAttribute('position');
   let deckArea = 0;
@@ -971,17 +1023,53 @@ section('楚河漢界');
   }
   let inkArea = 0;
   for (const c of board.inscription) {
-    const o = seal(c.ch)!;
+    const o = seal(c.ch, { weight: INSCRIPTION_WEIGHT })!;
     const s = c.em / (o.em ?? 1);
     for (let i = 0; i < o.contours.length; i++) {
       const a = Math.abs(signedArea(o.contours[i])) * s * s;
       inkArea += o.holes?.[i] ? -a : a;
     }
   }
-  const expected = SILK_HALF_X * 2 * (SILK_HALF_Z * 2 - BANK_HALF * 2) - inkArea;
-  near('deck area = silk − river band − ink', deckArea, expected, 2e-4);
+  // Union area of axis-aligned rectangles, clipped to the two silk bands.
+  const holeArea = (() => {
+    const rects: { x0: number; x1: number; z0: number; z1: number }[] = [];
+    for (const h of board.deckHoles) {
+      for (const [b0, b1] of [
+        [BANK_HALF, SILK_HALF_Z],
+        [-SILK_HALF_Z, -BANK_HALF],
+      ]) {
+        const z0 = Math.max(h.z0, b0);
+        const z1 = Math.min(h.z1, b1);
+        if (z1 > z0) rects.push({ x0: h.x0, x1: h.x1, z0, z1 });
+      }
+    }
+    const xs = [...new Set(rects.flatMap((r) => [r.x0, r.x1]))].sort((a, b) => a - b);
+    let total = 0;
+    for (let i = 0; i + 1 < xs.length; i++) {
+      const mid = (xs[i] + xs[i + 1]) * 0.5;
+      const spans = rects
+        .filter((r) => r.x0 < mid && r.x1 > mid)
+        .map((r) => [r.z0, r.z1] as [number, number])
+        .sort((a, b) => a[0] - b[0]);
+      let covered = 0;
+      let at = -Infinity;
+      for (const [a, b] of spans) {
+        const lo = Math.max(a, at);
+        if (b > lo) {
+          covered += b - lo;
+          at = b;
+        }
+      }
+      total += covered * (xs[i + 1] - xs[i]);
+    }
+    return total;
+  })();
+  const expected =
+    SILK_HALF_X * 2 * (SILK_HALF_Z * 2 - BANK_HALF * 2) - holeArea - inkArea;
+  near('deck area = silk − river band − line work − ink', deckArea, expected, 2e-4);
   process.stdout.write(
-    `      deck ${fmt(deckArea)} u², ink removed ${fmt(inkArea)} u² across four characters\n`,
+    `      deck ${fmt(deckArea)} u²; ${board.deckHoles.length} incisions took ${fmt(holeArea)} u²` +
+      ` out of the silk, 楚河漢界 took ${fmt(inkArea)} u² more\n`,
   );
 
   // --- legibility at the default pose -------------------------------------
@@ -1012,7 +1100,7 @@ section('楚河漢界');
     let strokeCssMin = Infinity;
     const rows: string[] = [];
     for (const c of board.inscription) {
-      const o = seal(c.ch)!;
+      const o = seal(c.ch, { weight: INSCRIPTION_WEIGHT })!;
       const box = glyphInkBox(o);
       const s = c.em / (o.em ?? 1);
       const h = (box.y1 - box.y0) * s;
@@ -1049,18 +1137,23 @@ section('楚河漢界');
     // and the fix is a fatter stylus rather than a taller character. The board's
     // own grid grooves are the reference — the inscription has to hold its own
     // beside the line work it sits in.
-    const gridStrokeTop = pxY(0, 0, 0.4 - GRID_HALF_MAX, 800);
-    const gridStrokeBot = pxY(0, 0, 0.4 + GRID_HALF_MAX, 800);
+    const gridStrokeTop = pxY(0, 0, 0.4 - GRID_MOUTH_MAX, 800);
+    const gridStrokeBot = pxY(0, 0, 0.4 + GRID_MOUTH_MAX, 800);
     const gridCss = Math.abs(gridStrokeBot - gridStrokeTop);
-    // The inscription is NOT legible at the resting camera and is not asserted
-    // to be. A one-square river band cannot carry both a real sunken channel and
-    // a label readable from fifteen units, and the channel won. What is asserted
-    // is that it is a correct, fine, incised inscription that resolves the
-    // moment the camera comes in — so the numbers are recorded, not gated.
+    // The inscription is NOT fully legible at the resting camera and is not
+    // asserted to be. A one-square river band cannot carry both a real sunken
+    // channel and a label readable from fifteen units, and the channel won: the
+    // band is 0.19 of a square deep, so the characters ink 0.185 across whatever
+    // else happens, and 21 device px is what that is worth from here. What is
+    // asserted is that it is a correct, fine, incised inscription that resolves
+    // the moment the camera comes in — so the numbers are recorded, not gated.
+    // The stroke is the number that decides whether it aliases into a tangle or
+    // holds; at INSCRIPTION_WEIGHT it clears one device pixel, which it did not
+    // at the authored weight.
     process.stdout.write(
       `      em ${(emCss * 2).toFixed(1)} device px, thinnest stroke ${(strokeCssMin * 2).toFixed(2)} device px,\n` +
-        `      against a grid groove of ${(gridCss * 2).toFixed(2)} device px. Below one device pixel the\n` +
-        `      inscription is a fine mark at this range and reads from 'top' or any close pose.\n`,
+        `      against a grid groove of ${(gridCss * 2).toFixed(2)} device px. This is a fine mark at this\n` +
+        `      range; it reads as type from 'top' or any close pose.\n`,
     );
     check(
       'the grid line work itself clears 3 device px at the resting camera',
@@ -1191,11 +1284,20 @@ section('every glyph through the incision');
   // the weight we actually cut with must match topology at the authored weight —
   // same number of separate regions, same number of counters — for every
   // character the board asks for.
+  //
+  // At the weight EACH ONE is cut with, which is not one number. The river band
+  // is 0.19 of a square deep, so 楚河漢界 is cut at 0.185 across whatever else
+  // happens and has to buy its stroke somewhere; the piece bases are cut at
+  // 0.34 and need nothing. Holding all eighteen characters to the inscription's
+  // weight would refuse a 1.5 that only 楚河漢界 ever asks for because 馬 —
+  // which is cut at 1.0 — floods at 1.2.
   {
     const merged: string[] = [];
+    const inscribed = new Set(board.inscription.map((c) => c.ch));
     for (const ch of CHARS_USED) {
+      const weight = inscribed.has(ch) ? INSCRIPTION_WEIGHT : 1;
       const authored = sealOutlineFromShapes(glyphToShapes(ch, { size: 1, origin: 'center' }), 1)!;
-      const cut = seal(ch, { weight: INSCRIPTION_WEIGHT })!;
+      const cut = seal(ch, { weight })!;
       const count = (o: SealOutline) => [
         o.contours.filter((_, i) => !o.holes?.[i]).length,
         o.contours.filter((_, i) => o.holes?.[i]).length,
@@ -1203,15 +1305,15 @@ section('every glyph through the incision');
       const a = count(authored);
       const b = count(cut);
       if (a[0] !== b[0] || a[1] !== b[1]) {
-        merged.push(`${ch} ${a[0]}r${a[1]}h -> ${b[0]}r${b[1]}h`);
+        merged.push(`${ch} at ${weight}: ${a[0]}r${a[1]}h -> ${b[0]}r${b[1]}h`);
       }
     }
     check(
       'the cut weight does not merge strokes that the author separated',
       merged.length === 0,
       merged.length
-        ? `weight ${INSCRIPTION_WEIGHT} floods: ${merged.join(', ')}`
-        : `all ${CHARS_USED.length} characters keep their authored topology at weight ${INSCRIPTION_WEIGHT}`,
+        ? `floods: ${merged.join(', ')}`
+        : `all ${CHARS_USED.length} characters keep their authored topology — 楚河漢界 at ${INSCRIPTION_WEIGHT}, the bases at 1`,
     );
   }
 

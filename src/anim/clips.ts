@@ -227,6 +227,20 @@ export interface AuthorCtx {
   seated: boolean;
   /** Direction the hit impulse came from, radians. 0 = from directly ahead. */
   hitFrom: number;
+  /**
+   * Which way this unit falls when it dies: +1 to its own right, −1 to its
+   * left. Drawn **once**, from a stream keyed on the unit, and carried on the
+   * context — never redrawn inside a pose function.
+   *
+   * A pose function is called once per baked sample. A draw inside one is
+   * therefore not "a random choice of side": it is forty-five independent
+   * choices along a single clip, and the body mirrors itself between adjacent
+   * keyframes for the whole collapse. It measured as a corpse whose head sat at
+   * x = −0.148, +0.150, −0.150 on successive frames. Determinism is not the
+   * only thing a seeded stream buys — *where* you draw from it decides what the
+   * value is a property of, and the side a man falls is a property of the man.
+   */
+  fallSide: 1 | -1;
   rng: Rng;
 }
 
@@ -367,8 +381,11 @@ function walkLeg(p: Pose, side: 'L' | 'R', ph: number, k: LegShape): void {
 
 /** The pelvis and spine layer shared by every footed gait. */
 function walkTorso(p: Pose, phase: number, plan: GaitPlan, amp: number): void {
-  // Vertical: two rises per cycle, peaking at each mid-stance.
-  p.root[1] += plan.bob * Math.cos(2 * TAU * (phase - 0.28));
+  // Vertical: two rises per cycle, peaking at each mid-stance. `bob` is the
+  // peak-to-peak travel, so half of it is the amplitude written here — the
+  // cosine already spans ±1. Writing `bob` straight into a ±1 wave doubles it,
+  // which is precisely how a 2.1% authored bob measured 5.9% of stature.
+  p.root[1] += 0.5 * plan.bob * Math.cos(2 * TAU * (phase - 0.28));
   // Lateral: the pelvis travels over whichever foot is carrying.
   p.root[0] += 0.0125 * amp * Math.cos(TAU * (phase - 0.28));
 
@@ -966,13 +983,14 @@ function hitPose(p: Pose, t: number, c: AuthorCtx): void {
  *                 on inertia — this window is where the weight lives
  *   0.30 – 0.62   the torso finally follows the hips down and folds forward
  *   0.55 – 0.84   the body topples off the knees onto its side
+ *   0.52 – 1.00   the legs come out from under it and the body reaches the board
  *   0.70 – 1.00   the head arrives last and rings down against the board
  *
  * The arms are never posed directly: they are driven from lagged copies of the
  * torso curves, so they always trail whatever the body is doing.
  */
 function deathPose(p: Pose, t: number, c: AuthorCtx): void {
-  const side = c.rng.chance(0.5) ? 1 : -1;
+  const side = c.fallSide;
 
   // A collapse is *front-loaded*. The knee goes, and once it has gone there is
   // nothing holding the mass up: half the drop is over inside the first third of
@@ -986,17 +1004,37 @@ function deathPose(p: Pose, t: number, c: AuthorCtx): void {
   const fold = curve(t, [[0, 0], [0.14, 0.05, 'outQuad'], [0.44, 0.72, 'inCubic'], [0.68, 1, 'outCubic'], [1, 1, 'linear']]);
   const topple = curve(t, [[0, 0], [0.34, 0.06, 'linear'], [0.66, 0.86, 'inQuad'], [1, 1, 'settle']]);
   const headArrive = curve(t, [[0, 0], [0.46, 0.14, 'linear'], [0.78, 1.04, 'inQuad'], [1, 1, 'settle']]);
+  /**
+   * The stage that was missing, and the reason the clip used to end in a deep
+   * kneel with its shins through the silk.
+   *
+   * A knee that has buckled is folded to ~100° — correctly, that is what a knee
+   * does on the way down — but a body does not *stay* there. Once the weight is
+   * past the knee it goes over, the legs come out from under it, and the shins
+   * end lying on the board beside the hips. Without this the ankles finished
+   * 115 mm below the board (buried to the shin) and the pelvis rested at nearly
+   * a third of standing height: a man kneeling in the board, not a man on it.
+   *
+   * It starts at 0.52 — after the ordering the collapse is judged on (legs,
+   * then torso, then head) is already established — so it changes where the
+   * body ends and nothing about how it got there.
+   */
+  const sprawl = curve(t, [[0, 0], [0.52, 0, 'linear'], [0.79, 0.74, 'outCubic'], [1, 1, 'settle']]);
 
   if (!c.seated) {
     // The knee that gives first goes further, and the ankles collapse with it.
-    addSide(p, 'thigh', 'R', 0.42 * buckle + 0.5 * sink);
-    addSide(p, 'shin', 'R', -0.9 * buckle - 0.85 * sink);
-    addSide(p, 'foot', 'R', -0.35 * sink);
-    addSide(p, 'thigh', 'L', 0.24 * buckle + 0.62 * sink);
-    addSide(p, 'shin', 'L', -0.55 * buckle - 1.05 * sink);
-    addSide(p, 'foot', 'L', -0.28 * sink);
+    addSide(p, 'thigh', 'R', 0.42 * buckle + 0.5 * sink - 0.30 * sprawl);
+    addSide(p, 'shin', 'R', -0.9 * buckle - 0.85 * sink + 0.62 * sprawl);
+    addSide(p, 'foot', 'R', -0.35 * sink + 0.30 * sprawl);
+    addSide(p, 'thigh', 'L', 0.24 * buckle + 0.62 * sink - 0.22 * sprawl);
+    addSide(p, 'shin', 'L', -0.55 * buckle - 1.05 * sink + 0.74 * sprawl);
+    addSide(p, 'foot', 'L', -0.28 * sink + 0.26 * sprawl);
     addSide(p, 'thigh', 'R', 0, 0, 0.14 * side * topple);
     addSide(p, 'thigh', 'L', 0, 0, 0.14 * side * topple);
+    // One leg finishes across the other, which is what stops the two of them
+    // reading as a single folded mass.
+    addSide(p, 'thigh', 'R', 0, 0.20 * side * sprawl, -0.16 * side * sprawl);
+    addSide(p, 'thigh', 'L', 0, 0.08 * side * sprawl, -0.12 * side * sprawl);
   } else {
     // Slumping out of a seat: the legs let go of the barrel rather than fold.
     for (const s of ['L', 'R'] as const) {
@@ -1008,6 +1046,25 @@ function deathPose(p: Pose, t: number, c: AuthorCtx): void {
   add(p, 'pelvis', 0.14 * sink - 0.3 * fold, 0.1 * side * topple, -0.26 * side * topple);
   add(p, 'spine01', -0.52 * fold, 0.14 * side * topple, -0.34 * side * topple);
   add(p, 'spine02', -0.4 * fold, 0.1 * side * topple, -0.22 * side * topple);
+  // The last of the roll, and it is most of the stage.
+  //
+  // The pelvis is the only bone that can lay this rig down. Its children are
+  // both the spine *and* the legs, so rolling it 65° past the topple takes the
+  // torso onto its shoulder and the legs out along the board in the same
+  // rotation — which is what a body going over from its knees does, and is the
+  // only way the ankles get out from under the hips. The rig cannot do it any
+  // other way: the pelvis's height above the root is fixed, so folding joints
+  // alone can never put a hip on the board, and the root translation that used
+  // to do the whole job simply buried the figure — 248 mm of it, with the feet
+  // 222 mm under the silk and the pelvis 8 mm over it.
+  //
+  // A rider takes about a quarter of it. He is still in the saddle — his legs
+  // are pinned to the barrel by the contact solver, not folded under him — so
+  // there is nothing for him to come off *onto*, and rolling him as far as a
+  // man on the ground would twist him out of his own seat.
+  const lie = c.seated ? 0.26 : 1;
+  add(p, 'pelvis', 0, 0.06 * side * sprawl * lie, -1.24 * side * sprawl * lie);
+  add(p, 'spine01', 0.10 * sprawl, 0, 0.55 * side * sprawl * lie);
   add(p, 'neck', -0.2 * headArrive + 0.24 * fold, -0.08 * side * headArrive, 0.1 * side * headArrive);
   add(p, 'head', -0.34 * headArrive + 0.3 * fold, -0.12 * side * headArrive, 0.16 * side * headArrive);
 
@@ -1020,9 +1077,13 @@ function deathPose(p: Pose, t: number, c: AuthorCtx): void {
     addSide(p, 'hand', s, 0.3 * limp);
   }
 
-  p.root[1] += (c.seated ? -0.11 : -0.385) * sink;
-  p.root[2] += (c.seated ? 0.06 : 0.19) * sink;
-  p.root[0] += (c.seated ? 0.05 : 0.13) * side * topple;
+  // Height. `sink` takes the pelvis down to kneeling; `sprawl` takes what is
+  // left, so the hip finishes about a tenth of a stature over the board — one
+  // half-width of a body lying on its side, which is where a hip actually ends
+  // up — instead of a shin's length above it.
+  p.root[1] += (c.seated ? -0.11 : -0.385) * sink + (c.seated ? -0.01 : 0.05) * sprawl;
+  p.root[2] += (c.seated ? 0.06 : 0.19) * sink + (c.seated ? 0.02 : 0.07) * sprawl;
+  p.root[0] += (c.seated ? 0.05 : 0.13) * side * topple + (c.seated ? 0.02 : 0.05) * side * sprawl;
 }
 
 // ===========================================================================
@@ -1276,6 +1337,10 @@ export function buildClipSet(key: UnitKey, gait: GaitName): ClipSet {
 
   const plan = GAIT[gait];
   const motion = UNIT_MOTION[key];
+  // Which way this unit falls. Drawn once, here, from a stream keyed on the
+  // unit — so it is a fact about the 兵 rather than about the frame, and two
+  // captures of the same piece produce the same corpse.
+  const fallSide: 1 | -1 = seedFor('anim', 'death', 'side', key).chance(0.5) ? 1 : -1;
   const c: AuthorCtx = {
     key,
     gait,
@@ -1283,6 +1348,7 @@ export function buildClipSet(key: UnitKey, gait: GaitName): ClipSet {
     motion,
     seated: plan.seated,
     hitFrom: 0,
+    fallSide,
     rng: seedFor('anim', 'clip', key, gait),
   };
 

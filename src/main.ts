@@ -178,6 +178,10 @@ const match = new Match({
   stage,
   difficulty: saved?.difficulty ?? 'medium',
   humanSide: saved?.humanSide ?? Side.Red,
+  // A figure that was put on its square rather than walking there has stale
+  // world-space foot plants. `animators` is declared below and this is only
+  // ever called from inside a frame, long after module init.
+  onPlaced: (view) => animators.get(view.unit.root)?.teleported(),
 });
 const saver = new SaveScheduler();
 

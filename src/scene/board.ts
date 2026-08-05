@@ -5,15 +5,24 @@
  * frame with a turned edge profile you can read from the waterline, a silk deck
  * inset into that frame with a couple of millimetres of sag in it, a river cut
  * *through* the deck to a stone-banked channel with water running in it, and
- * every line on it — the 9×10 grid, the palace diagonals, the 炮位 and 兵位
- * brackets, and 楚河漢界 itself — physically incised, with two walls that take
- * the key light differently.
+ * every line on it — the 9×10 grid, the 炮位 and 兵位 brackets, and 楚河漢界
+ * itself — physically incised, with two walls that take the key light
+ * differently. The palace diagonals are the one mark that is applied rather than
+ * cut: they are gold leaf, and leaf is pressed onto a ground.
+ *
+ * **The deck is cut around every one of those incisions.** A groove under a
+ * continuous sheet of silk is not a groove, it is a groove with a lid on it, and
+ * that is what the first two rounds of this board shipped — see the note on
+ * `GRID_HALF_WIDTH` for what it measured at DPR 2. Each line hands back the
+ * rectangle it opens in the silk, and `buildDeck` leaves those rectangles empty
+ * exactly as it does for the four inscription panels.
  *
  * Vertical budget, all in world units where one unit is one board square:
  *
  * ```
  *   +0.086   top of the timber frame            FRAME_TOP_Y
  *   +0.014   stone banking cap, proud of the silk
+ *   +0.006   top of the palace gold leaf        LEAF_LIFT
  *    0.000   the silk deck  (± ~0.002 of sag)   <- coords.ts's y = 0
  *   −0.012   bottom of a grid incision, and of 楚河漢界
  *   −0.048   the water surface                  WATER_Y
@@ -48,6 +57,7 @@ import { seedFor, type Rng } from '@core/rng.ts';
 import {
   MeshBuilder,
   mitredFrame,
+  norm3,
   orientedQuad,
   sampleProfile,
   sweepAlongPath,
@@ -185,6 +195,23 @@ export const WATER_HALF = (() => {
  * cannot see the lattice cannot read the board, so the section is now a flat-
  * bottomed U: the floor is the widest part of it, it is cut in 墨, and its
  * darkness does not depend on the shading of either wall.
+ *
+ * That was necessary and it was not sufficient, because the silk deck was still
+ * ONE CONTINUOUS SHEET laid over the top of every groove. A cut under a sheet is
+ * not a cut: measured at DPR 2 from the `top` framing, a rank line came out as a
+ * single device pixel at #AD873E against #C59946 silk — 11% contrast — and a
+ * file line as two one-pixel marks six pixels apart with full-brightness silk
+ * between them, which is the two lips of the incision and nothing else. The
+ * whole flat 墨 floor, the widest part of the section and the entire point of
+ * it, was underneath the deck and contributed nothing at any camera angle.
+ *
+ * So the deck is now cut around every incision: `buildGrid` and
+ * `buildPositionMarkers` hand back the rectangle each line opens in the silk,
+ * and `buildDeck` leaves those rectangles empty exactly as it already did for
+ * the four inscription panels. The mouth of the cut is the groove's own width
+ * plus `GRID_SKIRT`, and the section carries a matching skirt that comes back
+ * down to the deck plane, so the silk and the burr meet along a shared edge
+ * with no void and no coplanar z-fight.
  */
 const GRID_HALF_WIDTH = 0.028;
 const GRID_DEPTH = 0.0132;
@@ -192,25 +219,78 @@ const GRID_DEPTH = 0.0132;
 const GRID_WALL = 0.01;
 /** Pressed silk lifts at the edge of a stylus cut; this is that burr. */
 const GRID_LIP = 0.0016;
-/** Maximum lateral bow of a hand-ruled line, at mid-span. Zero at every
- *  intersection, so the grid still lands exactly on `coords.ts`. */
-const GRID_BOW = 0.0022;
+/**
+ * How far past the burr the cut's outer skirt runs before it meets the silk
+ * again. This is the seam: the deck's hole ends here and the skirt starts here,
+ * both at deck height, so the two surfaces share an edge instead of leaving a
+ * 1.6 mm crack down each side of every line on the board.
+ */
+const GRID_SKIRT = 0.004;
 /** Vertices per one-square span. 3 puts a vertex exactly on each intersection. */
 const SEG_PER_SPAN = 3;
 
-/** Worst-case half-width and bow of a grid groove, for clearance arithmetic. */
+/** Worst-case half-width of a grid groove, for clearance arithmetic. */
 export const GRID_HALF_MAX = GRID_HALF_WIDTH * 1.09;
-export const GRID_BOW_MAX = GRID_BOW;
+/** Worst-case width of the hole a grid groove opens in the silk. */
+export const GRID_MOUTH_MAX = GRID_HALF_MAX + GRID_SKIRT;
+/**
+ * Lateral bow of a hand-ruled line. Zero, and that is now structural rather
+ * than a matter of taste: the silk's hole is a rectangle, so a groove that
+ * wanders 2 mm out of it either opens a slit through the tabletop on one side
+ * or is covered by the deck on the other. At the `top` framing 2 mm is a
+ * quarter of a device pixel — it was never visible — while the seam it breaks
+ * is. The hand of the ruler now lives where it can be seen instead: every line
+ * carries its own width, its own depth and the silk's own sag under it.
+ */
+export const GRID_BOW_MAX = 0;
 
-/** Palace diagonal: a flat-bottomed trench that the gold leaf is laid into. */
-const PALACE_HALF_WIDTH = 0.036;
-const PALACE_WALL = 0.009;
-/** Shallow: the leaf has to catch light, not hide in a slot. */
-const PALACE_DEPTH = 0.0068;
-/** Gold leaf is laid in squares; the joins between them are the tooth. */
-const LEAF_PITCH = 0.155;
-const LEAF_GAP = 0.0026;
-const LEAF_RISE = 0.0042;
+/**
+ * Pressed gold leaf on the palace diagonals.
+ *
+ * The leaf used to be laid into a trench, 5 mm down, and the trench was under
+ * the deck — so the gold was not merely dark, it was not on screen at all, and
+ * what read as a "dark dashed diagonal" was the pair of trench lips poking a
+ * millimetre and a half through the silk. Leaf is not a cut. It is beaten metal
+ * pressed ONTO a ground, so it sits on the silk and stands its own thickness
+ * proud of it, where the key can reach it.
+ *
+ * The thickness is the whole trick, and the arithmetic is worth writing down.
+ * One board square is one world unit and a piece is 0.69 across, so a unit is
+ * about 4 cm: `LEAF_LIFT` is 0.22 mm of built-up gold and `LEAF_EDGE` is a half
+ * millimetre of chamfer around it. That chamfer stands at 23°, and 23° is not a
+ * decorative number — the gongbi rig's key sits at 0.55 rad, so a horizontal
+ * plane lands at N·L 0.704, which is 泥金 band 2 (#BE9430, luma 150) and a hair
+ * DARKER than the silk it lies on (luma 165). Nothing flat on this board can
+ * reach `BAND_CUTS.gold[2]` = 0.86; the normal has to turn at least 19.2° into
+ * the key. The chamfer turns 23°, so an edge that faces the key takes the
+ * accent, the edge opposite it drops to band 1, and the flat top holds band 2
+ * between them. That is a raised metal inlay lit from one side, and it is the
+ * only geometry a level board can offer.
+ *
+ * Measured at DPR 2 from `top`: the two diagonals whose chamfers face the key's
+ * azimuth run 8% and 13% of their area in the band 3 accent, brightest #E9D381
+ * at luma 210 against silk at 165; the two that run along the key hold band 2
+ * and band 1 and reach luma 197. One arm of each palace's cross catching and
+ * the other not is what a single directional key does to a raised line, and it
+ * is the read that says metal.
+ *
+ * `LEAF_FACET` is the smaller half: leaf is beaten, and every square of it lies
+ * at its own slight angle, so each carries its own normal rather than sharing
+ * the ribbon's. Geometrically they stay flat — a leaf square is microns thick —
+ * and the tilt is small enough to stay inside band 2 on the top face.
+ */
+const LEAF_HALF_WIDTH = 0.029;
+/** How far the leaf stands proud of the silk: 0.22 mm of gold. */
+const LEAF_LIFT = 0.0055;
+/** Width of the chamfer around a square, from the silk up to the flat top. */
+const LEAF_EDGE = 0.013;
+/** Length of one square of leaf along the diagonal, before jitter. */
+const LEAF_PITCH = 0.28;
+/** The join between two squares. A hairline: at `top` this is 0.14 device px,
+ *  so it is a join seen up close and not a dash seen from the ceiling. */
+const LEAF_GAP = 0.0012;
+/** Largest tilt of a square's own normal, radians. */
+const LEAF_FACET = 0.09;
 
 /** 炮位 / 兵位 brackets. */
 const BRACKET_GAP = 0.088;
@@ -234,19 +314,26 @@ const INSCRIPTION_Z1 = 0.462;
 /** Ink height of the tallest of the four characters, world units. */
 const INSCRIPTION_INK = 0.185;
 /** Centre-to-centre spacing within a pair, and the width of one glyph's panel. */
-const INSCRIPTION_PITCH = 0.4;
+const INSCRIPTION_PITCH = 0.34;
 /**
- * Where each pair sits horizontally.
+ * Where each pair sits horizontally: the centre of its own half of the board.
  *
- * A flat board writes 楚河 to the left and 漢界 to the right of one shared band.
- * With a channel down the middle of that band the pairs have to go on separate
- * banks, and keeping the left/right split as well puts them diagonally opposite
- * each other — which reads as an accident rather than as a decision from every
- * camera angle. Centring both pairs makes the inscription mirror-symmetric
- * across the channel, which is the only arrangement that looks deliberate no
- * matter where the camera is standing.
+ * This was 0, which centred BOTH pairs on the middle file. The argument for it
+ * was that two pairs placed left and right on opposite banks sit diagonally
+ * opposite each other and read as an accident, and that mirroring them across
+ * the channel is the only arrangement that looks deliberate from every camera.
+ * That argument is wrong about the thing that actually matters. A xiangqi player
+ * knows where 楚河漢界 goes; four characters stacked in two rows over the centre
+ * file are not a composition, they are an error, and no amount of symmetry
+ * reads as intentional when the intention it signals is the wrong one.
+ *
+ * So: 楚河 takes the left half of the board and 漢界 the right, as every board
+ * ever printed does, each pair centred on the middle of its own half. Each is
+ * still carved into its own player's bank and still reads toward that player's
+ * seat, which is what a carved set does and why the label looks upside-down from
+ * the wrong side of the table.
  */
-const INSCRIPTION_PAIR_X = 0;
+const INSCRIPTION_PAIR_X = 2.0;
 /** Depth of the cut. Deeper than a piece base's — it is read from further away. */
 const INSCRIPTION_DEPTH = 0.0105;
 /**
@@ -256,11 +343,24 @@ const INSCRIPTION_DEPTH = 0.0105;
  * wrong trade. At 2.0 the three strokes of 漢's 氵 flood into one another and
  * come out as a single connected spine with two branches — the pen is never
  * lifted — so the radical reads as 扌 and the label stops being a word. 楚 loses
- * the separation between 林 and 疋 the same way. A character that is bold and
- * wrong is worse than one that is fine and right, so this stays at the authored
- * weight and legibility is bought with size and camera distance instead.
+ * the separation between 林 and 疋 the same way.
+ *
+ * Then it was 1.0, which is correct and is a hair too fine: the river band is
+ * 0.19 of a square deep, so the characters ink 0.185 across whatever else
+ * happens, and at the authored weight that is a 0.9 device-pixel stroke from the
+ * `top` framing. A stroke below one pixel does not alias into a tangle because
+ * it is wrong, it aliases because it is not there.
+ *
+ * 1.5 is the measured ceiling: every one of 楚河漢界 keeps its authored region
+ * and counter count up to 1.6, where 界's 田 closes a fifth counter, so this
+ * takes the last clean step below it. It buys +47% of stroke — 0.9 device px to
+ * 1.32 — for no change in the character's height, because the em shrinks to keep
+ * the ink inside the band. The check that gates it is in `verify.ts` and it
+ * compares topology at the weight each character is actually cut with, not at a
+ * single weight for all of them: the piece bases still cut at 1.0, where 馬 and
+ * 砲 need every micron of separation they have.
  */
-export const INSCRIPTION_WEIGHT = 1.0;
+export const INSCRIPTION_WEIGHT = 1.5;
 
 /** One character of the inscription, with the deck panel it is cut into. */
 interface InscriptionChar {
@@ -271,11 +371,18 @@ interface InscriptionChar {
   yaw: number;
   /** Em size in world units, shared by all four so they read as one line. */
   em: number;
-  panel: DeckPanel;
+  panel: DeckHole;
 }
 
-/** A rectangle the silk deck leaves empty, filled by an incised panel instead. */
-interface DeckPanel {
+/**
+ * A rectangle the silk deck leaves empty.
+ *
+ * Two things ask for one: an inscription panel, which is filled by an incised
+ * panel of the same silk instead, and the mouth of an incised line, which is
+ * filled by the groove itself. Both are holes in the same sheet and the deck
+ * treats them identically.
+ */
+interface DeckHole {
   x0: number;
   x1: number;
   z0: number;
@@ -409,41 +516,42 @@ function gridEdges(lo: number, hi: number, step: number, anchors: readonly numbe
 
 /**
  * The silk deck: two sheets either side of the river channel, with a rectangle
- * left empty under each character of 楚河漢界.
+ * left empty for every inscription panel and for the mouth of every incised
+ * line on the board.
+ *
+ * The holes are what make the line work exist. A groove under an unbroken sheet
+ * shows nothing but its own two lips, which is what the first two rounds of this
+ * board shipped. Each row of the deck pays only for the cuts of the holes that
+ * actually cross it, so the ninety-odd bracket arms cost their own two rows and
+ * nothing anywhere else.
  */
-function buildDeck(b: MeshBuilder, detail: number, panels: readonly DeckPanel[]): void {
+function buildDeck(b: MeshBuilder, detail: number, holes: readonly DeckHole[]): void {
   const step = 0.26 / Math.max(detail, 0.2);
   const bands: [number, number][] = [
     [BANK_HALF, SILK_HALF_Z],
     [-SILK_HALF_Z, -BANK_HALF],
   ];
 
-  const zAnchors: number[] = [];
-  const xAnchors: number[] = [];
-  for (const p of panels) {
-    zAnchors.push(p.z0, p.z1);
-    xAnchors.push(p.x0, p.x1);
-  }
-
   for (const [z0, z1] of bands) {
+    const zAnchors: number[] = [];
+    for (const h of holes) {
+      if (h.z1 > z0 && h.z0 < z1) zAnchors.push(h.z0, h.z1);
+    }
     const zEdges = gridEdges(z0, z1, step, zAnchors);
     for (let j = 0; j + 1 < zEdges.length; j++) {
       const za = zEdges[j];
       const zb = zEdges[j + 1];
       const zMid = (za + zb) * 0.5;
-      // Only the row that actually contains panels pays for the extra x cuts.
-      const rowPanels = panels.filter((p) => zMid > p.z0 && zMid < p.z1);
-      const xEdges = gridEdges(
-        -SILK_HALF_X,
-        SILK_HALF_X,
-        step,
-        rowPanels.length ? xAnchors : [],
-      );
+      // Only the holes this row actually crosses put cuts into it.
+      const rowHoles = holes.filter((h) => zMid > h.z0 && zMid < h.z1);
+      const xAnchors: number[] = [];
+      for (const h of rowHoles) xAnchors.push(h.x0, h.x1);
+      const xEdges = gridEdges(-SILK_HALF_X, SILK_HALF_X, step, xAnchors);
       for (let i = 0; i + 1 < xEdges.length; i++) {
         const xa = xEdges[i];
         const xb = xEdges[i + 1];
         const xMid = (xa + xb) * 0.5;
-        if (rowPanels.some((p) => xMid > p.x0 && xMid < p.x1)) continue; // the hole
+        if (rowHoles.some((h) => xMid > h.x0 && xMid < h.x1)) continue; // the hole
         const A: P3 = [xa, silkSag(xa, za), za];
         const B: P3 = [xa, silkSag(xa, zb), zb];
         const C: P3 = [xb, silkSag(xb, zb), zb];
@@ -468,13 +576,12 @@ function buildDeck(b: MeshBuilder, detail: number, panels: readonly DeckPanel[])
 }
 
 /**
- * One incised line, pinned to its endpoints.
+ * One incised line, pinned to its endpoints, with both ends closed.
  *
- * The bow is applied per one-square span as `A·sin(πs)`, which is exactly zero
- * at both ends of every span. The line therefore wanders like a hand-ruled line
- * between the marked points but passes precisely through each one — the grid
- * still lands on `coords.ts` to the last decimal, which is the property the
- * verification script asserts.
+ * The path carries a vertex every third of a square so the groove follows the
+ * silk's sag, and one exactly on every marked point — the grid lands on
+ * `coords.ts` to the last decimal, which is the property the verification script
+ * asserts. It runs dead straight: see `GRID_BOW_MAX`.
  */
 function incisedLine(
   b: MeshBuilder,
@@ -484,8 +591,6 @@ function incisedLine(
   bz: number,
   spans: number,
   section: readonly ProfilePoint[],
-  rng: Rng,
-  bow: number,
 ): void {
   const dx = bx - ax;
   const dz = bz - az;
@@ -496,31 +601,73 @@ function incisedLine(
   const pz = -ux;
 
   const path: number[] = [];
-  for (let s = 0; s < spans; s++) {
-    const amp = bow > 0 ? rng.range(-bow, bow) : 0;
-    for (let k = 0; k < SEG_PER_SPAN; k++) {
-      const local = k / SEG_PER_SPAN;
-      const t = (s + local) / spans;
-      const off = amp * Math.sin(Math.PI * local);
-      const x = ax + dx * t + px * off;
-      const z = az + dz * t + pz * off;
-      path.push(x, silkSag(x, z), z);
-    }
+  const n = spans * SEG_PER_SPAN;
+  for (let k = 0; k <= n; k++) {
+    const t = k / n;
+    const x = ax + dx * t;
+    const z = az + dz * t;
+    path.push(x, silkSag(x, z), z);
   }
-  path.push(bx, silkSag(bx, bz), bz);
   // Every incised line on this board is a straight run between two marked
   // points, so the groove walls get one normal each along their whole length.
   sweepAlongPath(b, path, section, 1, true);
+  capIncision(b, section, ax, silkSag(ax, az), az, px, pz, [-ux, 0, -uz]);
+  capIncision(b, section, bx, silkSag(bx, bz), bz, px, pz, [ux, 0, uz]);
 }
 
 /**
- * Chisel cross-section: a proud lip, a steep wall each side and a flat floor
- * between them. The floor is what the eye reads at distance and the walls are
- * what give the cut its edge up close.
+ * Close the end of a swept incision against the silk.
+ *
+ * Without this the groove is an open-ended trough and a grazing camera looks
+ * straight down it and out through the tabletop. The subtlety is the same one
+ * the river's end walls have: the section crosses the deck plane twice, because
+ * the burr stands proud of the silk and the floor is below it, so ribboning the
+ * section against the deck naively folds the crossing segment into a bowtie. A
+ * vertex is inserted at each crossing first and every strip then sits wholly on
+ * one side.
+ */
+function capIncision(
+  b: MeshBuilder,
+  section: readonly ProfilePoint[],
+  x: number,
+  y: number,
+  z: number,
+  lx: number,
+  lz: number,
+  n: P3,
+): void {
+  const pts: [number, number][] = [];
+  for (let s = 0; s + 1 < section.length; s++) {
+    const p0 = section[s];
+    const p1 = section[s + 1];
+    pts.push([p0.u, p0.y]);
+    if (p0.y < 0 !== p1.y < 0 && p0.y !== 0 && p1.y !== 0) {
+      const t = -p0.y / (p1.y - p0.y);
+      pts.push([p0.u + t * (p1.u - p0.u), 0]);
+    }
+  }
+  const last = section[section.length - 1];
+  pts.push([last.u, last.y]);
+  for (let i = 0; i + 1 < pts.length; i++) {
+    if (Math.abs(pts[i][1]) < 1e-9 && Math.abs(pts[i + 1][1]) < 1e-9) continue;
+    const lo0: P3 = [x + lx * pts[i][0], y + pts[i][1], z + lz * pts[i][0]];
+    const lo1: P3 = [x + lx * pts[i + 1][0], y + pts[i + 1][1], z + lz * pts[i + 1][0]];
+    const hi0: P3 = [x + lx * pts[i][0], y, z + lz * pts[i][0]];
+    const hi1: P3 = [x + lx * pts[i + 1][0], y, z + lz * pts[i + 1][0]];
+    orientedQuad(b, lo0, lo1, hi1, hi0, n);
+  }
+}
+
+/**
+ * Chisel cross-section: an outer skirt back down to the silk, a proud burr, a
+ * steep wall each side and a flat floor between them. The floor is what the eye
+ * reads at distance, the walls are what give the cut its edge up close, and the
+ * skirt is what the deck's hole butts against.
  */
 function veeSection(halfWidth: number, depth: number): ProfilePoint[] {
   const wall = Math.min(GRID_WALL, halfWidth * 0.42);
   return [
+    { u: -halfWidth - GRID_SKIRT, y: 0, hard: true },
     { u: -halfWidth, y: GRID_LIP, hard: true },
     { u: -halfWidth + wall, y: -depth, hard: true },
     // The floor is split on the centreline so that every path point — and so
@@ -530,59 +677,55 @@ function veeSection(halfWidth: number, depth: number): ProfilePoint[] {
     { u: 0, y: -depth, hard: false },
     { u: halfWidth - wall, y: -depth, hard: true },
     { u: halfWidth, y: GRID_LIP, hard: true },
+    { u: halfWidth + GRID_SKIRT, y: 0, hard: true },
   ];
 }
 
+/**
+ * The rectangle a straight, axis-aligned incision opens in the silk: its full
+ * length by the full width of its skirt.
+ */
+function lineHole(
+  ax: number,
+  az: number,
+  bx: number,
+  bz: number,
+  halfWidth: number,
+): DeckHole {
+  const alongX = az === bz;
+  const mouth = halfWidth + GRID_SKIRT;
+  return {
+    x0: Math.min(ax, bx) - (alongX ? 0 : mouth),
+    x1: Math.max(ax, bx) + (alongX ? 0 : mouth),
+    z0: Math.min(az, bz) - (alongX ? mouth : 0),
+    z1: Math.max(az, bz) + (alongX ? mouth : 0),
+  };
+}
+
 /** The 9×10 grid, broken at the river on every file but the two outer ones. */
-function buildGrid(b: MeshBuilder, rng: Rng): void {
+function buildGrid(b: MeshBuilder, rng: Rng, holes: DeckHole[]): void {
+  const line = (ax: number, az: number, bx: number, bz: number, spans: number, half: number) => {
+    incisedLine(b, ax, az, bx, bz, spans, veeSection(half, GRID_DEPTH * rng.range(0.9, 1.12)));
+    holes.push(lineHole(ax, az, bx, bz, half));
+  };
+
   for (let r = 0; r < RANKS; r++) {
     const z = worldZ(r);
-    const sec = veeSection(
-      GRID_HALF_WIDTH * rng.range(0.92, 1.09),
-      GRID_DEPTH * rng.range(0.9, 1.12),
-    );
-    incisedLine(b, worldX(0), z, worldX(FILES - 1), z, FILES - 1, sec, rng, GRID_BOW);
+    line(worldX(0), z, worldX(FILES - 1), z, FILES - 1, GRID_HALF_WIDTH * rng.range(0.92, 1.09));
   }
 
   for (let f = 0; f < FILES; f++) {
     const x = worldX(f);
-    const sec = veeSection(
-      GRID_HALF_WIDTH * rng.range(0.92, 1.09),
-      GRID_DEPTH * rng.range(0.9, 1.12),
-    );
+    const half = GRID_HALF_WIDTH * rng.range(0.92, 1.09);
     if (f === 0 || f === FILES - 1) {
       // The two outer files run the full length: they are the board's border.
-      incisedLine(b, x, worldZ(0), x, worldZ(RANKS - 1), RANKS - 1, sec, rng, GRID_BOW);
+      line(x, worldZ(0), x, worldZ(RANKS - 1), RANKS - 1, half);
     } else {
       // Everything between stops at the river, which is what makes a xiangqi
       // board a xiangqi board.
-      incisedLine(b, x, worldZ(0), x, worldZ(RIVER_BLACK_BANK), RIVER_BLACK_BANK, sec, rng, GRID_BOW);
-      incisedLine(
-        b,
-        x,
-        worldZ(RIVER_RED_BANK),
-        x,
-        worldZ(RANKS - 1),
-        RANKS - 1 - RIVER_RED_BANK,
-        sec,
-        rng,
-        GRID_BOW,
-      );
+      line(x, worldZ(0), x, worldZ(RIVER_BLACK_BANK), RIVER_BLACK_BANK, half);
+      line(x, worldZ(RIVER_RED_BANK), x, worldZ(RANKS - 1), RANKS - 1 - RIVER_RED_BANK, half);
     }
-  }
-}
-
-/** The palace trenches. The gold that fills them is built separately. */
-function buildPalaceTrenches(b: MeshBuilder, rng: Rng): void {
-  const sec: ProfilePoint[] = [
-    { u: -PALACE_HALF_WIDTH, y: GRID_LIP, hard: true },
-    { u: -PALACE_HALF_WIDTH + PALACE_WALL, y: -PALACE_DEPTH, hard: true },
-    { u: 0, y: -PALACE_DEPTH, hard: false },
-    { u: PALACE_HALF_WIDTH - PALACE_WALL, y: -PALACE_DEPTH, hard: true },
-    { u: PALACE_HALF_WIDTH, y: GRID_LIP, hard: true },
-  ];
-  for (const d of palaceDiagonals()) {
-    incisedLine(b, d[0], d[1], d[2], d[3], 2, sec, rng, GRID_BOW * 0.5);
   }
 }
 
@@ -597,17 +740,19 @@ export function palaceDiagonals(): [number, number, number, number][] {
 }
 
 /**
- * Gold leaf laid into the palace trenches.
+ * Gold leaf pressed onto the palace diagonals.
  *
  * Leaf is applied as discrete squares, and the join between two squares always
  * shows — that join is the "tooth" of leaf, and it is the difference between
- * reading as beaten metal and reading as yellow paint. Each patch gets its own
- * width, its own height within the trench and a hairline gap to its neighbour,
- * so the line breaks up under a raking key exactly the way real leaf does.
+ * reading as beaten metal and reading as yellow paint. Each square gets its own
+ * width, its own build of gold, its own facet normal and a hairline gap to its
+ * neighbour, so the line breaks up under a raking key exactly the way real leaf
+ * does. Each is a flat top with a chamfer all the way round it down to the silk
+ * — see `LEAF_LIFT` for why the chamfer is the part that reads as metal. The
+ * first and last squares run right onto the palace corners: the diagonal is a
+ * line between two marked points and it has to arrive at them.
  */
 function buildPalaceLeaf(b: MeshBuilder, rng: Rng): void {
-  const inner = PALACE_HALF_WIDTH - PALACE_WALL;
-  const up: P3 = [0, 1, 0];
   for (const [ax, az, bx, bz] of palaceDiagonals()) {
     const dx = bx - ax;
     const dz = bz - az;
@@ -616,24 +761,72 @@ function buildPalaceLeaf(b: MeshBuilder, rng: Rng): void {
     const uz = dz / len;
     const px = uz;
     const pz = -ux;
+    /** World point at (distance along, offset across, height). */
+    const at = (t: number, s: number, y: number): P3 => {
+      const x = ax + ux * t + px * s;
+      const z = az + uz * t + pz * s;
+      return [x, silkSag(x, z) + y, z];
+    };
     let t = 0;
     while (t < len - 1e-4) {
       const patch = Math.min(LEAF_PITCH * rng.range(0.78, 1.24), len - t);
-      const t0 = t + LEAF_GAP * 0.5;
-      const t1 = t + patch - LEAF_GAP * 0.5;
+      const t0 = t <= 0 ? 0 : t + LEAF_GAP * 0.5;
+      const t1 = t + patch >= len - 1e-9 ? len : t + patch - LEAF_GAP * 0.5;
       if (t1 > t0) {
-        const w = inner * rng.range(0.94, 1.0);
-        const y = -PALACE_DEPTH + LEAF_RISE * rng.range(0.35, 1.0);
-        const x0 = ax + ux * t0;
-        const z0 = az + uz * t0;
-        const x1 = ax + ux * t1;
-        const z1 = az + uz * t1;
-        const A: P3 = [x0 - px * w, silkSag(x0, z0) + y, z0 - pz * w];
-        const B: P3 = [x0 + px * w, silkSag(x0, z0) + y, z0 + pz * w];
-        const C: P3 = [x1 + px * w, silkSag(x1, z1) + y, z1 + pz * w];
-        const D: P3 = [x1 - px * w, silkSag(x1, z1) + y, z1 - pz * w];
-        // A -> D -> C -> B: the leaf faces up out of the trench.
-        b.quad(A, D, C, B, up, up, up, up, [A[0], A[2]], [D[0], D[2]], [C[0], C[2]], [B[0], B[2]]);
+        const w = LEAF_HALF_WIDTH * rng.range(0.94, 1.0);
+        const lift = LEAF_LIFT * rng.range(0.85, 1.2);
+        // Never let a short square's chamfers meet and invert it.
+        const edge = Math.min(LEAF_EDGE, (t1 - t0) * 0.35, w * 0.6);
+        // The square's own facet: leaf is beaten, and no two squares of it lie
+        // at quite the same angle.
+        const a = rng.range(0, Math.PI * 2);
+        const tilt = LEAF_FACET * rng.range(0.25, 1);
+        const up = norm3(Math.cos(a) * Math.sin(tilt), Math.cos(tilt), Math.sin(a) * Math.sin(tilt));
+
+        const ti0 = t0 + edge;
+        const ti1 = t1 - edge;
+        const wi = w - edge;
+        // The flat top.
+        b.quad(
+          at(ti0, -wi, lift),
+          at(ti1, -wi, lift),
+          at(ti1, wi, lift),
+          at(ti0, wi, lift),
+          up,
+          up,
+          up,
+          up,
+          [0, 0],
+          [ti1 - ti0, 0],
+          [ti1 - ti0, 2 * wi],
+          [0, 2 * wi],
+        );
+        // The chamfer, one side at a time. Its normal is the one number on this
+        // board that can reach the top band of 泥金 — see `LEAF_LIFT`.
+        const skirt = (
+          o0: [number, number],
+          o1: [number, number],
+          i1: [number, number],
+          i0: [number, number],
+          nx: number,
+          nz: number,
+        ) => {
+          const n = norm3(nx * lift, edge, nz * lift);
+          orientedQuad(
+            b,
+            at(o0[0], o0[1], 0),
+            at(o1[0], o1[1], 0),
+            at(i1[0], i1[1], lift),
+            at(i0[0], i0[1], lift),
+            n,
+          );
+        };
+        // Four trapezoids. Each slanted side runs from an outer corner to the
+        // inner corner it shares with its neighbour, so the frame closes.
+        skirt([t0, w], [t1, w], [ti1, wi], [ti0, wi], px, pz);
+        skirt([t1, -w], [t0, -w], [ti0, -wi], [ti1, -wi], -px, -pz);
+        skirt([t1, w], [t1, -w], [ti1, -wi], [ti1, wi], ux, uz);
+        skirt([t0, -w], [t0, w], [ti0, wi], [ti0, -wi], -ux, -uz);
       }
       t += patch;
     }
@@ -641,16 +834,21 @@ function buildPalaceLeaf(b: MeshBuilder, rng: Rng): void {
 }
 
 /** The classical 炮位 / 兵位 corner brackets, incised like everything else. */
-function buildPositionMarkers(b: MeshBuilder, rng: Rng): void {
-  const sec = veeSection(GRID_HALF_WIDTH * BRACKET_SCALE, GRID_DEPTH * BRACKET_SCALE);
+function buildPositionMarkers(b: MeshBuilder, holes: DeckHole[]): void {
+  const half = GRID_HALF_WIDTH * BRACKET_SCALE;
+  const sec = veeSection(half, GRID_DEPTH * BRACKET_SCALE);
+  const arm = (ax: number, az: number, bx: number, bz: number) => {
+    incisedLine(b, ax, az, bx, bz, 1, sec);
+    holes.push(lineHole(ax, az, bx, bz, half));
+  };
   const bracket = (f: number, r: number, sx: number, sz: number) => {
     const x = worldX(f);
     const z = worldZ(r);
     const cx = x + sx * BRACKET_GAP;
     const cz = z + sz * BRACKET_GAP;
     // Two short arms meeting at the corner, held clear of the intersection.
-    incisedLine(b, cx, cz, cx + sx * BRACKET_LEN, cz, 1, sec, rng, 0);
-    incisedLine(b, cx, cz, cx, cz + sz * BRACKET_LEN, 1, sec, rng, 0);
+    arm(cx, cz, cx + sx * BRACKET_LEN, cz);
+    arm(cx, cz, cx, cz + sz * BRACKET_LEN);
   };
   const point = (f: number, r: number) => {
     // A point on the edge of the board only carries its inward brackets.
@@ -866,6 +1064,14 @@ export class Board implements BoardScene {
     em: number;
     panel: { x0: number; x1: number; z0: number; z1: number };
   }[] = [];
+  /**
+   * The mouth every incised line opened in the silk, for the verification
+   * script: the deck is asserted to be exactly the sheet minus the river band
+   * minus these minus the ink of 楚河漢界. Inscription panels are not in here —
+   * they are in `inscription`, and the deck fills them back in with the panel's
+   * own face.
+   */
+  readonly deckHoles: { x0: number; x1: number; z0: number; z1: number }[] = [];
   /** Triangles the inscription contributed to the incision geometry. */
   inscriptionTriangles = 0;
 
@@ -904,17 +1110,22 @@ export class Board implements BoardScene {
       this.inscription.push({ ch: c.ch, cx: c.cx, cz: c.cz, em: c.em, panel: { ...c.panel } });
     }
 
+    // --- every incised line, in one geometry and therefore one draw call ---
+    // The grid, the 炮位/兵位 brackets and the sunken part of 楚河漢界 are all
+    // the same thing — silk cut with a stylus — so they are the same geometry
+    // and the same material. This runs BEFORE the deck because each line hands
+    // back the hole it needs left in the silk.
+    const lines = new MeshBuilder();
+    buildGrid(lines, seedFor('scene', 'board', 'grid'), this.deckHoles);
+    buildPositionMarkers(lines, this.deckHoles);
+
     // --- deck and frame ---------------------------------------------------
     // The deck geometry carries the inscription's *face* — the silk left behind
     // once the strokes are cut out of it — because it is the same silk and the
     // same material, and merging it costs no draw call.
     {
       const b = new MeshBuilder();
-      buildDeck(
-        b,
-        detail,
-        inscription.map((c) => c.panel),
-      );
+      buildDeck(b, detail, [...this.deckHoles, ...inscription.map((c) => c.panel)]);
       this.inscriptionCut = new MeshBuilder();
       for (const c of inscription) {
         const w = c.panel.x1 - c.panel.x0;
@@ -955,19 +1166,11 @@ export class Board implements BoardScene {
       add(b.build('frame'), M.get({ cls: 'timber', pigment: SCENE.timber }), 'frame', true, true);
     }
 
-    // --- every incised line, in one geometry and therefore one draw call ---
-    // The grid, the palace trenches, the 炮位/兵位 brackets and the sunken part
-    // of 楚河漢界 are all the same thing — silk cut with a stylus — so they are
-    // the same geometry and the same material.
     {
-      const b = new MeshBuilder();
-      buildGrid(b, seedFor('scene', 'board', 'grid'));
-      buildPalaceTrenches(b, seedFor('scene', 'board', 'palace'));
-      buildPositionMarkers(b, seedFor('scene', 'board', 'brackets'));
       this.inscriptionTriangles = this.inscriptionCut.triangles;
-      b.append(this.inscriptionCut);
+      lines.append(this.inscriptionCut);
       add(
-        b.build('incisions'),
+        lines.build('incisions'),
         M.get({ cls: 'silk', pigment: SCENE.gridLine }),
         'incisions',
         false,
@@ -977,7 +1180,9 @@ export class Board implements BoardScene {
         // texel to texel and the lattice renders as a dotted trace. Widening the
         // cut does not help — the artefact is the sampling rate, not the size.
         // The deck around the grooves still receives, so a piece's shadow still
-        // crosses the lines; the lines themselves are simply shaded by N·L.
+        // crosses the lines; the lines themselves are simply shaded by N·L, and
+        // lit 墨 (luma 36) is still well under shadowed 藤黃 (59), so the lattice
+        // stays the darkest thing in the frame even where a shadow crosses it.
         false,
       );
     }

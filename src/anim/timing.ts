@@ -166,7 +166,17 @@ export interface GaitPlan {
   lift: number;
   /** Legs are on a mount, not the ground: the contact solver holds them there. */
   seated: boolean;
-  /** Peak vertical travel of the pelvis over a cycle, in statures. */
+  /**
+   * Vertical travel of the pelvis over a cycle, **peak to peak**, in statures.
+   *
+   * Peak to peak, not amplitude: it is what a critic measures — the difference
+   * between the highest and lowest pelvis in one cycle — so it is what the
+   * number has to mean, and the clip halves it to get the amplitude it writes.
+   * Read as an amplitude it is exactly twice as much motion as it says, which
+   * is how a 2.1% authored bob measured 5.9% of stature and read as a duck
+   * walk. The contact solver's dip at heel strike sits on top of this and is
+   * *not* included, so the measured figure is always a little over `bob`.
+   */
   bob: number;
 }
 
@@ -374,8 +384,23 @@ export const CAPTURE = {
   /** Pigment starts leaving the body before the body has finished falling. */
   disperseStart: 2.31,
   disperseEnd: 3.94,
+  /**
+   * The corpse's exit, measured from the end of the collapse rather than from
+   * the pigment window — the two are different lengths and the body is the one
+   * the eye is on. `CLIP.death` is 2.37 s from `knockbackEnd`, which puts the
+   * body on the board at 4.10; the dispersal used to end at 3.94, so the flag
+   * that hid the figure fired while it was **still falling**, and what a viewer
+   * saw was a kneeling man vanishing between two frames.
+   *
+   * So: it lands, it lies there for `corpseLinger`, and then it goes down into
+   * the silk over `corpseSink` — under the board, occluded by it, gone before
+   * anything is switched off. The pigment field is not bound to any of this; its
+   * chips outlive the sequence and settle on their own clock.
+   */
+  corpseLinger: 0.23,
+  corpseSink: 0.81,
   /** Everything at rest; the promise resolves here. */
-  settleEnd: 4.184,
+  settleEnd: 5.31,
 
   /** Camera push strength and the impulse fired at contact. */
   impulse: 0.86,
@@ -383,8 +408,38 @@ export const CAPTURE = {
   flash: 0.92,
   /** How long the attacker's follow-through holds before it returns to idle. */
   recover: 0.44,
-  /** How far the attacker advances toward the defender, as a fraction of the gap. */
+  /**
+   * Fallback for how far the attacker advances toward the defender, as a
+   * fraction of the gap, used only for a figure with no animator to measure.
+   *
+   * The real fraction is derived per exchange from the attacker's **reach** —
+   * `Animator.strikeReach`, measured off its own strike clip — and the two
+   * figures' `meta.size`. One fraction cannot serve the cast: at 0.58 of a
+   * one-square gap a 兵 stopped 416 mm short of the man he was stabbing, which
+   * is 42% of a square and three quarters of his own height, and the frame that
+   * fires the flash was a frame in which nothing touched.
+   *
+   * `OTS_CONTACT_FRACTION` in @scene/camera.ts mirrors this number to frame the
+   * exchange as it will be at contact. It is a framing heuristic and it stays a
+   * mirror of the fallback, not of the derived value.
+   */
   approachFraction: 0.58,
+  /**
+   * Bounds on the derived fraction. The floor keeps a long-reaching attacker
+   * (a 象 at arm's length over one square) from standing still; the ceiling
+   * keeps anything from arriving on top of its victim.
+   */
+  approachMin: 0.12,
+  approachMax: 0.92,
+  /**
+   * How far past the defender's torso surface the blow is driven, world units.
+   *
+   * Contact has to be unambiguous in the still: at exactly the surface the tip
+   * and the silhouette are tangent, and a tangent reads as a near miss. 50 mm
+   * of bite puts the point inside the outline, where the flash and the pigment
+   * burst have something to come out of.
+   */
+  contactBite: 0.05,
   /** How far the defender is driven back, in world units. */
   knockback: 0.42,
 } as const;
@@ -418,21 +473,61 @@ export const RANGED = {
 // ===========================================================================
 
 export const WALK = {
-  /** Seconds per world unit travelled, per gait. */
-  secondsPerUnit: {
-    march: 0.62,
-    stride: 0.68,
-    canter: 0.37,
-    lumber: 0.79,
-    roll: 0.41,
-    crew: 0.86,
+  /**
+   * Fallback stride, world units per cycle, for a caller that cannot name the
+   * figure that is walking.
+   *
+   * **There is no seconds-per-unit table any more, and there must not be one.**
+   * A gait's ground speed is not a free parameter: a figure that plants its
+   * feet `stride` apart and cycles once every `cycle` seconds travels
+   * `stride / cycle` and nothing else. Authoring the two independently is what
+   * produced the defect this table replaces — 0.62 s per unit against a 0.31 m
+   * stride is 1.61 u/s, which is 5.4 cycles a second where the gait says 0.97,
+   * i.e. the 兵 crossed a square in six scurrying steps at 2.99 statures per
+   * second. The phase came from the ground (correctly — that is what keeps the
+   * foot lock exact), so the *cadence* was simply whatever the traversal speed
+   * made it.
+   *
+   * These are the strides the shipped cast actually has, measured off the rig:
+   * they exist only so `walkSeconds` has an answer when no animator is at hand.
+   * Every real call passes the animator's own `stride`, which is derived from
+   * that figure's leg — or, for a mount, from the animal's hip height — so the
+   * retarget survives.
+   */
+  referenceStride: {
+    march: 0.3075,
+    stride: 0.2980,
+    canter: 0.9428,
+    lumber: 0.8345,
+    roll: 1.9674,
+    crew: 0.2125,
   } as Record<GaitName, number>,
-  /** Acceleration and deceleration ramps, as a fraction of the move. */
-  rampIn: 0.22,
-  rampOut: 0.31,
-  /** Minimum and maximum duration of any single move, whatever the distance. */
+  /**
+   * Acceleration and deceleration ramps, as a fraction of the move.
+   *
+   * They are shorter than they were (0.22 / 0.31) because with a travel-driven
+   * gait a speed ramp is a *cadence* ramp: the stride is fixed in the ground, so
+   * a figure at 1.36× its mean speed mid-move is a figure taking 1.36× its
+   * cadence there, and the cruise is where a critic counts footfalls. Halving
+   * the ramps costs nothing legible — the trapezoid still starts and stops the
+   * piece rather than cutting it into motion — and buys back most of the gap
+   * between the mean and the peak.
+   */
+  rampIn: 0.12,
+  rampOut: 0.16,
+  /**
+   * Minimum and maximum duration of any single move, whatever the distance.
+   *
+   * The ceiling is a *cadence* decision, not a pacing one. Inside it a piece
+   * walks at its own gait's speed and its cadence is exactly the authored one;
+   * past it — an 象 crossing two squares diagonally, a 俥 running the file —
+   * the move is compressed and the figure picks the pace up, which is what
+   * anyone with a long way to go does. 3.95 s covers a 兵's square (3.90 s at a
+   * 116-per-minute quick march) with nothing to spare, so the commonest move in
+   * the game is the one that lands on its authored cadence exactly.
+   */
   minSeconds: 0.46,
-  maxSeconds: 2.9,
+  maxSeconds: 3.95,
   /**
    * How far ahead of the body the facing turns, in seconds. Hips before
    * shoulders before head: the root yaw leads, the spine follows it by
@@ -443,8 +538,13 @@ export const WALK = {
   turnHeadLag: 0.135,
   /** Yaw rate ceiling, rad/s, so a knight's turn is a turn and not a snap. */
   turnRate: 4.6,
-  /** Settle after arrival before the promise resolves. */
-  settle: 0.27,
+  /**
+   * Settle after arrival before the promise resolves. Long enough to contain
+   * both halves of the closing step — the feet come down one at a time, and a
+   * move that resolved between them would hand the next sequence a figure
+   * standing on one foot.
+   */
+  settle: 0.36,
 } as const;
 
 // ===========================================================================
@@ -591,10 +691,33 @@ export const IK = {
    * nothing to give and the hoof drags instead. The barrel dropping is what
    * buys the reach, it is what a real animal does, and it is where the vertical
    * component of a canter comes from in the first place.
+   *
+   * It is 0.055 and not 0.18 because the give is paid for by every leg, not
+   * only by the one that needed it. The barrel carries all four; a drop deep
+   * enough to rescue the worst-placed planted hoof takes the three that were
+   * fine down with it, and a hoof in swing — which the contact solver does not
+   * hold, by design — has nothing to stop it going through the board. At 0.18
+   * of hip height that was 100 mm of seat drop and the near fore hoof reached
+   * 113 mm *below* the silk mid-canter. 0.055 is 30 mm on the 馬: still the
+   * settle that keeps a stance hoof reachable, no longer a collapse. The floor
+   * clamp in `resolveQuadContacts` is the belt to this brace.
    */
-  mountGive: 0.18,
+  mountGive: 0.055,
   /** How fast that drop follows its target, per second. */
   mountGiveRate: 26,
+  /**
+   * The brace. How far a figure setting itself against an incoming blow drops
+   * its pelvis and shifts it back, in statures, at full brace.
+   *
+   * The drop is the whole mechanism: the feet are locked to the board, so
+   * lowering the root bends the knees for free and the crouch comes out of the
+   * contact solver rather than out of a pose. 2.2% of stature is 12 mm on a 兵
+   * — a *set*, not a squat.
+   */
+  braceDrop: 0.022,
+  braceBack: 0.016,
+  /** And the trunk's share of it, radians of forward lean at full brace. */
+  braceLean: 0.16,
 } as const;
 
 // ===========================================================================
@@ -604,13 +727,29 @@ export const IK = {
 export const PIGMENT = {
   /** Hard ceiling on live chips. The pool is allocated once at this size. */
   budget: 900,
-  /** Chips per unit, scaled by the unit's bounding volume. */
-  chipsBase: 46,
-  chipsPerVolume: 58,
-  chipsMax: 190,
-  /** Chip size in world units, before per-chip variation. */
-  chipSize: 0.052,
-  chipSizeJitter: 0.55,
+  /**
+   * Chips per unit, scaled by the unit's bounding volume.
+   *
+   * A 兵 throws about 200 of them. Sixty-eight was a *scatter* — the eye counted
+   * the pieces, and a body that comes apart into sixty-eight countable objects
+   * reads as a broken pot rather than as pigment leaving silk. Tripling the
+   * count and halving the chip is the same volume of mineral and a different
+   * event.
+   */
+  chipsBase: 132,
+  chipsPerVolume: 210,
+  chipsMax: 320,
+  /**
+   * Chip size in world units, before per-chip variation.
+   *
+   * 0.021 against a 0.54-unit figure is 3.9% of stature — a flake, at the scale
+   * ground mineral actually comes in. At 0.052 it was a tenth of the figure's
+   * height, which is a *tile*: the burst read as a statue shattering, and the
+   * individual chips were large enough to hold their own silhouettes on the
+   * board afterwards instead of settling into a wash.
+   */
+  chipSize: 0.021,
+  chipSizeJitter: 0.62,
   /**
    * Chip thickness, as a fraction of its own half-width. A flake of ground
    * mineral is *thin* — this is what stops the chip reading as a solid — but
@@ -704,8 +843,8 @@ export const PROJECTILE = {
    * without leaving frame, and this is the number that decides that.
    */
   arcScale: 1.0,
-  /** Chips thrown by the burst on impact. */
-  burstChips: 74,
+  /** Chips thrown by the burst on impact. Same cloud as a body's, smaller. */
+  burstChips: 168,
   burstSpeed: 3.1,
   /** Spin of the stone in flight, rad/s. */
   spin: 5.2,
@@ -715,13 +854,54 @@ export const PROJECTILE = {
 // Helpers
 // ===========================================================================
 
-/** Seconds a move of `distance` world units should take at this gait. */
-export function walkSeconds(gait: GaitName, distance: number): number {
-  const raw = WALK.secondsPerUnit[gait] * distance;
+/**
+ * Ground speed of a gait, world units per second, for a figure whose cycle
+ * covers `stride` world units.
+ *
+ * One line, and it is the whole contract between the gait plan and the
+ * choreographer: **a cycle covers a stride, and a cycle takes `cycle` seconds.**
+ * Nothing else is allowed to set how fast a piece crosses the board.
+ */
+export function gaitSpeed(gait: GaitName, stride?: number): number {
+  const s = stride && stride > 1e-4 ? stride : WALK.referenceStride[gait];
+  return s / GAIT[gait].cycle;
+}
+
+/**
+ * Mean fraction of the cruise speed a whole move averages, given its ramps.
+ *
+ * `travelEase` is a trapezoid: the piece accelerates over `rampIn`, holds, and
+ * decelerates over `rampOut`, and the area under that profile is
+ * `1 − (rampIn + rampOut)/2` of a constant-speed move. A move sized on its mean
+ * speed therefore *cruises* faster than the gait says — 1.36× with the old
+ * ramps — and since the phase comes from the ground, cruising fast is cadence
+ * fast. Sizing the move on the cruise instead puts the authored cadence in the
+ * middle of the move, where it is seen and where it is measured.
+ */
+export const RAMP_MEAN = 1 - (WALK.rampIn + WALK.rampOut) / 2;
+
+/**
+ * Seconds a move of `distance` world units should take at this gait.
+ *
+ * Pass the walking figure's own `stride` — `Animator.stride` — whenever there
+ * is one. Without it the gait's reference stride is used, which is right for
+ * the cast that shipped and wrong for anything reproportioned.
+ */
+export function walkSeconds(gait: GaitName, distance: number, stride?: number): number {
+  const raw = distance / (gaitSpeed(gait, stride) * RAMP_MEAN);
   return clamp(raw, WALK.minSeconds, WALK.maxSeconds);
 }
 
-/** Total length of the melee capture, including the frozen-time hold. */
+/**
+ * Length of the melee capture *after* the attacker has arrived, including the
+ * frozen-time hold.
+ *
+ * A floor, not a total: beat 1 is a real walk at the attacker's own gait, so a
+ * 兵 taking the man in front of it and a 俥 charging four squares to do the same
+ * thing are not the same length of exchange, and neither of them is this number.
+ * `Choreography.capture` adds the walk-in on top; `Sequence.duration` is the
+ * only authority on how long one particular exchange runs.
+ */
 export const CAPTURE_TOTAL = CAPTURE.settleEnd + CAPTURE_HOLD;
 
 /** Total length of the ranged capture. */

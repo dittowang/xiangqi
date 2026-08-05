@@ -68,7 +68,18 @@ import {
   type IkContext,
   type TwoBoneChain,
 } from './ik.ts';
-import { CANTER, CLIP, FADE, GAIT, IK, LUMBER, ROLL, WALK, type GaitName } from './timing.ts';
+import {
+  CANTER,
+  CAPTURE,
+  CLIP,
+  FADE,
+  GAIT,
+  IK,
+  LUMBER,
+  ROLL,
+  WALK,
+  type GaitName,
+} from './timing.ts';
 
 // ===========================================================================
 // Module-level scratch. Nothing in `update()` allocates.
@@ -84,6 +95,7 @@ const _q3 = new THREE.Quaternion();
 const _q4 = new THREE.Quaternion();
 const _qIdentity = new THREE.Quaternion();
 const _up = new THREE.Vector3(0, 1, 0);
+const _right = new THREE.Vector3(1, 0, 0);
 const _root3 = new Float64Array(3);
 const _rootAcc = new Float64Array(3);
 const _trunk = { curl: 0, sweep: 0 };
@@ -164,8 +176,14 @@ interface LegRig {
   lateral: number;
 }
 
-/** How long a closing step takes when a walk stops mid-swing. */
-const CLOSE_STEP_SECONDS = 0.21;
+/**
+ * How long *one* foot's closing step takes when a walk stops mid-swing. The two
+ * feet close in series, so a full close is twice this — which is why it is 0.17
+ * and not the 0.21 it was when they both went at once: 0.34 s of closing fits
+ * inside `WALK.settle` with room to spare, and a move never resolves standing
+ * on one foot.
+ */
+const CLOSE_STEP_SECONDS = 0.17;
 
 /**
  * Contact authority for one hoof, given its progress `p` through the cycle since
@@ -304,10 +322,18 @@ export class Animator implements UnitAnimator {
   private phaseOffset = 0;
   private gaitSource: 'travel' | 'time' = 'travel';
 
+  /**
+   * How far in front of its own root this figure's blow lands, in world units.
+   * Measured once, off the strike clip; see `measureStrike()`.
+   */
+  private reach = 0;
+
   /** Contact-solver correction: persists between frames and decays. */
   private readonly rootCorrection = new THREE.Vector3();
   /** Deck follow for a crew standing on a vehicle. Absolute, rewritten every frame. */
   private readonly deckOffset = new THREE.Vector3();
+  /** Brace, 0..1: how hard this figure is setting itself against what is coming. */
+  private brace = 0;
   /** The mount bone the seated legs are held against, and its bind position. */
   private mountAnchor: THREE.Object3D | null = null;
   private readonly mountAnchorBind = new THREE.Vector3();
@@ -425,6 +451,7 @@ export class Animator implements UnitAnimator {
       if (r > this.wheelRadius) this.wheelRadius = r;
     }
     this.deriveMountStride();
+    this.measureStrike();
 
     // Deterministic phase offsets, drawn from the unit's variant rather than a
     // clock, so five soldiers in a rank are out of step with each other and are
@@ -471,6 +498,7 @@ export class Animator implements UnitAnimator {
     this.gaitPhase = this.phaseOffset;
     this.wheelAngle = 0;
     this.attackProgress = 0;
+    this.brace = 0;
     this.frozen = false;
     this.handTarget.L = null;
     this.handTarget.R = null;
@@ -510,6 +538,110 @@ export class Animator implements UnitAnimator {
     this.unit.root.updateMatrixWorld(true);
     updateIkContext(this.ikCtx, this.unit.root);
     this.unit.skeleton.update();
+  }
+
+  // -------------------------------------------------------------------------
+  // Reach
+  // -------------------------------------------------------------------------
+
+  /**
+   * How far in front of its own root this figure's blow actually lands, in
+   * world units, at the instant the exchange calls contact.
+   *
+   * The choreographer needs this to know where to stop the attacker, and there
+   * is no single answer for the cast: a 兵's short spear, a 士's sword, a 象's
+   * howdah goad and a 將 striking at arm's length all land in different places,
+   * and a 俥 lands with its own axle. One number per figure, measured rather
+   * than guessed, is what lets one approach rule serve all of them.
+   */
+  get strikeReach(): number {
+    return this.reach;
+  }
+
+  /**
+   * Measure the strike, once, at construction.
+   *
+   * The clip is sampled at exactly the offset the capture calls contact and
+   * written onto the rig; the striking points are read in the root's own frame;
+   * the rig is put back at bind. Doing it here rather than at contact time is
+   * what makes it free — the choreographer has to size its approach *before*
+   * the attacker starts walking, so a number measured during the strike would
+   * arrive a second too late to use.
+   *
+   * The candidates are the far end of the weapon and the two fists. A polearm
+   * publishes `haftTip` and that is nearly always the answer; a sweeping blade
+   * has its tip somewhere behind the shoulder at the contact frame, and for
+   * that figure the fist is the honest reach. Taking the maximum picks whichever
+   * is true for this unit without a table of special cases.
+   */
+  private measureStrike(): void {
+    const c = this.clips.get(clipKeyFor(this.key, 'attackStrike'));
+    if (!c) return;
+    const root = this.unit.root;
+    this.applyClipPose(c, clamp(CAPTURE.contact - CAPTURE.strikeStart, 0, c.duration));
+    root.updateMatrixWorld(true);
+
+    // Forward is the root's own −Z, in world units. Projecting onto it rather
+    // than reading a local coordinate keeps the figure's scale in the answer
+    // and its facing out of it.
+    _v3.set(0, 0, -1).applyQuaternion(root.getWorldQuaternion(_q));
+    _v4.setFromMatrixPosition(root.matrixWorld);
+    let reach = 0;
+    const consider = (o: THREE.Object3D | null | undefined): void => {
+      if (!o) return;
+      _v2.setFromMatrixPosition(o.matrixWorld).sub(_v4);
+      const forward = _v2.dot(_v3);
+      if (forward > reach) reach = forward;
+    };
+    consider(this.unit.attach.haftTip);
+    consider(this.unit.bones.handR);
+    consider(this.unit.bones.handL);
+    this.reach = reach;
+
+    // Back to bind. The clips author absolute local rotations, so bind is
+    // identity everywhere — the same fact `reset()` relies on.
+    for (const name of BONE_ORDER) this.unit.bones[name].quaternion.identity();
+    this.unit.bones.root.position.copy(this.bindRoot);
+    root.updateMatrixWorld(true);
+    updateIkContext(this.ikCtx, root);
+    // The skinning matrices as well as the bones: a figure built between two
+    // frames must not be drawn mid-strike because it was measured there.
+    this.unit.skeleton.update();
+  }
+
+  /**
+   * Write one clip's pose onto the rig at time `t` — rotations and the root
+   * offset both, retargeted by stature exactly as `retarget()` does it.
+   *
+   * Used once per figure at construction and never in a frame path, which is
+   * why it may walk the track list and interpolate by hand instead of paying
+   * for a mixer, an action and a crossfade to sample a single pose.
+   */
+  private applyClipPose(c: NormalisedClip, t: number): void {
+    for (const track of c.clip.tracks) {
+      const dot = track.name.indexOf('.');
+      const bone = this.unit.bones[track.name.slice(0, dot) as BoneName];
+      if (!bone) continue;
+      const times = track.times;
+      const values = track.values;
+      const n = times.length;
+      if (n === 0) continue;
+      let i = 0;
+      while (i < n - 2 && times[i + 1] <= t) i++;
+      const span = times[i + 1] - times[i];
+      const u = span > 1e-9 ? clamp((t - times[i]) / span, 0, 1) : 0;
+      const a = i * 4;
+      const b = a + 4;
+      _q3.set(values[a], values[a + 1], values[a + 2], values[a + 3]);
+      _q4.set(values[b], values[b + 1], values[b + 2], values[b + 3]);
+      bone.quaternion.copy(_q3).slerp(_q4, u);
+    }
+    sampleRoot(c.root, t, _root3);
+    this.unit.bones.root.position.set(
+      this.bindRoot.x + _root3[0] * this.height,
+      this.bindRoot.y + _root3[1] * this.height,
+      this.bindRoot.z + _root3[2] * this.height,
+    );
   }
 
   // -------------------------------------------------------------------------
@@ -802,6 +934,80 @@ export class Animator implements UnitAnimator {
   }
 
   /**
+   * How hard the contact solver is currently pulling the skeleton root off the
+   * place the scene put it, in world units.
+   *
+   * Zero is the normal state: the feet are within reach of the hips and nothing
+   * has to give. It rises for a frame or two at the extension of a stride,
+   * which is the dip a walk is supposed to have. It rises and *stays* up only
+   * when something is moving the figure while its feet are locked — which is
+   * the difference between a walk and a bug, and is why it is exposed rather
+   * than inferred from the pose.
+   */
+  get contactPull(): number {
+    return this.rootCorrection.length();
+  }
+
+  /**
+   * **This figure has been moved without walking there.** Drop every contact
+   * state that was expressed in world space and re-prime it from the new pose.
+   *
+   * A foot lock is a world position, deliberately: while a foot is in stance
+   * its world position does not change, and the legs and the root are whatever
+   * they have to be to satisfy that. The one input that can falsify a lock is
+   * therefore the figure being *teleported* — and nothing was telling the
+   * solver when that happened.
+   *
+   * What it looked like: `Sequence.complete()` runs `formation()`'s `finish()`,
+   * which snaps thirty-two figures from wherever the march had them onto their
+   * squares. The locks kept pointing off-board, `solveHips()` did exactly what
+   * it is written to do — pulled the root toward plants the legs could not
+   * reach — and twenty-two of the thirty-two drawn figures were dragged 4.3 to
+   * 4.8 world units off the board, some of them below it, streaming back in
+   * over the next quarter second as the correction decayed. That is the path a
+   * player's skip keypress takes and the path `__XQ.pause()` takes; a capture
+   * staged inside that window re-primed the defender's locks at the stranded
+   * position and the whole exchange then played out on an empty square.
+   *
+   * So: every instant placement — a skip, a takeback, a position load, a
+   * `setPosition`, a harness `forceMove` — has to say so, here.
+   *
+   * The root correction goes with the locks. It is the accumulated pull toward
+   * plants that no longer exist, it decays over about a quarter second, and
+   * that decay is exactly the visible streaming-back. It is subtracted off the
+   * skeleton root as well as zeroed, so the figure is right on the frame the
+   * teleport happens rather than on the frame after it.
+   */
+  teleported(): void {
+    this.unit.bones.root.position.sub(this.rootCorrection);
+    this.rootCorrection.set(0, 0, 0);
+    this.mountGive = 0;
+    this.unit.root.updateMatrixWorld(true);
+    updateIkContext(this.ikCtx, this.unit.root);
+
+    for (const side of SIDES) {
+      const lock = this.legs[side].lock;
+      lock.locked = false;
+      lock.weight = 0;
+      lock.closing = 1;
+      lock.heelOff = 0;
+      lock.primed = false;
+      // Re-primed here rather than left for the next frame so that anything
+      // reading `footState()` in between — the contact overlay, the verifier —
+      // sees the new plants and not the stale ones.
+      this.primeFoot(this.legs[side]);
+    }
+    for (let i = 0; i < this.quadLegs.length; i++) {
+      const leg = this.quadLegs[i];
+      leg.lock.locked = false;
+      leg.lock.weight = 0;
+      leg.lock.primed = false;
+      leg.lock.heelOff = 0;
+    }
+    this.unit.skeleton.update();
+  }
+
+  /**
    * Choose the directional hit variant from a world-space impulse.
    *
    * `worldDir` is the direction the blow **travels** — attacker toward defender,
@@ -870,6 +1076,24 @@ export class Animator implements UnitAnimator {
     }
     if (!this.lookTarget) this.lookTarget = new THREE.Vector3();
     this.lookTarget.copy(target);
+  }
+
+  /**
+   * How hard this figure is bracing, 0..1.
+   *
+   * A man being closed on does not stand still. He sets his weight: the pelvis
+   * settles and drifts back over the rear foot, and because the feet are locked
+   * to the board, the knees take the drop — the crouch is a *consequence* of the
+   * contact solver rather than a pose bolted on top of it, which is why one
+   * number is enough to drive it.
+   *
+   * It is deliberately small. The defender measured constant to the millimetre
+   * for the whole of the attacker's approach, which is the tell that nothing on
+   * that side of the exchange is alive; 2% of stature of settle is nowhere near
+   * a crouch and is the difference between a man and a bollard.
+   */
+  setBrace(amount: number): void {
+    this.brace = clamp(amount, 0, 1);
   }
 
   /** Aim the elephant's trunk at a world point. Ignored by everything else. */
@@ -1018,10 +1242,15 @@ export class Animator implements UnitAnimator {
       _rootAcc[2] *= inv;
     }
     const b = this.unit.bones;
+    // The brace rides on the same channel as the authored root: down into the
+    // legs and back over the rear foot, in statures, so it retargets like
+    // everything else here.
+    const braceY = -IK.braceDrop * this.brace * this.height;
+    const braceZ = IK.braceBack * this.brace * this.height;
     b.root.position.set(
       this.bindRoot.x + _rootAcc[0] * this.height + this.rootCorrection.x + this.deckOffset.x,
-      this.bindRoot.y + _rootAcc[1] * this.height + this.rootCorrection.y + this.deckOffset.y,
-      this.bindRoot.z + _rootAcc[2] * this.height + this.rootCorrection.z + this.deckOffset.z,
+      this.bindRoot.y + _rootAcc[1] * this.height + this.rootCorrection.y + this.deckOffset.y + braceY,
+      this.bindRoot.z + _rootAcc[2] * this.height + this.rootCorrection.z + this.deckOffset.z + braceZ,
     );
     // The correction is re-derived from the plants every frame; decaying what
     // is left keeps a stale dip from persisting after the feet let go.
@@ -1046,6 +1275,24 @@ export class Animator implements UnitAnimator {
     if (Math.abs(headLag) > 1e-4) {
       _q.setFromAxisAngle(_up, headLag);
       b.head.quaternion.multiply(_q);
+    }
+
+    // The trunk half of the brace: shoulders forward over the settled hips.
+    //
+    // It is a rotation and not more root offset on purpose. The root's height is
+    // contested — the contact solver owns it, and a figure whose plants are
+    // already at the edge of its reach has the correction take back exactly what
+    // a settle puts in — but nothing else writes these three joints after the
+    // mixer, so this part of the brace always lands. A man setting himself is
+    // doing both anyway: the hips go down and the chest comes over them.
+    if (this.brace > 1e-3 && !this.plan.seated) {
+      const k = this.brace;
+      b.spine01.quaternion.multiply(_q.setFromAxisAngle(_right, -IK.braceLean * 0.55 * k));
+      b.spine02.quaternion.multiply(_q.setFromAxisAngle(_right, -IK.braceLean * 0.45 * k));
+      // The head does not go down with the chest — it stays on what it is
+      // watching, which is what makes the shoulders read as a brace rather than
+      // as a flinch.
+      b.neck.quaternion.multiply(_q.setFromAxisAngle(_right, IK.braceLean * 0.62 * k));
     }
 
     this.driveMount(dt);
@@ -1358,17 +1605,48 @@ export class Animator implements UnitAnimator {
    * is a weight shift rather than a step, and the arc it rides is short enough
    * that it looks like one.
    */
+  /*
+   * **One at a time.** Both feet need to close, and closing them together is a
+   * hop: for 0.25 s at the end of every walk both ankles rose 14 mm and slid
+   * inward at once, which is a standing figure with nothing touching the board.
+   * The foot with the furthest to travel goes first — it is the one the walk
+   * left behind, and it is the one a body puts down first — and the other keeps
+   * its plant and carries the weight until that one has landed. Its own close
+   * then starts from a standstill, which is why it reads as a weight shift
+   * rather than a second step.
+   */
   private beginClosingStep(): void {
+    let firstSide: 'L' | 'R' = 'L';
+    let worst = -1;
+    for (const side of SIDES) {
+      const lock = this.legs[side].lock;
+      if (!lock.primed) continue;
+      // The swinging foot always goes first: it is already in the air, and
+      // making it wait would leave it hanging where the swing stopped.
+      const d = lock.world.distanceTo(this.neutralStance(side, _v4));
+      const rank = lock.locked ? d : d + 10;
+      if (rank > worst) {
+        worst = rank;
+        firstSide = side;
+      }
+    }
     for (const side of SIDES) {
       const leg = this.legs[side];
       const lock = leg.lock;
       if (!lock.primed) continue;
-      // It is moving now, so it does not own its world position any more; the
-      // close re-plants it at the end.
-      lock.locked = false;
-      lock.from.copy(lock.world);
-      this.neutralStance(side, lock.to);
-      lock.closing = 0;
+      if (side === firstSide) {
+        // It is moving now, so it does not own its world position any more; the
+        // close re-plants it at the end.
+        lock.locked = false;
+        lock.from.copy(lock.world);
+        this.neutralStance(side, lock.to);
+        lock.closing = 0;
+      } else {
+        // Waiting its turn. It keeps its plant, its lock and the whole weight
+        // until the other foot is down; `updateFoot` starts its step when this
+        // counter reaches zero.
+        lock.closing = -1;
+      }
     }
   }
 
@@ -1484,23 +1762,33 @@ export class Animator implements UnitAnimator {
    */
   private updateFoot(leg: LegRig, side: 'L' | 'R', w: number, moving: boolean, dt: number): void {
     const lock = leg.lock;
-    if (!lock.primed) {
-      // Seed from forward kinematics. Until this has run the lock holds the
-      // world origin, and solving a leg toward the world origin tears the
-      // figure apart — so nothing may read a lock before it is primed.
-      this.worldFootPosition(leg, lock.world);
-      lock.world.y = this.groundY(lock.world.x, lock.world.z) + this.ankleWorldHeight();
-      lock.from.copy(lock.world);
-      lock.plant.copy(lock.world);
-      this.toeOf(lock.world, lock.toe);
-      this.predictPlant(leg, lock.to);
-      lock.primed = true;
-    }
+    if (!lock.primed) this.primeFoot(leg);
 
     // A closing step: the figure stopped mid-swing, so the foot is brought down
     // into its own standing stance instead of being abandoned in the air.
     if (lock.closing < 1) {
+      const wasWaiting = lock.closing < 0;
       lock.closing = Math.min(1, lock.closing + dt / CLOSE_STEP_SECONDS);
+      if (lock.closing <= 0) {
+        // Still the standing foot. It is not stepping, so it holds its plant
+        // exactly — this is the half of the closing step that keeps the figure
+        // on the board while the other foot moves. The heel it was up on when
+        // the walk stopped comes down over the same window rather than snapping
+        // flat: the toe it pivots about does not move either way, so this costs
+        // nothing at the contact point and saves an 8 mm jump at the ankle.
+        lock.locked = true;
+        lock.weight = 1;
+        lock.heelOff = Math.max(0, lock.heelOff - dt / CLOSE_STEP_SECONDS);
+        lock.plant.y = this.groundY(lock.plant.x, lock.plant.z) + this.ankleWorldHeight();
+        this.applyHeelOff(lock);
+        return;
+      }
+      if (wasWaiting) {
+        // Its turn. The other foot is down; take the step from where this one
+        // has been standing all along.
+        lock.locked = false;
+        lock.from.copy(lock.world);
+      }
       // Re-aimed every frame, not once at the start. A close that begins while
       // the body is still covering the last of its travel — which is exactly
       // when it begins, because the walk state ends at the end of the walk —
@@ -1564,7 +1852,26 @@ export class Animator implements UnitAnimator {
       const eased = u * u * (3 - 2 * u);
       lock.world.lerpVectors(lock.from, lock.to, eased);
       const ground = this.groundY(lock.world.x, lock.world.z) + this.ankleWorldHeight();
-      lock.world.y = ground + swingLift(u, this.plan.lift * this.height * this.scale);
+      // The ankle leaves the ground *from where it was*, not from the board.
+      //
+      // At toe-off the ankle is up on the toe by the whole heel rise; the swing
+      // arc used to start at board height, so the frame the lock released, the
+      // ankle target fell that far — at the fully extended end of the stride,
+      // where the leg has no slack — and the hip solve, which cannot tell a
+      // released foot from a planted one, took the pelvis down 19 mm with it in
+      // a single frame. Twice a cycle, in step with the gait: it is a duck walk,
+      // and it accounted for two thirds of a 5.9%-of-stature pelvis bob against
+      // an authored 2.1%. Carrying the release height into the swing and letting
+      // it decay makes the ankle's own path continuous through toe-off, which is
+      // what it is on a real foot.
+      const releaseLift = Math.max(
+        0,
+        lock.from.y - (this.groundY(lock.from.x, lock.from.z) + this.ankleWorldHeight()),
+      );
+      lock.world.y =
+        ground +
+        swingLift(u, this.plan.lift * this.height * this.scale) +
+        releaseLift * (1 - eased);
       // A swinging foot is solved for too, so it rides the arc instead of being
       // left wherever forward kinematics put it — and, critically, so that it
       // arrives at exactly the point the next lock will freeze. `weight` is not
@@ -1582,6 +1889,29 @@ export class Animator implements UnitAnimator {
       this.worldFootPosition(leg, _v4);
       lock.world.lerp(_v4, 0.5);
     }
+  }
+
+  /**
+   * Seed one foot's lock from forward kinematics — from where the clip has
+   * actually put the ankle this frame, projected onto the board.
+   *
+   * Until this has run the lock holds the world origin, and solving a leg
+   * toward the world origin tears the figure apart, so nothing may read a lock
+   * before it is primed. It is also the recovery path after a teleport: a lock
+   * is a *world* position, so the one thing that can invalidate it is the
+   * figure being moved without walking there.
+   */
+  private primeFoot(leg: LegRig): void {
+    const lock = leg.lock;
+    this.worldFootPosition(leg, lock.world);
+    lock.world.y = this.groundY(lock.world.x, lock.world.z) + this.ankleWorldHeight();
+    lock.from.copy(lock.world);
+    lock.plant.copy(lock.world);
+    this.toeOf(lock.world, lock.toe);
+    this.predictPlant(leg, lock.to);
+    lock.yaw = this.yaw;
+    lock.heelOff = 0;
+    lock.primed = true;
   }
 
   private worldFootPosition(leg: LegRig, out: THREE.Vector3): THREE.Vector3 {
@@ -1868,6 +2198,35 @@ export class Animator implements UnitAnimator {
       if (!leg.chain || leg.lock.weight <= 0.01) continue;
       this.hoofTarget(leg, _v);
       solveTwoBone(leg.chain, this.ikCtx, _v, leg.lock.weight);
+    }
+    this.unit.root.updateMatrixWorld(true);
+
+    // --- 4. the board is a floor --------------------------------------------
+    // No hoof below the silk, planted or swinging. Steps 1–3 hold a hoof that
+    // is *in stance*; nothing held the other three, and they hang off a barrel
+    // that both pitches (a canter is a rocking horse — that is the point) and
+    // drops to keep the stance hoof reachable. Those two together put the near
+    // fore 113 mm under the board at the top of a 馬's move, with the animal
+    // nose-down and its head at board level, while the hoof that had just
+    // landed was still blending its lock in and could not object.
+    //
+    // The clamp is a floor and nothing more: it never pulls a hoof *down*, it
+    // never moves one that is already clear, and it leaves x and z exactly
+    // where the drive curve and the lock put them — so a stance hoof it does
+    // touch is corrected straight up onto its own plant rather than being
+    // dragged off it.
+    for (let i = 0; i < this.quadLegs.length; i++) {
+      const leg = this.quadLegs[i];
+      if (!leg.chain) continue;
+      _v4.setFromMatrixPosition(leg.contactNode.matrixWorld);
+      const floor = this.hoofY(leg, _v4);
+      if (_v4.y >= floor - 1e-9) continue;
+      _v4.y = floor;
+      toRig(this.ikCtx, _v4, _v);
+      rigPosition(this.ikCtx, leg.chain.tip, _v2);
+      rigPosition(this.ikCtx, leg.contactNode, _v3);
+      _v.add(_v2).sub(_v3);
+      solveTwoBone(leg.chain, this.ikCtx, _v, 1);
     }
   }
 
