@@ -78,18 +78,54 @@ const FILL_ELEVATION_SCALE = 0.30;
  * the same time cos(49°) = 0.66 leaves the vertical surfaces — most of a
  * standing figure — sweeping only [0.03, 0.79], piled at both ends.
  *
- * Bringing the key down to 40° pulls them apart (top 0.779, front 0.854) and
- * lets the verticals sweep the whole [0, 0.854]. Measured per material class
- * over the 32-figure board at the `default` pose, the mass of lacquer landing
- * in N·L 0.16–0.42 — which is exactly where band 1 has to live — goes from
- * 10.3% at 49° to 20.6% at 40°. Raising the key instead makes it worse (7.7% at
- * 66°), because every upward-facing plane then piles into the top band.
+ * BUT THE DOMINANT TERM IS NOT N·L AT ALL — IT IS CAST SHADOW, AND ONLY THE
+ * KEY'S ELEVATION MOVES IT.
  *
- * So the ladder is remapped, affinely, onto a lower and shallower range. Affine
- * matters: `blend()` interpolates the authored elevation, and an affine remap
- * commutes with a lerp, so a mood cross-fade is exactly as smooth after the
- * remap as before it and still passes monotonically through every angle
- * between. Nothing cuts.
+ * The surface shader multiplies N·L by 0.12 wherever the cascade says shadow.
+ * So every shadowed fragment in the frame lands in 0.00–0.12 no matter which
+ * way it faces: cast shadow is not a tail of the distribution, it is a lump at
+ * the bottom of it that no choice of `thresholds` can spread. On a close
+ * showcase that lump is most of the figure, and the ramp above it is starved.
+ *
+ * Measured — per material class, over real frames at `setQuality('ultra')`,
+ * by re-baking the ramp atlas alpha into a positional encoding and reading the
+ * `rampBands` framebuffer back — the share of a cannon's 拷漆 lacquer sitting in
+ * that lump, against the key's elevation:
+ *
+ *      key elevation      57°     49°     40°     35°     31.5°
+ *      lacquer in band 0  99%     99%     83%     64%     53%
+ *      lacquer in band 3   1%      1%      0%      6%      9%
+ *
+ * That is the whole story of the four-band ramp behaving like a two-band one,
+ * and it runs monotonically the other way from a photographer's instinct: the
+ * HIGHER the key, the more of the cast is inside its own cast shadow as seen
+ * from a portrait camera, and the more of the ramp is unreachable. Over the
+ * same sweep the best band occupancy ANY cut set can extract from lacquer —
+ * exhaustive search over 24 measured quantiles, worst case across four frames —
+ * goes 0.00 (57°), 0.03 (49°), 0.34 (40°), 0.54 (35°), 0.82 (31.5°), where 1.0
+ * is the acceptance bar. Gold and iron are flat to mildly improving over the
+ * same range, and nothing regresses.
+ *
+ * So the ladder is remapped, affinely, onto a lower range. Affine matters:
+ * `blend()` interpolates the authored elevation, and an affine remap commutes
+ * with a lerp, so a mood cross-fade is exactly as smooth after the remap as
+ * before it and still passes monotonically through every angle between.
+ * Nothing cuts.
+ *
+ * WHY THE LOW END GOES BACK TO THE AUTHORED 0.34
+ * The endgame's authored 19.5° rake is restored rather than lifted, for a
+ * measured reason rather than a deferential one. Every upward-facing plane in
+ * the frame — the deck, the table, the piece bases — is a SPIKE at
+ * 0.62·sin(e) + 0.38, not a spread, and the board's three classes are almost
+ * entirely spike. Their upper cut has to sit in the gap between the close
+ * mood's spike and the endgame's, clear of both by more than the tooth can
+ * smear, or the ground mottles instead of holding a value. Lowering `high` to
+ * 0.55 alone would close that gap to 0.055 and leave 0.027 of clearance, which
+ * is inside the tooth. Taking `low` back to the authored 0.34 opens it to
+ * 0.078: spikes at 0.704 (wide) / 0.665 (close) / 0.587 (endgame), a cut at
+ * 0.62, clearance 0.045 and 0.033. The shipped build's own clearances were
+ * 0.073 and 0.039, so the ground is no closer to mottling than it already was,
+ * and the endgame still steps down exactly one rung as the light falls.
  *
  * The authored ORDER and spacing are preserved, which is what keeps the three
  * moods distinct: wide stays the highest and most frontal key, endgame stays
@@ -99,9 +135,15 @@ const FILL_ELEVATION_SCALE = 0.30;
  *
  * These numbers want to live in `MOODS`; `core/palette.ts` is frozen, so they
  * live here instead and the exact edit is written up in the task report.
+ *
+ * THE CUTS IN `render/ramps.ts` ARE QUANTILES OF THE DISTRIBUTION THIS RANGE
+ * PRODUCES. Neither works without the other — measured, the re-cut alone at the
+ * old elevation leaves a cannon's lacquer at 83% band 0, and this elevation
+ * alone with the old cuts leaves a chariot's lacquer at 10% band 1. Move one
+ * and re-measure both.
  */
 export const AUTHORED_ELEVATION = { low: 0.34, high: 0.86 } as const;
-export const GONGBI_ELEVATION = { low: 0.4, high: 0.7 } as const;
+export const GONGBI_ELEVATION = { low: 0.34, high: 0.55 } as const;
 
 /** The authored key elevation, remapped onto the gongbi ladder. Affine. */
 export function gongbiElevation(authored: number): number {

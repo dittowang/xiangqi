@@ -90,11 +90,19 @@ const WASH_SATURATION = -0.12;
  * HOW THEY WERE ARRIVED AT
  * The atlas alpha channel is the band index, and it is ours at runtime, so it
  * can be re-baked into a measurement encoding: one pass per material class to
- * mask the frame by class, then a pass per texel triple to bin N·L. 43 passes
- * recover the exact cumulative distribution of N·L, per class, at every one of
- * this row's 128 texels, over a real frame at `setQuality('ultra')`. Every
- * number below is a quantile of that distribution over the full 32-figure board
- * at the `default` pose, not an intuition.
+ * mask the frame by class, then a pass per texel triple to bin N·L. Fourteen
+ * passes per frame recover the distribution of N·L, per class, against 24
+ * quantile boundaries, over real frames at `setQuality('ultra')`. Every number
+ * below is a quantile of that distribution, not an intuition.
+ *
+ * FOUR frames, not one: the full board at the `default` pose, and the cannon,
+ * chariot and general showcases at `portrait`. One frame is not enough and the
+ * reason is not statistical. The board frame is 90% ground — silk, timber and
+ * stone — so a cut tuned on it alone is tuned on a flat plane; the showcases
+ * are where a figure's classes have the pixels for the number to mean anything
+ * (a cannon contributes 298 lacquer pixels to the board frame's 1875, but a
+ * chariot contributes 8823). Each cut below is the value that maximises the
+ * WORST of the four frames, searched exhaustively over the 24 boundaries.
  *
  * WHAT THE MEASUREMENT SAID, AND WHY THE OLD CUTS COULD NOT WORK
  *
@@ -114,13 +122,15 @@ const WASH_SATURATION = -0.12;
  *    SINGLE texel. A cut placed on the spike does not separate two things, it
  *    dithers one thing along the tooth, so no cut sits on one.
  *
- *    The spike also MOVES: the rig's mood ladder walks it from 0.779 (wide)
- *    through 0.728 (close) to 0.621 (endgame). The board's three classes —
- *    silk, timber, stone — are almost entirely spike, so where their upper cut
- *    sits relative to that walk decides what the ground does across a match.
- *    It is placed deliberately BETWEEN the close and endgame positions, so the
- *    deck, the table and the piece bases hold one value through the opening and
- *    the middlegame and step down exactly one rung as the endgame light falls.
+ *    The spike also MOVES: the rig's mood ladder walks it from 0.704 (wide)
+ *    through 0.665 (close) to 0.587 (endgame). Measured, not derived — the
+ *    deck's silk sits 30%/53% either side of 0.70 at the wide mood, which is
+ *    the formula's 0.704 with the tooth smeared across it. The board's three
+ *    classes are almost entirely spike, so where their upper cut sits relative
+ *    to that walk decides what the ground does across a match. It is placed
+ *    deliberately BETWEEN the close and endgame positions, so the deck, the
+ *    table and the piece bases hold one value through the opening and the
+ *    middlegame and step down exactly one rung as the endgame light falls.
  *    That step is what makes the endgame read cold rather than merely bluer, it
  *    is what the build already did before this re-cut, and moving the cut clear
  *    of the walk to avoid it was measurably worse: the endgame board came out
@@ -139,37 +149,63 @@ const WASH_SATURATION = -0.12;
  *    the mass down one rung, into the body colour, and leave band 2 for the
  *    planes that genuinely turn toward the key.
  *
+ * 4. WHAT NO CUT SET CAN DO, AND THE ONE FRAME THAT PROVES IT.
+ *    A cannon at `portrait` shows 298 lacquer pixels — 0.08% of the frame —
+ *    and 53% of them are inside the cannon's own cast shadow, which the shader
+ *    crushes into 0.00–0.12 regardless of facing. What is left has almost no
+ *    mass between 0.74 and 0.86, so band 2 tops out near 7% however the cuts
+ *    are placed. Switching the cascade off turns the same class into
+ *    0/20/44/37, which is the proof that the residue is shadow and not ramp.
+ *    The elevation ladder took that lump from 99% (at the authored 49°) to 53%;
+ *    getting it lower is a question for `uShadowDepth` in `render/gongbi.ts`,
+ *    which is the one term that decides how deep a shadowed passage falls and
+ *    is not ours to move. See the task report.
+ *
  * These are all valid only for the light rig in `scene/lighting.ts`. They are
  * quantiles of a distribution that the key direction produces; move the key and
  * they want re-measuring. That coupling is the whole point of P0.1 — the ramp
- * and the rig are one tuning surface, not two.
+ * and the rig are one tuning surface, not two. Measured: these cuts at the OLD
+ * elevation leave a cannon's lacquer at 83% band 0, and the old cuts at THIS
+ * elevation leave a chariot's lacquer at 10% band 1. Neither half works alone.
  */
 export const BAND_CUTS: Record<MaterialClass, number[]> = {
-  // Four-step. The top cut sits ABOVE the horizontal-plane spike at 0.779, so
-  // the 提白 accent lands on facets tilted toward the key rather than flooding
-  // every shoulder and helmet crown in the frame.
-  lacquer: [0.15, 0.7, 0.805],
-  // 泥金 keeps its razor: the top cut is the highest in the table, so only a
-  // facet nearly square to the light takes leaf.
-  gold: [0.15, 0.62, 0.93],
-  iron: [0.16, 0.69, 0.89],
+  // Four-step. The middle cut sits just ABOVE the horizontal-plane spike at
+  // 0.704 and the top one above the plane that faces the key square-on, so the
+  // 提白 accent lands on the facets that genuinely turn into the light rather
+  // than flooding every shoulder and helmet crown in the frame. Measured over
+  // the four frames, band-1/band-2/band-3 occupancy is
+  //   board   19/43/23/15    chariot 17/17/62/ 3    general 19/43/18/20
+  // and the cannon is the one frame it cannot reach — see note 4.
+  lacquer: [0.15, 0.74, 0.86],
+  // 泥金 keeps its razor, but 0.93 was past the end of the distribution: only
+  // 4-9% of any frame's gold ever got there, so the leaf never appeared. At
+  // 0.86 it is 9% on a chariot and 27% on a general, which is a top band a
+  // painter would recognise as laid rather than as an accident.
+  gold: [0.15, 0.62, 0.86],
+  iron: [0.16, 0.7, 0.86],
 
   // Three-step. Band 1 is the body colour and carries the mass.
-  cloth: [0.16, 0.72],
-  leather: [0.15, 0.7],
-  ivory: [0.16, 0.66],
-  flesh: [0.15, 0.68],
-  hair: [0.16, 0.7],
+  cloth: [0.16, 0.7],
+  // 0.78, not 0.70: a chariot's leather is 56% cast shadow and what is left
+  // is nearly all above 0.70, so the lower cut put the whole lit remainder in
+  // one band. This is the cut that takes a general's leather from 76/15/9 to
+  // 45/19/36.
+  leather: [0.15, 0.78],
+  ivory: [0.16, 0.62],
+  flesh: [0.15, 0.74],
+  hair: [0.16, 0.66],
 
   // The board's three classes: deck, table frame, piece bases. Their upper cut
-  // sits between the close mood's spike (0.728) and the endgame's (0.621) — see
+  // sits between the close mood's spike (0.665) and the endgame's (0.587) — see
   // note 2 — so the ground holds one value until the endgame and then steps
-  // down a rung. Stone's cut is the lowest of the three because 石色 carries the
-  // heaviest granulation in the build (0.065), and a cut too near the spike
-  // would break the piece bases into a mottle rather than a value.
-  silk: [0.11, 0.66],
-  timber: [0.17, 0.66],
-  stone: [0.15, 0.65],
+  // down a rung. All three take the same cut because the gap is only 0.078
+  // wide and the middle of it is the only place clear of both spikes by more
+  // than the tooth; 石色 carries the heaviest granulation in the build (0.065)
+  // and is the one with the least margin, which is the constraint that fixes
+  // the value rather than each class choosing its own.
+  silk: [0.11, 0.62],
+  timber: [0.17, 0.62],
+  stone: [0.15, 0.62],
 };
 
 /**
