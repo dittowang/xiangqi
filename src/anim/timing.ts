@@ -611,6 +611,32 @@ export const PIGMENT = {
   /** Chip size in world units, before per-chip variation. */
   chipSize: 0.052,
   chipSizeJitter: 0.55,
+  /**
+   * Chip thickness, as a fraction of its own half-width. A flake of ground
+   * mineral is *thin* — this is what stops the chip reading as a solid — but
+   * not infinitely thin: a zero-thickness quad vanishes edge-on mid-tumble and
+   * z-fights the silk once it is lying on it. Six or seven per cent of the
+   * chip's width is the width of a fingernail paring at this scale.
+   */
+  chipThickness: 0.13,
+  /**
+   * Depth of the fold along the chip's long diagonal, as a fraction of its
+   * half-width. The fold is a *crease* — a straight ridge across a flat flake,
+   * each of its two facets lying about eight degrees off the other's plane —
+   * and it is what gives a tumbling
+   * chip a hard value break instead of a smooth gradient. It is emphatically
+   * not a lift of the centre: doing that to a fan of triangles builds a cone,
+   * and a field of cones standing point-up on the board reads as caltrops.
+   */
+  chipFold: 0.15,
+  /**
+   * How far a chip lying at rest may tip out of the board's plane, radians,
+   * about each of the two horizontal axes. A field at exactly zero reads as a
+   * decal; four degrees is enough to break that and small enough that the chip
+   * can still be laid nearly flush against the silk rather than propped clear of
+   * it on a raised corner.
+   */
+  chipRestTilt: 0.07,
   /** Initial burst speed, world units per second. */
   speed: 1.62,
   speedJitter: 0.62,

@@ -13,9 +13,12 @@
  *
  * Four things, all of them in the integrator:
  *
- *   1. **Hard edges.** The chip is a flat irregular pentagon with a shallow fold
- *      along its long axis. The fold is what gives a tumbling chip a value break
- *      instead of a smooth gradient — flat quads read as paper.
+ *   1. **Hard edges, and flat.** The chip is a thin slab cut to an irregular
+ *      quadrilateral, creased along its long diagonal. Flat is the load-bearing
+ *      word: a chip is six per cent as thick as it is wide, it has a face and a
+ *      back, and it comes to rest *lying* on the silk rather than standing on
+ *      it. The crease is a straight ridge across that face, so a tumbling chip
+ *      shows a hard value break instead of a smooth gradient.
  *   2. **Quadratic drag.** A flake has enormous area for its mass, so it sheds
  *      its launch speed in the first fifth of a second and then *flutters*.
  *      Ballistic confetti is the giveaway that a system integrated gravity and
@@ -47,52 +50,135 @@ import { PIGMENT, PROJECTILE } from './timing.ts';
 // ===========================================================================
 
 /**
- * One chip: an irregular pentagon in XY, folded a few degrees about its long
- * axis. Four triangles. The asymmetry matters — a regular polygon tumbling in
- * air reads as a machined part, and every chip in the field would read as the
- * same chip.
+ * The chip's silhouette: an irregular quadrilateral, convex, wound
+ * counter-clockwise in XY, normalised to roughly the unit circle.
+ *
+ * No two edges are the same length and no two are parallel, because a chip is a
+ * flake broken off a painted surface and a flake is not a square. Vertices 0 and
+ * 2 are the ends of the long diagonal — the fold runs between them — and
+ * vertices 1 and 3 are the flanks that drop away from it.
+ */
+const CHIP_OUTLINE: readonly (readonly [number, number])[] = [
+  [0.1, 1.0],
+  [-0.92, -0.24],
+  [0.16, -0.96],
+  [1.0, -0.02],
+];
+
+/**
+ * One chip: a flat, thin, hard-edged slab.
+ *
+ * The whole shape lives within ±`chipThickness/2 + chipFold/2` of the plane
+ * z = 0, in units where the chip is one half-width wide — that is, it is *flat*,
+ * and the instance transform scales z with x so it stays flat at every size. It
+ * has a real facing direction: local +z is the face.
+ *
+ * The two triangles of the top surface meet along the long diagonal at a shallow
+ * angle. That crease is a straight ridge, not a peak: it gives a tumbling chip
+ * one hard value break across its face, which is what a flake of mineral does in
+ * the light and what a smooth gradient never reads as. The predecessor of this
+ * function lifted the *centre* vertex of a triangle fan instead, which is not a
+ * fold at all — it is a pyramid, and it put a field of blue caltrops on the
+ * board where the pigment should have been lying.
+ *
+ * Twelve triangles: two up, two down, and a rim around the four edges so the
+ * chip has a visible thickness when the light rakes across it and does not wink
+ * out when it turns edge-on.
  */
 function chipGeometry(): THREE.BufferGeometry {
-  // Unit pentagon, deliberately off-regular, wound counter-clockwise.
-  const pts: [number, number][] = [
-    [0.0, 1.0],
-    [0.92, 0.24],
-    [0.58, -0.86],
-    [-0.66, -0.92],
-    [-1.0, 0.14],
-  ];
-  const fold = 0.16; // z lift at the rim, giving the chip a spine
+  const t = PIGMENT.chipThickness * 0.5; // half the slab's thickness
+  const f = PIGMENT.chipFold * 0.5; // the ridge is +f, the flanks −f
+  const n = CHIP_OUTLINE.length;
+
   const verts: number[] = [];
   const norms: number[] = [];
   const cols: number[] = [];
-  const cx = 0;
-  const cy = 0;
-  for (let i = 0; i < pts.length; i++) {
-    const a = pts[i];
-    const b = pts[(i + 1) % pts.length];
-    verts.push(cx, cy, fold, a[0], a[1], 0, b[0], b[1], 0);
-    // Faceted: one normal per triangle, computed from its own plane.
-    const ux = a[0] - cx;
-    const uy = a[1] - cy;
-    const uz = -fold;
-    const vx = b[0] - cx;
-    const vy = b[1] - cy;
-    const vz = -fold;
-    let nx = uy * vz - uz * vy;
-    let ny = uz * vx - ux * vz;
-    let nz = ux * vy - uy * vx;
+
+  /** Mid-surface height of corner `i`: on the ridge, or down on a flank. */
+  const mid = (i: number): number => (i % 2 === 0 ? f : -f);
+
+  /**
+   * Push one triangle, with the plane's own normal on all three vertices and a
+   * flat value multiplier. Faceted by construction: no vertex is ever shared
+   * between two facets, so no normal is ever averaged across the crease.
+   */
+  const tri = (
+    ax: number, ay: number, az: number,
+    bx: number, by: number, bz: number,
+    cx: number, cy: number, cz: number,
+    value: number,
+  ): void => {
+    let nx = (by - ay) * (cz - az) - (bz - az) * (cy - ay);
+    let ny = (bz - az) * (cx - ax) - (bx - ax) * (cz - az);
+    let nz = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
     const l = Math.hypot(nx, ny, nz) || 1;
     nx /= l;
     ny /= l;
     nz /= l;
+    verts.push(ax, ay, az, bx, by, bz, cx, cy, cz);
     for (let k = 0; k < 3; k++) {
       norms.push(nx, ny, nz);
-      // White vertex colour: the per-instance colour multiplies into it, which
-      // is the only way instance colour reaches the fragment stage on every
-      // three build.
-      cols.push(1, 1, 1);
+      // The value break is baked into the vertex colour rather than left to a
+      // light. The chips are drawn with a flat unlit material — laid pigment is
+      // not a shiny surface — so a normal alone would produce no break at all,
+      // and the two facets of the fold would be one flat patch. The instance
+      // colour multiplies into this, so a chip keeps its own pigment band.
+      cols.push(value, value, value);
     }
+  };
+
+  const px = (i: number): number => CHIP_OUTLINE[i][0];
+  const py = (i: number): number => CHIP_OUTLINE[i][1];
+
+  // --- the face: two facets meeting along the 0–2 diagonal -----------------
+  const FACE_A = 1.0;
+  const FACE_B = 0.87;
+  const BACK = 0.78;
+  const RIM = 0.62;
+  tri(
+    px(0), py(0), mid(0) + t,
+    px(1), py(1), mid(1) + t,
+    px(2), py(2), mid(2) + t,
+    FACE_A,
+  );
+  tri(
+    px(0), py(0), mid(0) + t,
+    px(2), py(2), mid(2) + t,
+    px(3), py(3), mid(3) + t,
+    FACE_B,
+  );
+
+  // --- the back, the same crease, wound the other way ----------------------
+  tri(
+    px(0), py(0), mid(0) - t,
+    px(2), py(2), mid(2) - t,
+    px(1), py(1), mid(1) - t,
+    BACK,
+  );
+  tri(
+    px(0), py(0), mid(0) - t,
+    px(3), py(3), mid(3) - t,
+    px(2), py(2), mid(2) - t,
+    BACK,
+  );
+
+  // --- the rim: the broken edge, and the darkest value on the chip ---------
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    tri(
+      px(i), py(i), mid(i) + t,
+      px(i), py(i), mid(i) - t,
+      px(j), py(j), mid(j) - t,
+      RIM,
+    );
+    tri(
+      px(i), py(i), mid(i) + t,
+      px(j), py(j), mid(j) - t,
+      px(j), py(j), mid(j) + t,
+      RIM,
+    );
   }
+
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
   g.setAttribute('normal', new THREE.Float32BufferAttribute(norms, 3));
@@ -133,6 +219,7 @@ const _s = new THREE.Vector3();
 const _c = new THREE.Color();
 const _c2 = new THREE.Color();
 const _v = new THREE.Vector3();
+const _roll = new THREE.Matrix4();
 
 /** Cached palette colours, in the renderer's working colour space. */
 const COLOUR_CACHE = new Map<string, THREE.Color>();
@@ -175,6 +262,16 @@ export class PigmentField {
   private readonly quat: Float32Array;
   private readonly spin: Float32Array;
   private readonly size: Float32Array; // half-width, half-height
+  /**
+   * Per-chip roll about the chip's own face normal, applied *before* the
+   * anisotropic size scale. One geometry serves every chip, so without this a
+   * settled field is the same quadrilateral repeated; rolling the outline and
+   * then squashing it along the instance's own axes turns that one quad into a
+   * family of quads at no vertex cost. It goes here rather than in the
+   * orientation quaternion because `Matrix4.compose` applies scale first, which
+   * would make a roll baked into the quaternion no roll at all.
+   */
+  private readonly roll: Float32Array;
   private readonly col: Float32Array;
   private readonly age: Float32Array;
   private readonly restAt: Float32Array;
@@ -225,6 +322,7 @@ export class PigmentField {
     this.quat = new Float32Array(n * 4);
     this.spin = new Float32Array(n * 3);
     this.size = new Float32Array(n * 2);
+    this.roll = new Float32Array(n);
     this.col = new Float32Array(n * 3);
     this.age = new Float32Array(n);
     this.restAt = new Float32Array(n);
@@ -310,11 +408,14 @@ export class PigmentField {
       this.spin[p3 + 1] = rng.range(-1, 1) * sp;
       this.spin[p3 + 2] = rng.range(-1, 1) * sp;
 
-      // Size: chips are not all one chip.
+      // Size and silhouette: chips are not all one chip. The aspect ratio and
+      // the in-plane roll together mean no two chips in a burst are the same
+      // quadrilateral.
       const base = PIGMENT.chipSize * (1 + rng.gauss() * PIGMENT.chipSizeJitter);
       const s2 = slot * 2;
       this.size[s2] = Math.max(0.008, base);
       this.size[s2 + 1] = Math.max(0.008, base * (0.55 + rng.next() * 0.7));
+      this.roll[slot] = rng.next() * Math.PI * 2;
 
       // Colour: a weighted draw across the pigment's four bands, so a scatter
       // has the same internal value range the painted surface does.
@@ -395,6 +496,7 @@ export class PigmentField {
     for (let i = 0; i < 4; i++) this.quat[t4 + i] = this.quat[f4 + i];
     this.size[to * 2] = this.size[from * 2];
     this.size[to * 2 + 1] = this.size[from * 2 + 1];
+    this.roll[to] = this.roll[from];
     this.age[to] = this.age[from];
     this.restAt[to] = this.restAt[from];
     this.state[to] = this.state[from];
@@ -527,20 +629,55 @@ export class PigmentField {
           const rest = Math.hypot(this.vel[p3], this.vel[p3 + 1], this.vel[p3 + 2]);
           if (rest < PIGMENT.restSpeed) {
             // Settle flat: a chip at rest lies on the silk, it does not stand
-            // on edge. The residual spin becomes the angle it came to rest at,
-            // so a drift of laid chips is not a drift of aligned chips.
+            // on edge. Its face turns to the sky and it keeps a compass bearing
+            // and a degree or two of tip, both taken from the residual spin, so
+            // a drift of laid chips is not a drift of aligned chips.
+            //
+            // The bearing is a yaw about world **up**. It used to be a rotation
+            // about world Z, which is horizontal: every chip in the field was
+            // tipped up out of the board's plane by whatever its leftover
+            // angular velocity happened to be, and a good half of them stood on
+            // edge. A chip at rest is very nearly coplanar with the silk.
             this.state[i] = STATE_RESTING;
             this.restAt[i] = this.age[i];
             this.vel[p3] = 0;
             this.vel[p3 + 1] = 0;
             this.vel[p3 + 2] = 0;
-            _q.setFromAxisAngle(_v.set(1, 0, 0), -Math.PI / 2);
-            _qd.setFromAxisAngle(_v.set(0, 0, 1), this.spin[p3 + 1]);
+            // Half of them land face down, which is the honest outcome of a
+            // tumble and gives the settled field its second value. Drawn from
+            // the roll rather than from the spin, so which way up a chip lands
+            // is independent of which way it came to rest leaning.
+            const faceUp = this.roll[i] < Math.PI;
+            _q.setFromAxisAngle(_v.set(1, 0, 0), faceUp ? -Math.PI / 2 : Math.PI / 2);
+            _qd.setFromAxisAngle(_v.set(0, 1, 0), this.spin[p3 + 1] * 3.1);
+            _q.premultiply(_qd);
+            // The tip, one small angle about each horizontal axis. Folded
+            // through a sine rather than clamped: the residual spins are large
+            // compared with a four-degree tilt, so a clamp would have pinned
+            // almost every chip to the limit and left the field with four
+            // discrete attitudes instead of a spread of them.
+            const tilt = PIGMENT.chipRestTilt;
+            _qd.setFromAxisAngle(_v.set(1, 0, 0), tilt * Math.sin(this.spin[p3] * 7.3));
+            _q.premultiply(_qd);
+            _qd.setFromAxisAngle(_v.set(0, 0, 1), tilt * Math.sin(this.spin[p3 + 2] * 5.9));
             _q.premultiply(_qd);
             this.quat[q4] = _q.x;
             this.quat[q4 + 1] = _q.y;
             this.quat[q4 + 2] = _q.z;
             this.quat[q4 + 3] = _q.w;
+            // Lie *on* the silk. The collision height used while a chip is
+            // tumbling is a tumbling chip's radius; one that has stopped only
+            // needs its own half-thickness, plus enough to keep the corner the
+            // tilt raised from doing all the work of holding it up. Two-thirds
+            // of the worst corner is deliberate: the average chip is dead flush,
+            // a few stand a hair proud, and a few bed a hair into the weave —
+            // which is what a flake of pigment on silk actually does. Anything
+            // more and the whole field hovers over the board.
+            const reach = Math.max(this.size[i * 2], this.size[i * 2 + 1]);
+            this.pos[p3 + 1] =
+              (this.ground ? this.ground(this.pos[p3], this.pos[p3 + 2]) : 0) +
+              this.size[i * 2] * PIGMENT.chipThickness * 0.5 +
+              reach * Math.sin(tilt) * 0.7;
           }
         }
       }
@@ -560,8 +697,16 @@ export class PigmentField {
       _p.set(this.pos[p3], this.pos[p3 + 1], this.pos[p3 + 2]);
       _q.set(this.quat[q4], this.quat[q4 + 1], this.quat[q4 + 2], this.quat[q4 + 3]);
       const shrink = 0.35 + 0.65 * fade;
-      _s.set(this.size[i * 2] * shrink, this.size[i * 2 + 1] * shrink, 1);
+      // Z scales with the chip's *width*, not with 1: the geometry carries its
+      // thickness and its fold as fractions of a half-width, and leaving z at
+      // unit scale is what inflated a flake three millimetres thick into a
+      // spike three times its own width tall.
+      _s.set(this.size[i * 2] * shrink, this.size[i * 2 + 1] * shrink, this.size[i * 2] * shrink);
       _m.compose(_p, _q, _s);
+      // …and the in-plane roll goes on the right, so the anisotropic scale
+      // above acts on an already-rotated outline. The chip stays flat: z is the
+      // axis it turns about.
+      _m.multiply(_roll.makeRotationZ(this.roll[i]));
       this.mesh.setMatrixAt(i, _m);
       _c.setRGB(this.col[p3], this.col[p3 + 1], this.col[p3 + 2]);
       if (fade < 1) {

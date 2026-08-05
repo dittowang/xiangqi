@@ -1367,15 +1367,41 @@ export class Animator implements UnitAnimator {
       // close re-plants it at the end.
       lock.locked = false;
       lock.from.copy(lock.world);
-      // Under the hip, not ahead of it: the figure is stopping, not stepping.
-      lock.to.setFromMatrixPosition(leg.chain.a.matrixWorld);
-      const s = Math.sin(this.yaw);
-      const c = Math.cos(this.yaw);
-      lock.to.x += c * leg.lateral;
-      lock.to.z -= s * leg.lateral;
-      lock.to.y = this.groundY(lock.to.x, lock.to.z) + this.ankleWorldHeight();
+      this.neutralStance(side, lock.to);
       lock.closing = 0;
     }
+  }
+
+  /**
+   * Where this foot stands when the figure is standing still.
+   *
+   * Read off the *bind* pose and carried into world space by the root's current
+   * transform — not off the live hip, which is the distinction that decides
+   * whether a figure that has just walked ends up standing or squatting.
+   *
+   * At the instant a walk stops, the pelvis is mid-stride: rotated, swayed, and
+   * displaced fore-and-aft by very nearly the width of the figure's own stance.
+   * Aiming the closing step at `chain.a.matrixWorld` freezes all of that into
+   * the plant. The crossfade to idle then unwinds the pelvis back to neutral,
+   * the plants do not follow, and the figure is left standing with both feet
+   * behind its hips — measured on the 兵 exchange, 0.071 world units of it
+   * against a stance 0.080 wide, worth a permanent eight per cent of stature
+   * once the hip solve has dropped the pelvis to reach them. That is a second,
+   * independent cause of the same crouch the closing step was added to cure, and
+   * it is why the close appeared to do nothing.
+   *
+   * The bind stance has neither problem: it is the pose the rig was authored in,
+   * it is captured before a single clip has run, and it is the exact stance the
+   * figure will be holding once `idle` has faded up. `unit.root` carries the
+   * facing, the square and the scale, so one matrix multiply puts it in the
+   * world. Only the height comes from elsewhere — the board under the foot,
+   * because the bind pose knows nothing about the terrain it landed on.
+   */
+  private neutralStance(side: 'L' | 'R', out: THREE.Vector3): THREE.Vector3 {
+    out.copy(this.bind.get(`foot${side}` as BoneName)!);
+    out.applyMatrix4(this.unit.root.matrixWorld);
+    out.y = this.groundY(out.x, out.z) + this.ankleWorldHeight();
+    return out;
   }
 
   /**
@@ -1472,9 +1498,16 @@ export class Animator implements UnitAnimator {
     }
 
     // A closing step: the figure stopped mid-swing, so the foot is brought down
-    // under its own hip instead of being abandoned in the air.
+    // into its own standing stance instead of being abandoned in the air.
     if (lock.closing < 1) {
       lock.closing = Math.min(1, lock.closing + dt / CLOSE_STEP_SECONDS);
+      // Re-aimed every frame, not once at the start. A close that begins while
+      // the body is still covering the last of its travel — which is exactly
+      // when it begins, because the walk state ends at the end of the walk —
+      // would otherwise plant the feet short by however far the root moved
+      // after the aim was taken, and the whole point of the close is that the
+      // feet finish underneath the body rather than behind it.
+      this.neutralStance(side, lock.to);
       const u = lock.closing;
       const eased = u * u * (3 - 2 * u);
       lock.world.lerpVectors(lock.from, lock.to, eased);
