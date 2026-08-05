@@ -323,15 +323,31 @@ export function modeForPhase(phase: MatchPhase): CameraMode {
 const OTS_OFF_AXIS = 1.29;
 
 /**
- * How much of the gap the attacker has covered when the blade lands. Mirrors
- * `CAPTURE.approachFraction` in @anim/timing.ts.
+ * How much of the gap the attacker has covered when the blade lands, for a
+ * caller that does not say. **Only for a caller that does not say.**
  *
  * The camera frames the exchange as it will be AT CONTACT, not as it is on the
  * start line — for a chariot nine squares out those are entirely different
- * places. Duplicated rather than imported: the module graph runs anim → scene
- * and never the other way.
+ * places. This number used to be the framing, mirrored by hand from
+ * `CAPTURE.approachFraction` in @anim/timing.ts because the module graph runs
+ * anim → scene and never the other way.
+ *
+ * A constant in one file that mirrors a calculation in another is not a
+ * duplication *risk*, it is a duplication *certainty*: it survives exactly as
+ * long as nobody changes the calculation. The choreographer stopped using a
+ * fixed fraction — the attacker now stops at a standoff derived from its own
+ * measured strike reach, so a 兵 closes 0.73 of its gap and a 砲 closes none of
+ * it — and this constant went on framing 0.58 for all of them, which is where
+ * it was left pointing at empty board for every cannon shot.
+ *
+ * So the fraction now travels with the request that needs it, as the third
+ * argument to `pushToCapture`, and this is the fallback for the one caller that
+ * has nothing better: a harness or a debug key firing a push with two squares
+ * and no exchange behind them. It is deliberately the old whole-cast average
+ * rather than anything cleverer, because a fallback that looks derived invites
+ * the belief that it is.
  */
-const OTS_CONTACT_FRACTION = 0.58;
+const OTS_CONTACT_FRACTION_FALLBACK = 0.58;
 
 /** Half a figure's girth plus the air a frame wants around it. */
 const OTS_MARGIN = 0.55;
@@ -576,10 +592,16 @@ export class Director implements CameraDirector {
    * camera already is, which is the 180° rule; crossing it on a cut this fast
    * reads as the board flipping over.
    *
+   * `contactFraction` is how far down the gap the blow actually lands, and it
+   * comes from the choreographer because only the choreographer knows it: the
+   * attacker's standoff is derived from its own measured strike reach and the
+   * two figures' sizes. See `OTS_CONTACT_FRACTION_FALLBACK` for what happens
+   * without it, and for why this is a parameter rather than a constant.
+   *
    * Resolves when the push has *landed* — which is 93% of the way there, not
    * fully settled — so the choreographer can time the impact against it.
    */
-  pushToCapture(attackerSq: number, defenderSq: number): Promise<void> {
+  pushToCapture(attackerSq: number, defenderSq: number, contactFraction?: number): Promise<void> {
     this.resolvePush();
     this.releaseHold = 0;
 
@@ -597,9 +619,13 @@ export class Director implements CameraDirector {
     const pz = -ux;
 
     // Aim at the middle of the exchange as it stands AT CONTACT: the attacker
-    // has closed `OTS_CONTACT_FRACTION` of the gap by then, so for a long
-    // capture the event happens nowhere near the halfway line.
-    const nearEnd = sep * OTS_CONTACT_FRACTION;
+    // has closed `contactFraction` of the gap by then, so for a long capture the
+    // event happens nowhere near the halfway line — and for a 砲, which closes
+    // none of it, the exchange is the whole gap and the near end is the gun.
+    // Clamped rather than trusted: a fraction outside [0, 1] would put the near
+    // end off the attack line entirely and take `halfSpan` negative with it.
+    const frac = clamp(contactFraction ?? OTS_CONTACT_FRACTION_FALLBACK, 0, 1);
+    const nearEnd = sep * frac;
     const lookAlong = (nearEnd + sep) * 0.5;
     const lookX = ax + ux * lookAlong;
     const lookZ = az + uz * lookAlong;

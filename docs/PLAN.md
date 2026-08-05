@@ -5,6 +5,60 @@ stated there is: *someone watching a screen recording cannot tell it was made in
 a browser, and someone playing it never thinks to ask.* Everything below is
 ordered by distance from that bar, not by effort.
 
+## Resolved since this plan was written
+
+**P0.1 light rig** — done, and the diagnosis was wrong twice before it was right.
+The mid bands were not lost to faceted normals; they were lost to CAST SHADOW.
+`uShadowDepth` MULTIPLIES N·L, so every shadowed fragment lands in one lump
+regardless of facing. Lacquer now passes 3 of 4 frames, gold 2 of 2, iron 3 of 3.
+The board's own classes remain structurally unsplittable — a flat plane under one
+directional key is a delta function in N·L — and that is why whole-frame
+screenshot histograms mislead on this scene. Per-class is the only instrument.
+
+**P3.1 retina re-baseline** — done, and it invalidated a great deal of earlier
+judgement. Ink contours, the 千里江山 backdrop, band steps and silk tooth were
+all present and sub-pixel at DPR 1.
+
+**Capture determinism** — done. `__XQ.ready()` used to resolve while the 9.7s
+opening march was still running, so the harness inherited it and figures
+teleported off-board mid-capture. Two runs of one script went from 0 of 15
+byte-identical frames to 11 of 15. Both critics' first batches were contaminated
+by this; both re-shot.
+
+**P1 milestone 7** — HUD, review mode, takeback and hint are written and wired.
+
+**Both critic rounds** — run. Round two found, among much else, that the capture
+never connected (the spear tip stopped 416mm short of the chest, 42% of a square)
+and that the board's lattice did not render at all (the deck was a continuous
+sheet lying over every groove). Both fixed and measured.
+
+### A result worth keeping: cadence, not stride
+
+The march read as a scurry, and the obvious fix — lengthen the stride — is
+measurably impossible on this cast. The pelvis bob is
+`L − √(L² − (ahead·stride)²)`: quadratic in stride, inverse in leg length. These
+legs are 43% of stature, so every 20% of extra stride roughly doubles the bob.
+At 1.8 leg-lengths the bob is 7.5%, worse than the duck-walk being fixed; at 2.2
+the foot lock breaks.
+
+The number that was actually wrong was the cadence, and it was wrong because it
+was borrowed from the wrong body. 116 steps/min is the rhythm of a 1.8m
+infantryman. **Cadence scales as √(leg length)**, and this figure's leg is a
+quarter of a unit, so 176 steps/min is what a short-legged body actually keeps —
+and the gait phase comes from ground covered, so retiming the cycle changes speed
+and nothing else. Same stride, same plants, same bob. A square went 3.90s → 2.57s
+with the bob unchanged at 2.3% and foot slide still exactly 0.
+
+**The residual is the figure-to-square scale, and the number is exact.** One
+square is 1.85× a 兵's height, so it needs 6.5 steps to cross where a person
+crossing 1.85 statures takes about 4.2. Duration is linear in scale: a 兵 at
+1.0u instead of 0.54 crosses in 1.39s with every ratio unchanged. But a uniform
+1.85× takes the beast and vehicle units' along-rank reach from 0.85 to 1.57,
+which crosses into the next intersection and breaks the crowding rule outright.
+So it is a real design trade, not a switch. Note the cast is already ~20% under
+its own documented ladder — ARCHITECTURE says 0.66 soldier → 1.32 general,
+measured 0.54 → 0.99 — and restoring that alone gives 2.10s.
+
 ## Where the project actually stands
 
 Audited, not remembered:
