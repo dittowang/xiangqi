@@ -76,11 +76,24 @@ interface Mark {
 /**
  * One scheduled piece of choreography.
  *
- * `finish` is called both when the sequence ends normally and when it is
- * skipped or aborted, and it is written to be idempotent: it snaps everything
- * the sequence touched to the state it would have had at the end. That is what
- * makes `abort()` safe — a takeback can never leave a unit halfway through a
- * collapse.
+ * `finish` is called whenever the sequence stops for any reason — normal end,
+ * skip, or abort — and it is written to be idempotent: it snaps everything the
+ * sequence touched to the state it would have had at the end. That is what makes
+ * `abort()` safe — a takeback can never leave a unit halfway through a collapse.
+ *
+ * There are two ways to stop early, and the difference between them is the
+ * difference between a skip and a cancel:
+ *
+ *   `complete()` **fires** every unfired mark. It means "this sequence happened,
+ *   get me to the end of it now" — the player skipped the march-in, and the
+ *   arrivals and the drum beat are events they asked to fast-forward through,
+ *   not events they asked to delete.
+ *
+ *   `cancel()` **drops** every unfired mark. It means "this sequence did not
+ *   happen" — a takeback, a reset, a scrub to a different time. Firing them
+ *   instead detonates the whole exchange in one frame: the flash at full
+ *   strength, the camera impulse, the blade and the body-fall together, and a
+ *   pigment burst around a figure that was never struck.
  */
 class Sequence {
   time = 0;
@@ -127,6 +140,26 @@ class Sequence {
     }
     this.time = this.duration;
     if (this.tick) this.tick(this.duration, 0);
+    this.finish();
+    this.resolve();
+  }
+
+  /**
+   * Stop without firing anything that has not already fired.
+   *
+   * The marks are stamped `fired` rather than left alone so that a sequence
+   * which somehow survives in another list can never fire them later, and
+   * `finish()` still runs: cancelling an exchange must still unfreeze the
+   * bodies, drop the look targets and put the attacker on its square. The tick
+   * is deliberately *not* run — `finish()` is the authority on the end state,
+   * and a tick evaluated at `duration` would re-derive a position for a
+   * sequence that is being thrown away.
+   */
+  cancel(): void {
+    if (this.done) return;
+    this.done = true;
+    for (const m of this.marks) m.fired = true;
+    this.time = this.duration;
     this.finish();
     this.resolve();
   }
@@ -183,6 +216,8 @@ export class Choreography implements Choreographer {
   private readonly running: Sequence[] = [];
   /** Set while a sequence is being torn down, so `finish` cannot recurse. */
   private aborting = false;
+  /** Figures already reported as having no animator. Complain once each. */
+  private readonly unanimated = new WeakSet<THREE.Object3D>();
 
   constructor(opts: ChoreographyOptions) {
     this.camera = opts.camera;
@@ -219,14 +254,25 @@ export class Choreography implements Choreographer {
     this.pigment.update(dt);
   }
 
+  /**
+   * Throw away everything in flight.
+   *
+   * `cancel()`, never `complete()`. An abort is the statement that the exchange
+   * did not happen — a takeback, a new position, a scrub to another time — and
+   * a mark that has not fired yet is an event the player never reached. Firing
+   * them on the way out puts the flash, the camera impulse, the blade strike,
+   * the body fall and the pigment burst on a single frame, for a capture that
+   * was cancelled. It is also why `seekCapture` used to blow the next seek
+   * white: the leaked flash from the previous seek was still decaying.
+   *
+   * Each sequence's `finish()` still runs, so nothing is left mid-pose.
+   */
   abort(): void {
     if (this.aborting) return;
     this.aborting = true;
     const list = [...this.running];
     this.running.length = 0;
-    // `complete()` runs each sequence's own cleanup, which snaps its units to
-    // their end state. Nothing is left mid-pose.
-    for (const s of list) s.complete();
+    for (const s of list) s.cancel();
     this.pigment.reset();
     this.camera.release();
     this.aborting = false;
@@ -234,6 +280,34 @@ export class Choreography implements Choreographer {
 
   private start(seq: Sequence): void {
     this.running.push(seq);
+  }
+
+  /**
+   * The animator driving a figure, or `undefined` — and a named complaint the
+   * first time a given figure turns out not to have one.
+   *
+   * Every clip this file plays goes through an optional call (`anim?.play(...)`)
+   * because a figure with no animator is legitimate during teardown. The failure
+   * that costs a day is the other one: a figure that *should* have an animator
+   * and does not still walks to its square and still dies on schedule, because
+   * the root position, the facing and the visibility are written from here and
+   * not by the animator. What is missing is every pose — so a capture with no
+   * animator is pixel-for-pixel indistinguishable from a capture whose clips
+   * never reach the skeleton, and the eye goes looking in the mixer. Say it once,
+   * by name, instead of playing into the void.
+   */
+  private animator(unit: UnitInstance): Animator | undefined {
+    const a = this.animatorFor(unit);
+    if (!a && !this.unanimated.has(unit.root)) {
+      this.unanimated.add(unit.root);
+      console.warn(
+        `[anim] no animator registered for "${unit.root.name || unit.meta.key}". It will ` +
+          `slide to its square with its pose frozen at bind: no walk cycle, no strike, ` +
+          `no collapse. Whoever owns the animator map has to register one for every ` +
+          `figure on the board, including figures rebuilt by a position change.`,
+      );
+    }
+    return a;
   }
 
   private make(
@@ -333,7 +407,7 @@ export class Choreography implements Choreographer {
   // -------------------------------------------------------------------------
 
   walk(unit: UnitInstance, fromSq: number, toSq: number): Promise<void> {
-    const anim = this.animatorFor(unit);
+    const anim = this.animator(unit);
     const path: THREE.Vector3[] = [];
     const length = this.buildPath(unit, fromSq, toSq, path);
     const gait = unit.meta.gait as GaitName;
@@ -418,8 +492,8 @@ export class Choreography implements Choreographer {
     defender: UnitInstance,
     ctx: CaptureBeatContext,
   ): Promise<void> {
-    const atk = this.animatorFor(attacker);
-    const def = this.animatorFor(defender);
+    const atk = this.animator(attacker);
+    const def = this.animator(defender);
     const cc = this.busContext(attacker, defender, ctx);
 
     // Owned by this sequence: its marks read these long after other work has
@@ -587,8 +661,8 @@ export class Choreography implements Choreographer {
     defender: UnitInstance,
     ctx: CaptureBeatContext,
   ): Promise<void> {
-    const atk = this.animatorFor(attacker);
-    const def = this.animatorFor(defender);
+    const atk = this.animator(attacker);
+    const def = this.animator(defender);
     const cc = this.busContext(attacker, defender, ctx);
 
     const A = this.squareWorld(ctx.attackerSq, new THREE.Vector3());
@@ -771,7 +845,7 @@ export class Choreography implements Choreographer {
       const start = end.clone();
       start.z += back * FORMATION.offBoard;
       start.y = this.ground ? this.ground(start.x, start.z) : 0;
-      const anim = this.animatorFor(unit);
+      const anim = this.animator(unit);
       const yaw = this.yawTo(end.x - start.x, end.z - start.z);
       anim?.setFacing(yaw, true);
       unit.root.position.copy(start);
@@ -874,7 +948,7 @@ export class Choreography implements Choreographer {
     if (general) {
       marks.push(
         mark(FINALE.generalFallAt, () => {
-          const a = this.animatorFor(general);
+          const a = this.animator(general);
           a?.play('death');
           this.audio.play('bodyFall', { gain: 0.9 });
         }),
@@ -882,12 +956,12 @@ export class Choreography implements Choreographer {
     }
     for (const u of losers) {
       if (u === general) continue;
-      const a = this.animatorFor(u);
+      const a = this.animator(u);
       marks.push(mark(FINALE.generalFallAt + 0.35, () => a?.play('salute')));
     }
     const ordered = [...winners].sort((p, q) => p.root.position.z - q.root.position.z);
     ordered.forEach((u, i) => {
-      const a = this.animatorFor(u);
+      const a = this.animator(u);
       marks.push(mark(FINALE.raiseFrom + i * FINALE.raiseStagger, () => a?.play('victory')));
     });
     marks.push(
@@ -898,8 +972,8 @@ export class Choreography implements Choreographer {
     marks.sort((p, q) => p.at - q.at);
 
     const finish = (): void => {
-      for (const u of winners) this.animatorFor(u)?.play('victory', FADE_SNAP);
-      if (general) this.animatorFor(general)?.play('death', FADE_SNAP);
+      for (const u of winners) this.animator(u)?.play('victory', FADE_SNAP);
+      if (general) this.animator(general)?.play('death', FADE_SNAP);
     };
 
     return this.make('finale', FINALE.total, marks, null, finish);
@@ -925,8 +999,8 @@ export class Choreography implements Choreographer {
   ): void {
     this.abort();
     defender.root.visible = true;
-    const atk = this.animatorFor(attacker);
-    const def = this.animatorFor(defender);
+    const atk = this.animator(attacker);
+    const def = this.animator(defender);
     // A scrub must not inherit anything from whatever ran before it — root
     // corrections, foot locks and damped followers are all functions of history.
     atk?.reset();

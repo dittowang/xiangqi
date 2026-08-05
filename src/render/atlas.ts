@@ -57,7 +57,16 @@ export interface AtlasCollapse {
   hull: THREE.Mesh | null;
   /** How many meshes were folded into it. */
   replaced: number;
-  /** Frees the merged geometry. The source geometries belong to the unit. */
+  /**
+   * Undo this collapse: drop the merged mesh and its hull, free the merged
+   * geometry if we own it, and RE-PARENT the originals exactly where they were
+   * taken from. The source geometries themselves belong to the unit.
+   *
+   * The re-parenting is not a nicety. `collapseToAtlas` detaches the originals
+   * and the atlas mesh is the only thing standing in for them, so a `dispose()`
+   * that merely removes the atlas mesh leaves the figure with nothing in it at
+   * all. Idempotent.
+   */
   dispose(): void;
 }
 
@@ -243,6 +252,15 @@ export function collapseToAtlas(
     mesh.receiveShadow = g.meshes.some((m) => m.receiveShadow);
     mesh.frustumCulled = g.meshes[0].frustumCulled;
 
+    // Everything `dispose()` needs to put the figure back the way it found it.
+    // Recorded before the detach, because after it `m.parent` is null and the
+    // per-material hulls are unreachable.
+    const originals = g.meshes.map((m) => ({
+      mesh: m,
+      parent: m.parent ?? g.parent,
+      hulls: m.children.filter(isHull),
+    }));
+
     for (const m of g.meshes) {
       // Drop any hull the per-material path already gave them, then unhook the
       // mesh itself. Its geometry stays alive under the unit's ownership.
@@ -255,13 +273,27 @@ export function collapseToAtlas(
       opts.outlines === false ? null : buildHull(mesh, materials.outlineAtlas());
     if (hull) hull.userData[HULL_FLAG] = true;
 
+    let disposed = false;
     out.push({
       mesh,
       hull,
       replaced: g.meshes.length,
       dispose: () => {
-        if (owned) merged.dispose();
+        if (disposed) return;
+        disposed = true;
+        hull?.removeFromParent();
         mesh.removeFromParent();
+        // Only when we merged: a group of one shares the original's geometry,
+        // and freeing it here would gut the mesh we are about to restore.
+        if (owned) merged.dispose();
+        // Put the originals back, with their own hulls. Without this the figure
+        // ends up EMPTY — the atlas mesh was the only thing left in it — and the
+        // next `collapseToAtlas` finds no candidates and produces nothing, so a
+        // second dress of a unit erases it permanently.
+        for (const o of originals) {
+          o.parent.add(o.mesh);
+          for (const h of o.hulls) o.mesh.add(h);
+        }
       },
     });
   }
@@ -272,10 +304,10 @@ export function collapseToAtlas(
 /**
  * Undo a collapse: drop the merged meshes and put the originals back.
  *
- * Only useful for A/B measurement — the measurement script renders the same
- * board both ways — but cheap to provide and it makes the collapse reversible
- * rather than destructive, which is the difference between a measurement and a
- * commitment.
+ * Not only useful for A/B measurement. `main.ts`'s `dressUnit()` calls this
+ * before re-collapsing a figure, which happens to every surviving figure on
+ * every `__XQ.setPosition()`, so "reversible rather than destructive" is a
+ * load-bearing property of the running app, not a measurement convenience.
  */
 export function disposeCollapse(collapses: AtlasCollapse[]): void {
   for (const c of collapses) {

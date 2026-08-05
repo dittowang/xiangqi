@@ -974,11 +974,18 @@ function hitPose(p: Pose, t: number, c: AuthorCtx): void {
 function deathPose(p: Pose, t: number, c: AuthorCtx): void {
   const side = c.rng.chance(0.5) ? 1 : -1;
 
-  const buckle = curve(t, [[0, 0], [0.13, 0.28, 'outQuint'], [0.36, 1, 'inCubic'], [1, 1, 'linear']]);
-  const sink = curve(t, [[0, 0], [0.13, 0.06, 'outCubic'], [0.36, 0.42, 'inCubic'], [0.62, 0.82, 'inQuad'], [0.84, 0.98, 'outCubic'], [1, 1, 'settle']]);
-  const fold = curve(t, [[0, 0], [0.3, 0, 'linear'], [0.62, 0.86, 'inCubic'], [0.84, 1, 'outCubic'], [1, 0.96, 'settle']]);
-  const topple = curve(t, [[0, 0], [0.55, 0, 'linear'], [0.84, 0.92, 'inQuad'], [1, 1, 'settle']]);
-  const headArrive = curve(t, [[0, 0], [0.7, 0.12, 'linear'], [0.92, 1.06, 'inQuad'], [1, 1, 'settle']]);
+  // A collapse is *front-loaded*. The knee goes, and once it has gone there is
+  // nothing holding the mass up: half the drop is over inside the first third of
+  // the clip and nine tenths of it by two thirds, leaving the tail for the
+  // topple and the settle. The previous shape spent its first third at six per
+  // cent of the drop — which put the figure at full standing height 0.6 s after
+  // it was run through, and, because the choreographer bursts the pigment 0.62 s
+  // into the death, scattered a body that was still standing at attention.
+  const buckle = curve(t, [[0, 0], [0.07, 0.34, 'outQuint'], [0.24, 1, 'inCubic'], [1, 1, 'linear']]);
+  const sink = curve(t, [[0, 0], [0.07, 0.14, 'outQuad'], [0.30, 0.56, 'inOutCubic'], [0.52, 0.86, 'outCubic'], [0.74, 0.99, 'outCubic'], [1, 1, 'settle']]);
+  const fold = curve(t, [[0, 0], [0.14, 0.05, 'outQuad'], [0.44, 0.72, 'inCubic'], [0.68, 1, 'outCubic'], [1, 1, 'linear']]);
+  const topple = curve(t, [[0, 0], [0.34, 0.06, 'linear'], [0.66, 0.86, 'inQuad'], [1, 1, 'settle']]);
+  const headArrive = curve(t, [[0, 0], [0.46, 0.14, 'linear'], [0.78, 1.04, 'inQuad'], [1, 1, 'settle']]);
 
   if (!c.seated) {
     // The knee that gives first goes further, and the ankles collapse with it.

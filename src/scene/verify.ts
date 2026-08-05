@@ -64,7 +64,7 @@ import { signedArea } from './geometry.ts';
 import { getSealGlyph, glyphToContours, glyphToShapes, sealRoster } from '@ui/seal.ts';
 import { Backdrop, LAKE_Y, TERRACE_RADIUS } from './backdrop.ts';
 import { Director, NAMED_POSES, PUSH_LAND_FRACTION, RETURN_SLOWDOWN, SPRING } from './camera.ts';
-import { LightingRig } from './lighting.ts';
+import { LightingRig, gongbiElevation } from './lighting.ts';
 import { createFallbackMaterials } from './fallbackMaterials.ts';
 import { createSceneRig } from './index.ts';
 import { MeshBuilder } from './geometry.ts';
@@ -1474,7 +1474,19 @@ section('lighting');
   const rig = new LightingRig({ initial: 'wide' });
   near('wide key intensity', rig.state.keyIntensity, MOODS.wide.keyIntensity, 1e-9);
   const wideElev = rig.key.position.y / rig.key.position.length();
-  near('key elevation matches the mood', Math.asin(wideElev), MOODS.wide.keyElevation, 1e-6);
+  // The rig places the key at the mood's authored elevation REMAPPED onto the
+  // gongbi ladder, not at the authored value itself. That remap is the whole
+  // point of GONGBI_ELEVATION: a photographic key elevation puts most of a
+  // figure inside its own cast shadow, where uShadowDepth multiplies N·L into
+  // a lump and the mid bands become unreachable. Measured, the cannon's lacquer
+  // goes from 99% in band 0 at 57 degrees to 53% at 31.5. Asserting the
+  // authored value here would forbid the fix.
+  near(
+    'key elevation matches the mood, remapped onto the gongbi ladder',
+    Math.asin(wideElev),
+    gongbiElevation(MOODS.wide.keyElevation),
+    1e-6,
+  );
 
   rig.setMood('endgame', 2.0);
   near('cross-fade starts at the old mood', rig.state.keyIntensity, MOODS.wide.keyIntensity, 1e-9);

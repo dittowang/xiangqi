@@ -291,20 +291,74 @@ export function modeForPhase(phase: MatchPhase): CameraMode {
 // Capture framing
 // ===========================================================================
 
-/** How the over-the-shoulder rig is placed relative to the two combatants. */
-const OTS_BACK_BASE = 1.4;
-const OTS_BACK_PER_UNIT = 0.3;
-const OTS_SIDE_BASE = 0.98;
-const OTS_SIDE_PER_UNIT = 0.11;
-const OTS_HEIGHT_BASE = 1.5;
-const OTS_HEIGHT_PER_UNIT = 0.1;
-/** Bias the look-at toward the defender: the defender is the subject. */
-const OTS_LOOK_BIAS = 0.62;
+/**
+ * How the over-the-shoulder rig is staged relative to the two combatants.
+ *
+ * It used to stand almost directly BEHIND the attacker: for adjacent squares
+ * back = 1.7 and side = 1.09 against a look-at biased 0.62 down the gap, which
+ * put the view atan(1.09 / 2.32) = 25.2° off the attack line. A thrust straight
+ * down that line then projected at sin 25.2° = 42% of its true length and the
+ * point of the weapon came at the lens: the flagship motion of the game, shot
+ * down its own barrel.
+ *
+ * The rig now stands to the SIDE of the attack line and looks across it. The
+ * constants below are the whole staging — nothing else about the push changed.
+ */
+
+/**
+ * Angle between the view direction and the attack line, radians.
+ *
+ * 1.29 rad = 73.9°, so a thrust along the line projects at sin 73.9° = 96% of
+ * its true length — 2.3× the old staging — while keeping enough of a
+ * three-quarter angle that the shot reads as staged rather than as a flat side
+ * elevation. Not pushed further: the shoulder choice below has to be able to
+ * stay on the camera's current side of the axis of action, and past 90° there
+ * are attack directions for which neither shoulder can.
+ */
+const OTS_OFF_AXIS = 1.29;
+
+/**
+ * How much of the gap the attacker has covered when the blade lands. Mirrors
+ * `CAPTURE.approachFraction` in @anim/timing.ts.
+ *
+ * The camera frames the exchange as it will be AT CONTACT, not as it is on the
+ * start line — for a chariot nine squares out those are entirely different
+ * places. Duplicated rather than imported: the module graph runs anim → scene
+ * and never the other way.
+ */
+const OTS_CONTACT_FRACTION = 0.58;
+
+/** Half a figure's girth plus the air a frame wants around it. */
+const OTS_MARGIN = 0.55;
+/** Closer than this and an adjacent capture is staged inside the figures. */
+const OTS_RADIUS_MIN = 2.7;
+/** Further than this and a nine-square exchange stops being a close shot. */
+const OTS_RADIUS_MAX = 6.6;
+/** Height the rig aims at: chest, where the exchange happens. */
 const OTS_LOOK_HEIGHT = 0.74;
 const OTS_FOV = 42;
 /** Pitch band that keeps the table's edge roughly level in frame. */
 const OTS_PITCH_MIN = 0.15;
 const OTS_PITCH_MAX = 0.42;
+/** Pitch rises a little with separation so a long exchange stays readable. */
+const OTS_PITCH_BASE = 0.24;
+const OTS_PITCH_PER_UNIT = 0.013;
+
+/**
+ * How long `release()` holds the capture framing before starting the return.
+ *
+ * The choreographer calls `release()` at `CAPTURE.disperseStart` — the moment
+ * the pigment starts leaving the body, not the moment it finishes. Coming out
+ * there meant the camera was already wide 0.32 s later and had travelled the
+ * full ~11.6 units back by 3.04 s, so the dispersal, which is the payoff of the
+ * entire set piece, played out at about thirty pixels across.
+ *
+ * The dispersal runs disperseStart 2.31 → disperseEnd 3.94, so the close
+ * framing is held for that 1.63 s and the camera comes out after it. A check
+ * push still releases immediately: nothing is happening in it that the camera
+ * would be walking out on.
+ */
+const CAPTURE_RELEASE_HOLD = 1.63;
 
 const CHECK_DISTANCE = 5.6;
 const CHECK_PITCH = 0.4;
@@ -368,6 +422,11 @@ export class Director implements CameraDirector {
   private pushElapsed = 0;
   private pushInitial = new Float64Array(7);
   private pushResolve: (() => void) | null = null;
+
+  /** Seconds of close framing still owed after a capture `release()`. */
+  private releaseHold = 0;
+  /** The `seconds` that release was asked for, or -1 for the default spring. */
+  private releaseSeconds = -1;
 
   private shake = 0;
   private shakeTime = 0;
@@ -437,6 +496,10 @@ export class Director implements CameraDirector {
   // -- modes -----------------------------------------------------------------
 
   setMode(mode: CameraMode, seconds?: number): void {
+    // A mode change is an explicit instruction and outranks a pending release
+    // hold; without this the hold would drag the camera back after the change.
+    this.releaseHold = 0;
+    this.releaseSeconds = -1;
     this.mode = mode;
     if (mode === 'free') {
       this.userDriving = true;
@@ -495,14 +558,14 @@ export class Director implements CameraDirector {
   // -- event pushes ----------------------------------------------------------
 
   /**
-   * Over-the-shoulder push framing an attacker and a defender.
+   * Capture push: the two combatants seen ACROSS the axis of the attack.
    *
    * The framing is *computed from the two world positions*, so it works for a
    * chariot taking a soldier nine squares away and for an advisor taking a
-   * cannon one square away, with no per-pair authoring anywhere. The rig sits
-   * behind the attacker, off one shoulder, looking down the axis of the attack
-   * with the aim biased toward the defender — the defender is what is about to
-   * happen, so the defender is the subject.
+   * cannon one square away, with no per-pair authoring anywhere. The rig stands
+   * off to one side of the attack line and looks across it, so the thrust that
+   * beat 2 is built around travels across the frame at very nearly its true
+   * length instead of coming at the lens. See `OTS_OFF_AXIS`.
    *
    * The shoulder is chosen to stay on the same side of the axis of action as the
    * camera already is, which is the 180° rule; crossing it on a cut this fast
@@ -513,6 +576,7 @@ export class Director implements CameraDirector {
    */
   pushToCapture(attackerSq: number, defenderSq: number): Promise<void> {
     this.resolvePush();
+    this.releaseHold = 0;
 
     const ax = worldX(fileOf(attackerSq));
     const az = worldZ(rankOf(attackerSq));
@@ -527,34 +591,48 @@ export class Director implements CameraDirector {
     const px = uz;
     const pz = -ux;
 
-    const back = OTS_BACK_BASE + sep * OTS_BACK_PER_UNIT;
-    const side = OTS_SIDE_BASE + sep * OTS_SIDE_PER_UNIT;
-    const height = OTS_HEIGHT_BASE + sep * OTS_HEIGHT_PER_UNIT;
+    // Aim at the middle of the exchange as it stands AT CONTACT: the attacker
+    // has closed `OTS_CONTACT_FRACTION` of the gap by then, so for a long
+    // capture the event happens nowhere near the halfway line.
+    const nearEnd = sep * OTS_CONTACT_FRACTION;
+    const lookAlong = (nearEnd + sep) * 0.5;
+    const lookX = ax + ux * lookAlong;
+    const lookZ = az + uz * lookAlong;
 
-    const lookX = ax + ux * sep * OTS_LOOK_BIAS;
-    const lookZ = az + uz * sep * OTS_LOOK_BIAS;
+    // The attack line now runs across the frame, so it is the HORIZONTAL field
+    // that has to hold it. Solve for the radius that does, from the real aspect
+    // rather than an assumed one, and floor it so a one-square capture does not
+    // stage the camera inside the combatants.
+    const halfSpan = (sep - nearEnd) * 0.5 + OTS_MARGIN;
+    const tanHalfH =
+      Math.tan((OTS_FOV * Math.PI) / 360) * Math.max(this.camera.aspect || 1, 0.5);
+    const radius = clamp(
+      (halfSpan * Math.sin(OTS_OFF_AXIS)) / Math.max(tanHalfH, 0.2),
+      OTS_RADIUS_MIN,
+      OTS_RADIUS_MAX,
+    );
+    const pitch = clamp(
+      OTS_PITCH_BASE + sep * OTS_PITCH_PER_UNIT,
+      OTS_PITCH_MIN,
+      OTS_PITCH_MAX,
+    );
 
-    // Try both shoulders, keep the one nearer the yaw we already have.
+    // Try both shoulders, keep the one nearer the yaw we already have. Only the
+    // yaw differs between them — radius and pitch are symmetric about the line.
+    const along = Math.cos(OTS_OFF_AXIS);
+    const across = Math.sin(OTS_OFF_AXIS);
     let bestYaw = this.yaw.value;
-    let bestPitch = 0.3;
-    let bestDist = 5;
     let bestDelta = Infinity;
     for (const sign of [1, -1]) {
-      const cx = ax - ux * back + px * sign * side;
-      const cz = az - uz * back + pz * sign * side;
-      const cy = height;
-      const ddx = cx - lookX;
-      const ddy = cy - OTS_LOOK_HEIGHT;
-      const ddz = cz - lookZ;
-      const d = Math.max(Math.hypot(ddx, ddy, ddz), 0.6);
-      const y = Math.atan2(ddx, ddz);
-      const wrapped = nearestAngle(this.yaw.value, y);
+      // Look point -> camera, in XZ. At OTS_OFF_AXIS = 0 this is the old shot:
+      // straight back down the attack line.
+      const ox = -ux * along + px * sign * across;
+      const oz = -uz * along + pz * sign * across;
+      const wrapped = nearestAngle(this.yaw.value, Math.atan2(ox, oz));
       const delta = Math.abs(wrapped - this.yaw.value);
       if (delta < bestDelta) {
         bestDelta = delta;
         bestYaw = wrapped;
-        bestPitch = clamp(Math.asin(clamp(ddy / d, -1, 1)), OTS_PITCH_MIN, OTS_PITCH_MAX);
-        bestDist = d;
       }
     }
 
@@ -564,8 +642,9 @@ export class Director implements CameraDirector {
     this.tx.target = lookX;
     this.ty.target = OTS_LOOK_HEIGHT;
     this.tz.target = lookZ;
-    this.dist.target = bestDist;
-    this.pitch.target = bestPitch;
+    // `radius` is the horizontal reach; the orbit distance is the hypotenuse.
+    this.dist.target = radius / Math.cos(pitch);
+    this.pitch.target = pitch;
     this.yaw.target = bestYaw;
     this.fov.target = OTS_FOV;
     return this.beginPush();
@@ -574,6 +653,7 @@ export class Director implements CameraDirector {
   /** Fast dolly onto a general under check. Keeps the yaw: a push, not a swing. */
   pushToCheck(square: number): void {
     this.resolvePush();
+    this.releaseHold = 0;
     this.mode = 'check';
     this.userDriving = false;
     this.configure(SPRING.push);
@@ -582,6 +662,11 @@ export class Director implements CameraDirector {
     this.tz.target = worldZ(rankOf(square));
     this.dist.target = CHECK_DISTANCE;
     this.pitch.target = CHECK_PITCH;
+    // Pin the yaw where it stands rather than leaving it aimed wherever the
+    // last release pointed it. Without this the dolly inherits the tail of a
+    // return spring and drifts a fraction of a degree while it pushes, which is
+    // a swing — small, but the one thing this framing promises not to do.
+    this.yaw.target = this.yaw.value;
     this.fov.target = CHECK_FOV;
     void this.beginPush();
   }
@@ -614,9 +699,30 @@ export class Director implements CameraDirector {
    * The mode returns to whatever phase framing was in force before the event, so
    * a capture that fires during the terminal set piece hands the slow arc back
    * rather than leaving the camera parked in `capture` forever.
+   *
+   * A capture release does not start there and then: it holds the close framing
+   * for `CAPTURE_RELEASE_HOLD` first. The choreographer fires this at the START
+   * of the pigment dispersal, and a camera that leaves on that cue is halfway
+   * to the wide framing before the thing it was called in to watch has
+   * happened. Call `release()` a second time during the hold to leave at once —
+   * which is what an abort wants.
    */
   release(seconds?: number): void {
     this.resolvePush();
+    if (this.mode === 'capture' && this.releaseHold <= 0) {
+      // Stay in `capture`: the mode is what keeps the springs on the close
+      // framing and keeps the terminal arc from starting to swing under us.
+      this.releaseHold = CAPTURE_RELEASE_HOLD;
+      this.releaseSeconds = seconds ?? -1;
+      return;
+    }
+    this.finishRelease(seconds);
+  }
+
+  /** The actual return, once any hold has run out. */
+  private finishRelease(seconds?: number): void {
+    this.releaseHold = 0;
+    this.releaseSeconds = -1;
     if (this.mode === 'capture' || this.mode === 'check') {
       this.mode = this.userDriving ? 'free' : this.phaseMode;
     }
@@ -635,6 +741,8 @@ export class Director implements CameraDirector {
 
   setPose(pose: CameraPose, immediate = false): void {
     this.resolvePush();
+    this.releaseHold = 0;
+    this.releaseSeconds = -1;
     this.rest.target[0] = pose.target[0];
     this.rest.target[1] = pose.target[1];
     this.rest.target[2] = pose.target[2];
@@ -693,6 +801,10 @@ export class Director implements CameraDirector {
   /** True once the springs have effectively stopped. `__XQ.settle()` waits on it. */
   settled(): boolean {
     if (this.pushActive) return false;
+    // A held capture framing is motionless but not finished — the return has
+    // not started yet, and calling it settled would let the harness photograph
+    // a shot that is about to move.
+    if (this.releaseHold > 0) return false;
     for (const s of this.all) {
       if (s.error > 0.002 || Math.abs(s.velocity) > 0.004) return false;
     }
@@ -707,6 +819,15 @@ export class Director implements CameraDirector {
   // -- per frame -------------------------------------------------------------
 
   update(dt: number): void {
+    if (this.releaseHold > 0) {
+      this.releaseHold -= dt;
+      // Before the springs step, so the return begins on the frame the hold
+      // ends rather than one frame later.
+      if (this.releaseHold <= 0) {
+        this.finishRelease(this.releaseSeconds >= 0 ? this.releaseSeconds : undefined);
+      }
+    }
+
     if (this.mode === 'terminal' && !this.pushActive) {
       // The slow arc. Driven from accumulated dt, so a stepped frame is exact.
       this.rest.yaw += TERMINAL_ORBIT_RATE * dt;

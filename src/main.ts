@@ -493,6 +493,9 @@ function frame(nowMs: number): void {
   // has to be ticked here or its mount bones never move.
   showcaseAnimator?.update(dt);
   choreographer.update(dt);
+  // After the choreographer, never before it: the plinths are written from the
+  // root positions this frame's animation just produced.
+  match.followBases();
   hud.update(dt);
   audio.update(dt);
   saver.update(dt);

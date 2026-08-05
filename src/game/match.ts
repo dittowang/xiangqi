@@ -88,6 +88,13 @@ export class Match {
   private readonly opts: MatchOptions;
   /** Soldiers get a variant index so a rank of five is not five copies. */
   private variantCounter = new Map<string, number>();
+  /**
+   * The square whose occupant is currently being killed, or -1. `followBases()`
+   * skips it: the body is driven off its plinth, the plinth does not follow.
+   */
+  private takingSq = -1;
+  /** Last plinth position `followBases()` wrote, per piece id. Cleared by `sync()`. */
+  private readonly basePos = new Map<number, { x: number; z: number }>();
 
   constructor(opts: MatchOptions) {
     this.opts = opts;
@@ -172,6 +179,13 @@ export class Match {
   sync(moved?: { from: number; to: number }): void {
     const board = this.pos.board;
     const seen = new Set<number>();
+    // Reconciling means any exchange that was in flight has resolved, so the
+    // plinth freeze `apply()` armed is over. Pairs with the assignment there.
+    this.takingSq = -1;
+    // `sync()` is the only other thing that moves a base (`setSquare`, `remove`,
+    // `add`), so anything `followBases()` remembers about where a plinth is
+    // stops being true right here.
+    this.basePos.clear();
 
     if (moved) {
       const mover = this.views.get(moved.from);
@@ -234,6 +248,44 @@ export class Match {
     view.unit.dispose();
   }
 
+  /**
+   * Carry every plinth along under its figure. Call once per frame, after the
+   * animation layer has written this frame's root positions.
+   *
+   * `sync()` is the only other thing that moves a base, and it moves it in one
+   * frame at the END of a move — while `walk()` takes 0.46-2.9 s to get there.
+   * From about a dozen frames into any walk the figure was standing on bare
+   * silk with its plinth a full square behind it, and that is every ordinary
+   * move in the game. A base is furniture the figure stands on, so it follows
+   * the figure's actual world position rather than its model square.
+   *
+   * Yaw is deliberately left alone: the seal character is cut into the plinth
+   * facing its owner's seat, and spinning the plinth with the figure would turn
+   * the inscription upside down halfway through a move.
+   */
+  followBases(): void {
+    for (const view of this.views.values()) {
+      // The figure being taken is a special case: it is being driven backwards
+      // off its plinth and then dispersed. The plinth stays where it stood.
+      if (view.square === this.takingSq) continue;
+      const p = view.unit.root.position;
+      // Only the figure that is actually moving pays anything. Every
+      // `setPosition` recomposes a matrix and dirties an instance buffer, and on
+      // an ordinary frame thirty-one of the thirty-two figures are standing
+      // still — writing them all would re-upload fourteen instance buffers per
+      // frame for no visible difference.
+      const last = this.basePos.get(view.id);
+      if (last && Math.abs(last.x - p.x) < 1e-5 && Math.abs(last.z - p.z) < 1e-5) continue;
+      if (last) {
+        last.x = p.x;
+        last.z = p.z;
+      } else {
+        this.basePos.set(view.id, { x: p.x, z: p.z });
+      }
+      this.opts.board.bases.setPosition(view.id, p.x, p.z);
+    }
+  }
+
   /** Stand every figure on its square, on top of its base. */
   placeAll(): void {
     for (const [square, view] of this.views) {
@@ -283,6 +335,7 @@ export class Match {
     this.pos.makeMove(legal);
     this.moves.push(legal);
     this.notation.push(notation);
+    this.takingSq = capture ? to : -1;
 
     bus.emit('move:begin', { move: legal, side, piece: mover, capture, ply: this.ply });
     return { notation, capture };

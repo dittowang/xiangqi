@@ -562,6 +562,39 @@ export const IK = {
    * limb reach further back than the leading one reaches forward.
    */
   plantAhead: 0.26,
+  /**
+   * Hoof contact. Fraction of a quadruped's stance spent blending the contact
+   * solve in at touchdown and out at toe-off.
+   *
+   * A hoof is not an ankle: there is no heel-off to buy reach with, and the
+   * drive curve — not a predicted plant — decides where the hoof arrives. So the
+   * solver takes the leg over just after the hoof is down and hands it back just
+   * before it leaves, and the drive curve owns both ends. 0.22 is a shade over a
+   * frame at a canter and about three at a lumber, which is short enough to read
+   * as a plant and long enough not to snatch.
+   */
+  hoofBlend: 0.22,
+  /**
+   * Ceiling on the stance sweep of a mount's upper leg bone, radians. The sweep
+   * is otherwise derived from the stride, and a stride long enough to need more
+   * than this is a stride the leg cannot serve however hard the knee bends.
+   */
+  hoofSwingMax: 0.78,
+  /**
+   * How far the mount's barrel may drop to keep a hoof within reach, as a
+   * fraction of the animal's hip height — the quadruped's half of `hipGive`.
+   *
+   * It is not optional. A horse's fore leg is a *column*: shoulder, carpus and
+   * fetlock are within a millimetre of collinear in the bind pose, and an
+   * elephant's four legs are the same by design. A column has no slack, so a
+   * two-bone solve asked to hold a hoof the body has already travelled past has
+   * nothing to give and the hoof drags instead. The barrel dropping is what
+   * buys the reach, it is what a real animal does, and it is where the vertical
+   * component of a canter comes from in the first place.
+   */
+  mountGive: 0.18,
+  /** How fast that drop follows its target, per second. */
+  mountGiveRate: 26,
 } as const;
 
 // ===========================================================================
@@ -579,12 +612,29 @@ export const PIGMENT = {
   chipSize: 0.052,
   chipSizeJitter: 0.55,
   /** Initial burst speed, world units per second. */
-  speed: 1.85,
+  speed: 1.62,
   speedJitter: 0.62,
   /** Extra speed along the impact direction. */
-  impulseGain: 1.35,
-  /** Gravity, world units per second squared. Lighter than real: this is powder. */
-  gravity: 4.6,
+  impulseGain: 1.02,
+  /**
+   * Upward bias at birth, as a fraction of `speed`. A body coming apart throws
+   * pigment *outward*; this is only the small share of it that goes up. It used
+   * to be 0.35, which — on top of the blow's own vertical component — launched
+   * the whole burst as a fountain, and a fountain has to come down before it can
+   * land. Everything the eye reads as pigment happens on the board.
+   */
+  loft: 0.14,
+  /**
+   * Gravity, world units per second squared.
+   *
+   * Below real, because a chip is powder and the drag term below is what carries
+   * the flutter — but not *far* below. At 4.6 against a drag of 1.42 the terminal
+   * velocity was 1.8 u/s, and a burst thrown 0.9 units into the air took a second
+   * and a half to come back: the dispersal window closed with the cluster still
+   * hanging over the corpse. The chips have to be down, bounced and at rest well
+   * inside `CAPTURE.disperseEnd`, and this is the number that decides it.
+   */
+  gravity: 9.4,
   /**
    * Quadratic drag coefficient. A flat chip has a lot of area for its mass, so
    * it decelerates fast and then flutters down rather than falling ballistically
@@ -596,12 +646,19 @@ export const PIGMENT = {
   spinJitter: 0.8,
   /** Angular drag, per second. */
   spinDamp: 1.35,
-  /** Restitution on the board. Mineral powder barely bounces. */
-  bounce: 0.22,
+  /** Restitution on the board. Mineral powder barely bounces — but it does. */
+  bounce: 0.3,
   /** Tangential friction on a bounce. */
-  friction: 0.62,
+  friction: 0.52,
+  /**
+   * Tangential friction per second while a chip is sliding along the board
+   * between bounces. Without it a chip that lands almost flat keeps its whole
+   * horizontal speed and skates until it happens to bounce again, which reads as
+   * a chip on ice rather than a chip on silk.
+   */
+  slide: 5.2,
   /** Below this speed a chip is considered at rest and stops integrating. */
-  restSpeed: 0.055,
+  restSpeed: 0.085,
   /** How long a resting chip takes to sink into the silk. */
   fade: 1.35,
   /** How long the chip lies at rest before the fade starts. */

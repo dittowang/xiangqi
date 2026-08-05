@@ -140,8 +140,31 @@ const EDGE_AA = 0.85;
  *  mounting edge is worth; halved. */
 const VIGNETTE = 0.05;
 
-/** Impact-flash decay, per second, exponential. 4.2 is about a quarter second. */
-const FLASH_DECAY = 4.2;
+/**
+ * Impact-flash decay, per second, exponential.
+ *
+ * The choreographer's comment on this effect reads "the frame goes white-hot
+ * for two frames and comes back". At the old 4.2 that was off by more than an
+ * order of magnitude: a 0.92 flash took 0.53 s to fall below 0.1 and 1.63 s to
+ * clear, so the frames 0.16 s and 0.32 s after contact were still veiled at
+ * 0.47 and 0.24 and the third beat opened under a white wash. Sixty frames, not
+ * two.
+ *
+ * At 55 the same 0.92 spike reads 0.92, 0.37, 0.15, 0.06 on successive 60 Hz
+ * frames — two frames of white-hot — is under 0.1 by 0.040 s and is cleared
+ * outright at 0.099 s. Nothing of it survives into the next beat.
+ */
+const FLASH_DECAY = 55;
+
+/**
+ * Below this the flash is snapped to zero.
+ *
+ * 1e-3 of a 0.92 flash is four thousandths of a stop — invisible, but it kept
+ * the uniform alive (and the grade branch warm) for another 0.1 s. 0.004 is
+ * still under half a percent of the spike and it ends the effect where the eye
+ * ends it.
+ */
+const FLASH_CUTOFF = 0.004;
 
 /**
  * Resolution of the depth/normal prepass, as a fraction of the drawing buffer.
@@ -372,7 +395,10 @@ export class GongbiPipeline implements RenderPipeline {
   private adaptiveCascades = true;
   private maxCascades = 3;
   private debugMode = DEBUG_NONE;
-  private flashStrength = 0;
+  /** Impact flash: its strength when it fired, and how long ago that was. */
+  private flashPeak = 0;
+  private flashAge = 0;
+  private flashJustFired = false;
 
   /** Set by `render()`, consumed by `composer.render()`. */
   private currentScene: THREE.Scene | null = null;
@@ -615,12 +641,27 @@ export class GongbiPipeline implements RenderPipeline {
     this.materials.setSilhouetteMode(on);
   }
 
+  /** The flash as it stands right now: its peak, decayed by its own age. */
+  private flashLevel(): number {
+    if (this.flashPeak <= 0) return 0;
+    const level = this.flashPeak * Math.exp(-FLASH_DECAY * this.flashAge);
+    return level < FLASH_CUTOFF ? 0 : level;
+  }
+
   /**
    * Impact flash. `colour` is a palette sRGB hex; the decay is exponential and
    * owned here, so callers fire and forget.
    */
   flash(strength: number, colour: string): void {
-    this.flashStrength = Math.max(this.flashStrength, Math.max(0, Math.min(1, strength)));
+    const s = Math.max(0, Math.min(1, strength));
+    // A brighter flash restarts the curve; a dimmer one arriving over a live
+    // flash is swallowed, which is the old `max` semantics expressed in a form
+    // that survives the decay being a function of age rather than of frames.
+    if (s >= this.flashLevel()) {
+      this.flashPeak = s;
+      this.flashAge = 0;
+    }
+    this.flashJustFired = true;
     const c = hexToRgb(colour);
     (this.gradePass.material.uniforms.uFlashColour.value as THREE.Color).setRGB(
       srgbToLinear(c.r),
@@ -737,9 +778,20 @@ export class GongbiPipeline implements RenderPipeline {
     this.shadows.setStretch(this.materials.currentMood().shadowStretch);
     this.pushGrade();
 
-    this.flashStrength *= Math.exp(-FLASH_DECAY * dt);
-    if (this.flashStrength < 1e-3) this.flashStrength = 0;
-    this.gradePass.material.uniforms.uFlash.value = this.flashStrength;
+    // The flash is a closed-form function of how long ago it fired, not a
+    // per-frame multiply, for the same reason the camera springs are: the
+    // harness renders the SAME instant twice per `__XQ.step()` and screenshots
+    // the second one. A per-frame multiply decays between those two renders, so
+    // every captured "contact frame" came out one decay step late — at the old
+    // rate that was invisible, at this one it is the difference between 0.92
+    // and 0.37, i.e. the entire spike. Advancing the age only on frames that
+    // advanced the simulation makes a re-render show the same picture, and
+    // makes one `step(0.4)` agree with twenty-four `step(1/60)`.
+    if (this.flashJustFired) this.flashJustFired = false;
+    else if (this.flashPeak > 0) this.flashAge += dt;
+    const level = this.flashLevel();
+    if (level === 0) this.flashPeak = 0;
+    this.gradePass.material.uniforms.uFlash.value = level;
 
     // --- one traversal, reused by every pass -------------------------------
     this.collect(scene);

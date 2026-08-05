@@ -167,6 +167,24 @@ interface LegRig {
 /** How long a closing step takes when a walk stops mid-swing. */
 const CLOSE_STEP_SECONDS = 0.21;
 
+/**
+ * Contact authority for one hoof, given its progress `p` through the cycle since
+ * its own footfall: zero through swing, a full 1 through the middle of stance,
+ * and a short smoothstep at each end.
+ *
+ * The full 1 matters. A partial-authority solve leaves the hoof part-way between
+ * the drive curve's guess and the plant, and that gap, differenced frame to
+ * frame, *is* the skate — the same argument the biped's foot solve makes, and
+ * the same answer.
+ */
+function hoofAuthority(p: number, duty: number): number {
+  if (!(duty > 0) || p >= duty) return 0;
+  const u = p / duty;
+  const b = IK.hoofBlend;
+  const t = u < b ? u / b : u > 1 - b ? (1 - u) / b : 1;
+  return t >= 1 ? 1 : t * t * (3 - 2 * t);
+}
+
 /** One resolved quadruped leg chain, with its place in the footfall order. */
 interface QuadLeg {
   upper: THREE.Object3D;
@@ -176,6 +194,25 @@ interface QuadLeg {
   duty: number;
   /** A fore leg's knee is a wrist and folds backward; a hind hock folds forward. */
   fore: boolean;
+  /**
+   * The two-bone solve used to hold the hoof still through stance. `null` when
+   * the mount's leg is a single segment and there is nothing to solve.
+   */
+  chain: TwoBoneChain | null;
+  /** The node that actually touches the board — the hoof, below the chain's tip. */
+  contactNode: THREE.Object3D;
+  /** Rig-space height of that node at bind, i.e. its clearance over the board. */
+  bindY: number;
+  /** Signed lateral offset of the hoof at bind, so a footfall can be panned. */
+  lateral: number;
+  /** Hip height above the hoof at bind, rig units. Sets the stride and the sweep. */
+  hipHeight: number;
+  /**
+   * Half the stance sweep of the upper bone, radians, derived from the stride.
+   * Seeded from the old fixed value and overwritten once the stride is known.
+   */
+  stanceSwing: number;
+  lock: FootLock;
 }
 
 // ===========================================================================
@@ -227,6 +264,8 @@ export class Animator implements UnitAnimator {
   private readonly mountTail: THREE.Object3D[] = [];
   private readonly mountEars: THREE.Object3D[] = [];
   private mountSpineBaseY = 0;
+  /** Contact-driven drop of the mount's barrel, rig units. Re-derived per frame. */
+  private mountGive = 0;
 
   private state: AnimState = 'idle';
   private stateKey: string;
@@ -308,6 +347,9 @@ export class Animator implements UnitAnimator {
     this.footLength = this.height * 0.145 * this.scale;
     this.ankleHeight = this.bind.get('footL')!.y - this.bindRoot.y;
     this.floorLocal = this.bindRoot.y;
+    // Provisional: the biped's own stride. A mounted figure overrides it in
+    // `deriveMountStride()` once the mount's bones have been resolved, because
+    // the leg that sets the stride is the leg that is on the ground.
     this.strideWorld = Math.max(0.05, this.plan.strideOverLeg * this.legLength * this.scale);
 
     // --- chains -------------------------------------------------------------
@@ -382,6 +424,7 @@ export class Animator implements UnitAnimator {
       const r = (bone.userData?.radius as number | undefined) ?? 0;
       if (r > this.wheelRadius) this.wheelRadius = r;
     }
+    this.deriveMountStride();
 
     // Deterministic phase offsets, drawn from the unit's variant rather than a
     // clock, so five soldiers in a rank are out of step with each other and are
@@ -448,6 +491,15 @@ export class Animator implements UnitAnimator {
       lock.from.set(0, 0, 0);
       lock.to.set(0, 0, 0);
     }
+    for (let i = 0; i < this.quadLegs.length; i++) {
+      const lock = this.quadLegs[i].lock;
+      lock.locked = false;
+      lock.primed = false;
+      lock.weight = 0;
+      lock.world.set(0, 0, 0);
+    }
+    this.mountGive = 0;
+    if (this.mountSpine) this.mountSpine.position.y = this.mountSpineBaseY;
     this.state = 'idle';
     this.stateKey = clipKeyFor(this.key, 'idle');
     const idle = this.actions.get(this.stateKey)!;
@@ -470,13 +522,29 @@ export class Animator implements UnitAnimator {
     const quad = (prefix: string, contact: number, duty: number, fore: boolean): void => {
       const b1 = mb[`${prefix}01`];
       if (!b1) return;
+      const mid = mb[`${prefix}02`] ?? null;
+      const lower = mb[`${prefix}03`] ?? null;
+      // `04` is the hoof: the segment that is actually on the board. The drive
+      // curve never writes it — it hangs off the pastern — which is exactly why
+      // it is the right thing to lock, and the wrong thing to solve *to*.
+      const hoof = mb[`${prefix}04`] ?? lower ?? mid ?? b1;
+      const chain = mid && lower ? makeChain(b1, mid, lower, { poleSpace: 'rig' }) : null;
+      rigPosition(this.ikCtx, hoof, _v);
+      rigPosition(this.ikCtx, b1, _v2);
       this.quadLegs.push({
         upper: b1,
-        mid: mb[`${prefix}02`] ?? null,
-        lower: mb[`${prefix}03`] ?? null,
+        mid,
+        lower,
         contact,
         duty,
         fore,
+        chain,
+        contactNode: hoof,
+        bindY: _v.y,
+        lateral: _v.x,
+        hipHeight: Math.max(1e-3, _v2.y - _v.y),
+        stanceSwing: 0.34,
+        lock: makeFootLock(),
       });
     };
     switch (this.unit.meta.mount) {
@@ -519,6 +587,51 @@ export class Animator implements UnitAnimator {
         break;
     }
     if (this.mountSpine) this.mountSpineBaseY = this.mountSpine.position.y;
+  }
+
+  /**
+   * A mount's stride belongs to the mount.
+   *
+   * `strideOverLeg` is a multiple of *the leg of the thing that is walking*, and
+   * for a cavalryman the thing that is walking is the horse. `legLength` above is
+   * measured off the biped rig — the rider's thigh and shin — so a mounted unit
+   * used to derive its hoof rate from the man sitting on it. It is not a rounding
+   * error: the 馬's rider is 0.42 rig units of leg against the horse's 0.72 of
+   * hip height, so every hoof cycled 1.7× too fast for the ground it covered, the
+   * 象 2.4× too fast, and the 俥's deck — whose "leg" is a *wheel* — pitched and
+   * rocked eleven times per revolution instead of once.
+   *
+   * Hip height, not the summed segment lengths: it is the ground clearance of the
+   * shoulder that sets how far a leg can swing, and it is the measure every
+   * dimensionless gait number in the literature is expressed against.
+   */
+  private deriveMountStride(): void {
+    if (!this.plan.seated) return;
+    let hipHeight = 0;
+    for (const leg of this.quadLegs) hipHeight = Math.max(hipHeight, leg.hipHeight);
+    if (hipHeight > 1e-4) {
+      this.strideWorld = Math.max(0.05, this.plan.strideOverLeg * hipHeight * this.scale);
+      // And now the sweep, from the stride: over its stance a hoof must travel
+      // `duty × stride` backward relative to the body, so the upper bone sweeps
+      // the angle that carries a leg of this length exactly that far. Deriving
+      // it rather than authoring it is what makes the same curve serve a canter
+      // and a lumber, and what stops a retimed gait from becoming a skate.
+      const strideRig = this.strideWorld / this.scale;
+      for (const leg of this.quadLegs) {
+        const chord = 0.5 * leg.duty * strideRig;
+        leg.stanceSwing = Math.min(IK.hoofSwingMax, Math.asin(clamp(chord / leg.hipHeight, -1, 1)));
+      }
+      return;
+    }
+    if (this.wheelRadius > 0) {
+      // A wheeled mount has no leg and needs none: one revolution of its own
+      // wheel is exactly the ground one cycle of the deck covers, so the pitch
+      // and the rock are phased on the axle that produces them.
+      this.strideWorld = Math.max(
+        0.05,
+        this.plan.strideOverLeg * 2 * Math.PI * this.wheelRadius * this.scale,
+      );
+    }
   }
 
   private setupTrunk(): void {
@@ -689,13 +802,25 @@ export class Animator implements UnitAnimator {
   }
 
   /**
-   * Choose the directional hit variant from a world-space impulse. Call before
-   * `play('hit')`; the direction is the one the blow came *from*.
+   * Choose the directional hit variant from a world-space impulse.
+   *
+   * `worldDir` is the direction the blow **travels** — attacker toward defender,
+   * the same vector the camera impulse and the knockback take, and the same one
+   * both call sites in the choreographer already pass.
+   *
+   * The variant is named for where the blow came *from*, which is the opposite,
+   * and that negation is the whole of this function. It was missing, and the
+   * sign error was worth naming: a soldier struck in the chest selected the
+   * struck-from-behind clip, so the clip arched his torso and pushed his root
+   * *toward* the spear while the choreographer's knockback dragged his square
+   * away from it. The two cancel to within a few millimetres, and what is left
+   * on screen is a figure sliding backward with a vertical torso and an arm
+   * coming up — the exact shape of "the hit is a translation, not a reaction".
    */
   setHitDirection(worldDir: THREE.Vector3): void {
-    _v.copy(worldDir).applyQuaternion(this.ikCtx.rootQuatInv);
-    // Rig forward is −Z, so an impulse arriving from straight ahead has a
-    // rig-space direction of +Z once negated into "where it came from".
+    _v.copy(worldDir).applyQuaternion(this.ikCtx.rootQuatInv).negate();
+    // Rig forward is −Z. A blow that came from straight ahead therefore has a
+    // rig-space source direction of −Z, and `atan2(x, z)` puts that at ±π.
     const angle = Math.atan2(_v.x, _v.z);
     const a = ((angle + Math.PI) % (Math.PI * 2)) - Math.PI;
     if (a > -Math.PI / 4 && a <= Math.PI / 4) this.hitDir = 'B';
@@ -849,6 +974,29 @@ export class Animator implements UnitAnimator {
 
     // Root offset, blended across every live action exactly the way the mixer
     // blends the rotations: weighted, then normalised by the total weight.
+    //
+    // "Exactly the way the mixer does" is the whole contract, and the predicate
+    // is where it was broken. `AnimationAction.isRunning()` is not the test for
+    // whether an action is *contributing* — it is `enabled && !paused &&
+    // timeScale !== 0 && …`, and the mixer accumulates on `enabled && weight`
+    // alone. Every one of those extra terms is a state this animator puts actions
+    // into deliberately:
+    //
+    //   `timeScale === 0`  every travel-driven `move`, so the gait is advanced by
+    //                      distance instead of by the clock. The walk's root
+    //                      curve — the whole vertical bob — never reached a
+    //                      single figure on the board.
+    //   `paused`           the frozen-time hold at contact, and every one-shot
+    //                      that has clamped: `clampWhenFinished` pauses the
+    //                      action at its last frame. So a corpse held its folded
+    //                      *rotations* while its root sprang back to the standing
+    //                      bind height, and the dead soldier stood up.
+    //   `timeScale === 0`  again, in `hold()`, which is how the choreographer
+    //                      parks at the top of a windup.
+    //
+    // In every one of those cases the rotations kept arriving and the root
+    // offset silently stopped, which is the most confusing failure this class
+    // can have: the pose is right and the figure is at the wrong height.
     _rootAcc[0] = 0;
     _rootAcc[1] = 0;
     _rootAcc[2] = 0;
@@ -856,7 +1004,7 @@ export class Animator implements UnitAnimator {
     for (let i = 0; i < this.layers.length; i++) {
       const { action, clip: c } = this.layers[i];
       const w = action.getEffectiveWeight();
-      if (w <= 1e-4 || !action.isRunning()) continue;
+      if (w <= 1e-4 || !action.enabled) continue;
       sampleRoot(c.root, action.time, _root3);
       _rootAcc[0] += _root3[0] * w;
       _rootAcc[1] += _root3[1] * w;
@@ -948,25 +1096,48 @@ export class Animator implements UnitAnimator {
    * `fore` inverts the middle joint, because a horse's carpus is a wrist and
    * folds backward while the hind hock folds forward. Getting that one sign
    * wrong is what makes a procedural horse look like a dog walking backward.
+   *
+   * Two properties this curve now has that it did not:
+   *
+   * **It closes.** Every joint ends its swing on the value it starts its stance
+   * with. The old protraction curve reached +0.64 rad at the end of swing and
+   * stance began at +0.34, so the leg snapped back 17° on the frame of every
+   * single footfall — a tick, in the frame the eye is most likely to be on.
+   *
+   * **It is matched to the ground.** `leg.stanceSwing` is derived from the
+   * stride and the animal's own hip height, so the hoof travels backward through
+   * stance at the rate the body travels forward. A fixed ±0.34 rad swept a fixed
+   * arc whatever the stride, and the difference between that arc and the ground
+   * is, by definition, skate.
    */
   private driveQuadLeg(leg: QuadLeg, phase: number, amp: number): void {
     const { upper: b1, mid: b2, lower: b3, contact, duty, fore } = leg;
     let p = phase - contact;
     p -= Math.floor(p);
     const stance = p < duty;
-    // Protraction/retraction: reaching forward through swing, driving back
-    // through stance. One smooth cycle, sharpened at the plant.
     const swingU = stance ? 0 : (p - duty) / (1 - duty);
     const stanceU = stance ? p / duty : 0;
+    // Protraction/retraction: driving back through stance at ground rate,
+    // reaching forward again through swing, front-loaded so the hoof is placed
+    // early and hangs there rather than arriving late.
+    const A = leg.stanceSwing;
     const upper = stance
-      ? amp * (0.34 - 0.68 * stanceU)
-      : amp * (-0.34 + 0.98 * Math.pow(swingU, 0.78));
+      ? amp * A * (1 - 2 * stanceU)
+      : amp * A * (-1 + 2 * Math.pow(swingU, 0.78));
+    // The fold is what lifts the hoof clear; it is at its lightest at both
+    // contacts, which is where the two halves of the curve meet.
     const fold = stance
       ? amp * (0.1 + 0.16 * Math.sin(Math.PI * stanceU))
-      : amp * (0.18 + 1.05 * Math.sin(Math.PI * Math.pow(swingU, 0.65)));
+      : amp * (0.1 + 1.05 * Math.sin(Math.PI * Math.pow(swingU, 0.65)));
     b1.rotation.x = upper;
     if (b2) b2.rotation.x = fore ? -fold : fold * 0.82;
-    if (b3) b3.rotation.x = stance ? -0.1 * amp + 0.34 * amp * stanceU : -0.5 * amp * (1 - swingU);
+    // The pastern trails through stance and extends under the leg mid-swing,
+    // returning to exactly the angle stance begins at.
+    if (b3) {
+      b3.rotation.x = stance
+        ? amp * (-0.1 + 0.34 * stanceU)
+        : amp * (0.24 - 0.34 * swingU - 0.3 * Math.sin(Math.PI * swingU));
+    }
   }
 
   private driveHorse(): void {
@@ -1012,6 +1183,9 @@ export class Animator implements UnitAnimator {
 
     const sway = Math.sin(Math.PI * 4 * phase);
     if (this.mountSpine) {
+      // Re-established every frame so the contact give below can subtract from
+      // it without ever accumulating.
+      this.mountSpine.position.y = this.mountSpineBaseY;
       this.mountSpine.rotation.z = LUMBER.sway * amp * sway;
       this.mountSpine.rotation.x = 0.018 * amp * Math.sin(Math.PI * 8 * phase);
     }
@@ -1202,6 +1376,10 @@ export class Animator implements UnitAnimator {
    */
   private resolveContacts(dt: number): void {
     if (this.plan.seated) {
+      // The mount's feet first: it is on the board and the rider is on *it*, so
+      // the barrel has to be where the hooves put it before the rider's legs are
+      // pinned to the barrel.
+      this.resolveQuadContacts(dt);
       this.holdSeatedLegs();
       return;
     }
@@ -1410,6 +1588,33 @@ export class Animator implements UnitAnimator {
     return { locked: leg.lock.locked, weight: leg.lock.weight, heelOff: leg.lock.heelOff };
   }
 
+  /** How many legs this figure's mount walks on. Zero for a biped. */
+  get hoofCount(): number {
+    return this.quadLegs.length;
+  }
+
+  /**
+   * The contact state of one hoof, in the same shape and for the same reason as
+   * `footState`: the gap between where the lock says the hoof is and where it
+   * actually ended up is the definition of hoof slide, so both are exposed and
+   * the verification script measures the gap rather than believing it.
+   */
+  hoofState(
+    i: number,
+    outTarget: THREE.Vector3,
+    outActual: THREE.Vector3,
+  ): { locked: boolean; weight: number } {
+    const leg = this.quadLegs[i];
+    outTarget.copy(leg.lock.world);
+    outActual.setFromMatrixPosition(leg.contactNode.matrixWorld);
+    return { locked: leg.lock.locked, weight: leg.lock.weight };
+  }
+
+  /** Ground distance one full locomotion cycle covers, world units. */
+  get stride(): number {
+    return this.strideWorld;
+  }
+
   /** Height of the ankle above the local floor, in world units. */
   private ankleWorldHeight(): number {
     return this.ankleHeight * this.scale;
@@ -1539,6 +1744,136 @@ export class Animator implements UnitAnimator {
     }
   }
 
+  /**
+   * Hoof contact.
+   *
+   * `driveQuadLeg` writes three joint angles straight out of the phase, which is
+   * open loop: it produces a leg cycle that *looks* like a canter and has no
+   * relationship whatever to the ground. Whether a hoof is skating is decided by
+   * the ratio between the stride the phase advances on and the arc the joint
+   * curve happens to sweep, and nothing was holding the two together.
+   *
+   * So the same contract the biped feet get, applied to the mount: **while a
+   * hoof is in stance its world position does not change.** The drive curve
+   * still authors the swing, the lift and the fold — it is a better shape than a
+   * solver would invent — and it still authors stance as the first guess. The
+   * solve then takes the guess and pins it to the board.
+   *
+   * The chain is solved to the *pastern* (`03`) rather than to the hoof (`04`),
+   * with the hoof's current offset subtracted off the target: the hoof hangs off
+   * the pastern by a rotation the drive curve owns, and a solver that tried to
+   * own it too would fight the curve for the same degree of freedom every frame.
+   */
+  private resolveQuadContacts(dt: number): void {
+    if (this.quadLegs.length === 0) return;
+    const moving = this.state === 'move';
+
+    // --- 1. plants ----------------------------------------------------------
+    for (let i = 0; i < this.quadLegs.length; i++) {
+      const leg = this.quadLegs[i];
+      if (!leg.chain) continue;
+      const lock = leg.lock;
+
+      // Where the drive curve just put this hoof, in the world.
+      _v4.setFromMatrixPosition(leg.contactNode.matrixWorld);
+      if (!lock.primed) {
+        lock.world.copy(_v4);
+        lock.world.y = this.hoofY(leg, _v4);
+        lock.primed = true;
+      }
+
+      let p = this.gaitPhase - leg.contact;
+      p -= Math.floor(p);
+      const planted = moving && p < leg.duty;
+      if (planted && !lock.locked) {
+        // Take the plant where the swing left the hoof, projected onto the
+        // board. The swing is authored, so this is continuous by construction.
+        lock.world.copy(_v4);
+        lock.world.y = this.hoofY(leg, _v4);
+        lock.locked = true;
+        this.onFootfall(leg.lateral < 0 ? 'L' : 'R', lock.world);
+      } else if (!planted && lock.locked) {
+        lock.locked = false;
+      }
+      lock.weight = planted ? hoofAuthority(p, leg.duty) : 0;
+      if (!moving) lock.primed = false;
+    }
+
+    // --- 2. barrel give -----------------------------------------------------
+    // The mount's hip solve. Measured before any leg is solved, applied to the
+    // spine, and the mount's matrices refreshed — so the legs below solve from
+    // shoulders that are already where the contact says they have to be.
+    this.applyMountGive(dt);
+
+    // --- 3. legs ------------------------------------------------------------
+    for (let i = 0; i < this.quadLegs.length; i++) {
+      const leg = this.quadLegs[i];
+      if (!leg.chain || leg.lock.weight <= 0.01) continue;
+      this.hoofTarget(leg, _v);
+      solveTwoBone(leg.chain, this.ikCtx, _v, leg.lock.weight);
+    }
+  }
+
+  /**
+   * Where this leg's chain tip has to be for its hoof to sit on its lock, in rig
+   * space.
+   *
+   * The chain is solved to the pastern and the hoof hangs off it by whatever
+   * rotation the drive curve is holding, so the offset is *measured* each frame
+   * rather than assumed: a solver and a curve that both believe they own the
+   * pastern will argue about it every frame for as long as the program runs.
+   */
+  private hoofTarget(leg: QuadLeg, out: THREE.Vector3): THREE.Vector3 {
+    toRig(this.ikCtx, leg.lock.world, out);
+    rigPosition(this.ikCtx, leg.chain!.tip, _v2);
+    rigPosition(this.ikCtx, leg.contactNode, _v3);
+    return out.add(_v2).sub(_v3);
+  }
+
+  /**
+   * Drop the barrel until the worst-off planted leg can reach its hoof.
+   *
+   * Exactly `solveHips`, one level up: freezing a contact is easy, and what makes
+   * it *read* is that the body settles to stay within reach of it. The rider goes
+   * down with the barrel — through `deckOffset`, the same channel the chariot's
+   * crew uses — because a rider who stays at a fixed height while the horse under
+   * him drops is a rider floating over his saddle.
+   */
+  private applyMountGive(dt: number): void {
+    const spine = this.mountSpine;
+    let want = 0;
+    let hip = 0;
+    for (let i = 0; i < this.quadLegs.length; i++) {
+      const leg = this.quadLegs[i];
+      if (!leg.chain || leg.lock.weight <= 0.02) continue;
+      hip = Math.max(hip, leg.hipHeight);
+      rigPosition(this.ikCtx, leg.chain.a, _v2);
+      this.hoofTarget(leg, _v3);
+      const need = _v2.distanceTo(_v3);
+      const reach = chainReach(leg.chain) * IK.maxExtension;
+      if (need > reach) want = Math.max(want, (need - reach) * leg.lock.weight);
+    }
+    if (hip > 0) want = Math.min(want, hip * IK.mountGive);
+    this.mountGive = damp(this.mountGive, want, IK.mountGiveRate, dt);
+    if (this.mountGive < 1e-5 && want <= 0) this.mountGive = 0;
+    // Written every frame from the drive curve's value, never accumulated: the
+    // mount drive has already re-established `position.y` this frame.
+    if (spine && this.mountGive > 0) {
+      spine.position.y -= this.mountGive;
+      spine.updateMatrixWorld(true);
+    }
+    // The rider follows next frame's retarget. One frame of lag on a value that
+    // moves a couple of millimetres is not visible; writing the root here, after
+    // the root curve has already been composed, would be.
+    this.deckOffset.y = -this.mountGive;
+  }
+
+  /** Board height under a hoof, plus that hoof's own bind clearance. */
+  private hoofY(leg: QuadLeg, at: THREE.Vector3): number {
+    const base = this.ground ? this.ground(at.x, at.z) : 0;
+    return base + leg.bindY * this.scale;
+  }
+
   private onFootfall(side: 'L' | 'R', world: THREE.Vector3): void {
     if (!this.audio || this.footstepGain <= 0 || this.state !== 'move') return;
     const cue = this.unit.meta.mount === 'horse' ? 'hoofbeat' : 'armourShift';
@@ -1585,18 +1920,24 @@ export class Animator implements UnitAnimator {
    * The trunk and the trebuchet beam are driven from the same 0..2 attack
    * progress the attack clips are authored against, so they can never drift out
    * of phase with the body that is supposed to be doing the work.
+   *
+   * `enabled`, not `isRunning()`, for the same reason the root blend uses it:
+   * `hold('attackWindup', 1)` — which is precisely how the choreographer parks
+   * at the top of the coil — sets the action's time scale to zero, and a windup
+   * held at the top is exactly when the trunk must stay coiled rather than
+   * quietly reverting to its idle sway.
    */
   private updateAttackProgress(): void {
     const w = this.actions.get(clipKeyFor(this.key, 'attackWindup'));
     const s = this.actions.get(clipKeyFor(this.key, 'attackStrike'));
     let a = 0;
     let total = 0;
-    if (w && w.isRunning() && w.getEffectiveWeight() > 1e-3) {
+    if (w && w.enabled && w.getEffectiveWeight() > 1e-3) {
       const weight = w.getEffectiveWeight();
       a += (w.time / CLIP.attackWindup) * weight;
       total += weight;
     }
-    if (s && s.isRunning() && s.getEffectiveWeight() > 1e-3) {
+    if (s && s.enabled && s.getEffectiveWeight() > 1e-3) {
       const weight = s.getEffectiveWeight();
       a += (1 + s.time / CLIP.attackStrike) * weight;
       total += weight;

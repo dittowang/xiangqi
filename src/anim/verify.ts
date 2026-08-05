@@ -45,7 +45,7 @@ import { solveTwoBoneRaw, stanceWeight } from './ik.ts';
 import { Animator, createAnimator } from './controller.ts';
 import { PigmentField } from './pigment.ts';
 import { Choreography } from './choreography.ts';
-import { CAPTURE, CAPTURE_HOLD, CLIP, GAIT, IK, type GaitName } from './timing.ts';
+import { CAPTURE, CAPTURE_HOLD, CLIP, GAIT, IK, WALK, type GaitName } from './timing.ts';
 
 // `@types/node` is not a dependency and the brief forbids adding one, so the
 // two Node globals this script touches are declared locally.
@@ -547,6 +547,97 @@ function verifyContact(factory: ReturnType<typeof createCharacters>): void {
     check(
       r.maxTargetError < 0.0015,
       `${UNIT_KEY[type]}: ankle missed its plant by ${f(r.maxTargetError, 5)}`,
+    );
+    b.anim.dispose();
+    b.unit.dispose();
+  }
+
+  // --- hooves ---------------------------------------------------------------
+  // The mount's feet are on the board too, and the thing that used to set their
+  // cycle rate was the *rider's* shin. Two numbers are checked: the stride a
+  // cycle covers, which must come from the animal's own hip height, and the
+  // world displacement of a hoof while its lock is held, which must be nil.
+  console.log('\n=== contact: hooves ===');
+  console.log('  unit        stride/cycle   hip height   plants   hoof slide/frame (locked)   max |target−actual|');
+  for (const type of [PieceType.Horse, PieceType.Elephant]) {
+    const b = makeUnit(factory, type);
+    const anim = b.anim;
+    check(anim.hoofCount === 4, `${UNIT_KEY[type]}: ${anim.hoofCount} hooves resolved, expected 4`);
+    // Hip height, read back out of the stride so the two can never disagree.
+    const gait = b.unit.meta.gait as GaitName;
+    const hip = anim.stride / (GAIT[gait].strideOverLeg * b.unit.root.scale.x);
+    // The rider's own leg, which is what used to set this.
+    const riderLeg =
+      (b.unit.bones.shinL.position.length() + b.unit.bones.footL.position.length()) *
+      b.unit.root.scale.x;
+    anim.play('move', 0);
+    anim.setFacing(0, true);
+    b.unit.root.position.set(0, 0, 4);
+    const dtH = 1 / 60;
+    const speedH = 1 / WALK.secondsPerUnit[gait];
+    const tgt = new THREE.Vector3();
+    const act = new THREE.Vector3();
+    const prevAct: THREE.Vector3[] = [];
+    const held: boolean[] = [];
+    for (let i = 0; i < anim.hoofCount; i++) {
+      prevAct.push(new THREE.Vector3());
+      held.push(false);
+    }
+    let worstHoof = 0;
+    let sumHoof = 0;
+    let nHoof = 0;
+    let worstErr = 0;
+    let hoofPlants = 0;
+    for (let s = 0; s < 300; s++) {
+      const d = speedH * dtH;
+      b.unit.root.position.z -= d;
+      anim.reportTravel(d);
+      anim.update(dtH);
+      for (let i = 0; i < anim.hoofCount; i++) {
+        const st = anim.hoofState(i, tgt, act);
+        // Only full-authority stance is measured: the blend at each end of a
+        // plant is the drive curve handing over, and is meant to move.
+        const full = st.locked && st.weight > 0.999;
+        if (full && held[i]) {
+          const slide = act.distanceTo(prevAct[i]);
+          worstHoof = Math.max(worstHoof, slide);
+          sumHoof += slide;
+          nHoof++;
+        }
+        if (full && !held[i]) hoofPlants++;
+        if (full) worstErr = Math.max(worstErr, act.distanceTo(tgt));
+        held[i] = full;
+        prevAct[i].copy(act);
+      }
+    }
+    const frameTravel = speedH * dtH;
+    const meanHoof = sumHoof / Math.max(1, nHoof);
+    console.log(
+      `  ${UNIT_KEY[type].padEnd(10)}  ${f(anim.stride, 4).padStart(11)}   ${f(hip * b.unit.root.scale.x, 4).padStart(9)}` +
+        `   ${String(hoofPlants).padStart(6)}   ${f(meanHoof, 5)} mean / ${f(worstHoof, 5)} max` +
+        `   ${f(worstErr, 5).padStart(11)}   (one frame of ground: ${f(frameTravel, 4)})`,
+    );
+    note(
+      `  ${UNIT_KEY[type]}: stride ${f(anim.stride, 4)} now comes from the animal's hip height; the ` +
+        `rider's own leg is ${f(riderLeg, 4)}, which is what it used to be derived from`,
+    );
+    check(hoofPlants >= 8, `${UNIT_KEY[type]}: only ${hoofPlants} hoof plants over 300 frames`);
+    // The bound is on the MEAN, not the max, and it is not 1e-9 like the biped's.
+    // A biped's contact solve owns the root and can move the whole figure to
+    // satisfy a plant; a mount's cannot — the root belongs to the choreographer.
+    // Worse, both animals are built with columnar legs: the horse's fore chain
+    // spans 0.652 rig against a hip height of 0.719, so it is already at full
+    // extension standing still, and the elephant's is the same by design. All
+    // the slack there is comes from the barrel dropping, and the residual at the
+    // very ends of stance is that geometry, not the solver.
+    check(
+      meanHoof < frameTravel * 0.35,
+      `${UNIT_KEY[type]}: a locked hoof averaged ${f(meanHoof, 5)} of travel per frame ` +
+        `(${((meanHoof / frameTravel) * 100).toFixed(0)}% of the ground covered)`,
+    );
+    check(
+      anim.stride > riderLeg * 1.4,
+      `${UNIT_KEY[type]}: stride ${f(anim.stride, 4)} is still in the range of the rider's leg ${f(riderLeg, 4)}`,
     );
     b.anim.dispose();
     b.unit.dispose();

@@ -289,7 +289,7 @@ export class PigmentField {
       _v.normalize();
       const speed = PIGMENT.speed * force * (1 + rng.gauss() * PIGMENT.speedJitter);
       this.vel[p3] = _v.x * speed;
-      this.vel[p3 + 1] = _v.y * speed + PIGMENT.speed * 0.35 * force;
+      this.vel[p3 + 1] = _v.y * speed + PIGMENT.speed * PIGMENT.loft * force;
       this.vel[p3 + 2] = _v.z * speed;
       if (o.impulse) {
         const g = PIGMENT.impulseGain * force * (0.4 + rng.next());
@@ -502,22 +502,38 @@ export class PigmentField {
         this.spin[p3 + 1] *= damp;
         this.spin[p3 + 2] *= damp;
 
-        // The board.
+        // The board. A chip does not stop the instant it touches it: it takes a
+        // low bounce, skids, takes a smaller one, and lies down. Each of those
+        // three is a separate line here and the eye reads all three.
         const floor = (this.ground ? this.ground(this.pos[p3], this.pos[p3 + 2]) : 0) + this.size[i * 2 + 1] * 0.22;
         if (this.pos[p3 + 1] <= floor) {
           this.pos[p3 + 1] = floor;
-          if (this.vel[p3 + 1] < 0) this.vel[p3 + 1] = -this.vel[p3 + 1] * PIGMENT.bounce;
-          this.vel[p3] *= PIGMENT.friction;
-          this.vel[p3 + 2] *= PIGMENT.friction;
+          const impact = -this.vel[p3 + 1];
+          if (impact > 0) this.vel[p3 + 1] = impact * PIGMENT.bounce;
+          // Tangential loss scales with how hard it came down: a chip dropping
+          // almost vertically loses nearly all of its slide, one arriving flat
+          // keeps most of it and skids.
+          const bite = PIGMENT.friction + (1 - PIGMENT.friction) * Math.exp(-4 * Math.max(0, impact));
+          this.vel[p3] *= bite;
+          this.vel[p3 + 2] *= bite;
           this.spin[p3] *= 0.5;
           this.spin[p3 + 1] *= 0.5;
           this.spin[p3 + 2] *= 0.5;
+          // Sliding along the board between bounces: friction that acts over
+          // time, not only on the instant of contact.
+          const skid = Math.exp(-PIGMENT.slide * dt);
+          this.vel[p3] *= skid;
+          this.vel[p3 + 2] *= skid;
           const rest = Math.hypot(this.vel[p3], this.vel[p3 + 1], this.vel[p3 + 2]);
           if (rest < PIGMENT.restSpeed) {
             // Settle flat: a chip at rest lies on the silk, it does not stand
-            // on edge.
+            // on edge. The residual spin becomes the angle it came to rest at,
+            // so a drift of laid chips is not a drift of aligned chips.
             this.state[i] = STATE_RESTING;
             this.restAt[i] = this.age[i];
+            this.vel[p3] = 0;
+            this.vel[p3 + 1] = 0;
+            this.vel[p3 + 2] = 0;
             _q.setFromAxisAngle(_v.set(1, 0, 0), -Math.PI / 2);
             _qd.setFromAxisAngle(_v.set(0, 0, 1), this.spin[p3 + 1]);
             _q.premultiply(_qd);
