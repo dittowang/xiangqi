@@ -43,6 +43,7 @@ import * as PARTS from './parts/index.ts';
 import { addSmoothNormals, mergeGeometryList, triangleCount } from './parts/prim.ts';
 import {
   resolvePigment,
+  STATIC_BONE,
   type AttachSpec,
   type BoneSpec,
   type InstancedPart,
@@ -256,9 +257,33 @@ export class Factory implements CharacterFactory {
     const bindWorld = new Map<string, THREE.Matrix4>();
     for (const n of BONE_ORDER) bindWorld.set(n, rig.bindMatrix[n]);
 
+    // --- the static bone ----------------------------------------------------
+    // A bone hung off the unit *root group* rather than off the skeleton, at
+    // the identity. It is in the skeleton's bone list — so anything weighted to
+    // it merges into the unit's skinned mesh at no extra draw call — but it is
+    // outside the bone hierarchy, so no clip, no IK pass and no contact
+    // correction can reach it. `root` in particular carries every clip's
+    // authored root translation, including the death collapse's 238 mm drop,
+    // and furniture the figure stands on must not follow the figure down.
+    // Created only when a part asks for it, so no unit pays a bone it never
+    // uses.
+    const wantsStatic =
+      group.parts.some((p) => p.mountBone === STATIC_BONE) ||
+      group.instanced.some((p) => p.mountBone === STATIC_BONE);
+    let staticBone: THREE.Bone | null = null;
+    if (wantsStatic) {
+      staticBone = new THREE.Bone();
+      staticBone.name = STATIC_BONE;
+      root.add(staticBone);
+      bindWorld.set(STATIC_BONE, IDENTITY.clone());
+    }
+
     const mountBones: Record<string, THREE.Object3D> = {};
     const objectFor = (name: string): THREE.Object3D =>
-      mountBones[name] ?? rig.bones[name as BoneName] ?? rig.bones.root;
+      (name === STATIC_BONE ? staticBone : null) ??
+      mountBones[name] ??
+      rig.bones[name as BoneName] ??
+      rig.bones.root;
 
     // --- mount bones --------------------------------------------------------
     this.buildMountBones(group.bones, bindWorld, mountBones, objectFor);
@@ -277,6 +302,12 @@ export class Factory implements CharacterFactory {
         boneNames.push(name);
         allBones.push(b);
       }
+    }
+    // The static bone is deliberately *not* published in `mountBones`: it drives
+    // no geometry the animator has any business touching.
+    if (staticBone) {
+      boneNames.push(STATIC_BONE);
+      allBones.push(staticBone);
     }
     const boneIndex = new Map<string, number>();
     boneNames.forEach((n, i) => boneIndex.set(n, i));

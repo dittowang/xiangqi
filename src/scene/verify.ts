@@ -526,12 +526,13 @@ section('heightAt');
     lo: number,
     hi: number,
     fixed: number,
+    sample: (x: number, z: number) => number = (x, z) => board.surfaceAt(x, z),
   ): { slope: number; at: number } => {
     let worst = 0;
     let at = lo;
     for (let v = lo; v < hi; v += stepMm) {
-      const a = axis === 'z' ? board.surfaceAt(fixed, v) : board.surfaceAt(v, fixed);
-      const b = axis === 'z' ? board.surfaceAt(fixed, v + stepMm) : board.surfaceAt(v + stepMm, fixed);
+      const a = axis === 'z' ? sample(fixed, v) : sample(v, fixed);
+      const b = axis === 'z' ? sample(fixed, v + stepMm) : sample(v + stepMm, fixed);
       const s = Math.abs(b - a) / stepMm;
       if (s > worst) {
         worst = s;
@@ -541,17 +542,43 @@ section('heightAt');
     return { slope: worst, at };
   };
 
-  // 1. The standable region: silk plus the frame's flat top face. The river
-  //    channel is excluded — no intersection lies inside it, nothing stands
-  //    there, and its walls are steep on purpose.
-  const standZa = slopeOver('z', BANK_HALF + 0.002, SILK_HALF_Z + 0.86, 0.37);
-  const standZb = slopeOver('z', -(SILK_HALF_Z + 0.86), -BANK_HALF - 0.002, 0.37);
-  const standZ = standZa.slope >= standZb.slope ? standZa : standZb;
+  // 1. The standable region: silk, the frame's flat top face, and — the whole
+  //    point of the query — straight across the river channel.
+  //
+  //    This used to sample `surfaceAt` and skip the channel, on the grounds that
+  //    no intersection lies inside it and nothing stands there. Both halves of
+  //    that were true and the conclusion was wrong: pieces do not STAND in the
+  //    channel, they WALK THROUGH it, on every crossing move of every game.
+  //
+  //    Gradient alone would not have caught what was there, which is worth
+  //    saying because it is the reason this check grew a second clause. The old
+  //    walkable surface stepped down to the water film at −0.048 and back up the
+  //    cut wall at 1.9:1 — steep, but inside the 2.5:1 this asserts. The defect
+  //    was not a cliff, it was a TROUGH: 62 mm deep and 0.33 wide, narrower than
+  //    the stride that had to cross it, so a figure put one foot on the bank and
+  //    one in the water and `solveHips` split the difference — 70 mm of pelvis on
+  //    a 兵, 84 mm on a 俥, against 21 mm of ordinary gait bob. So the scan also
+  //    asks how far below the silk the planting surface ever goes, and it reads
+  //    `heightAt`, which is the function that decides where a foot can go.
+  //
+  //    The scan line at x = 0.37 clears every piece base (BASE_RADIUS is 0.345),
+  //    so this is the bare board, the same as before.
+  const plant = (x: number, z: number) => board.heightAt(x, z);
+  const standZ = slopeOver('z', -(SILK_HALF_Z + 0.86), SILK_HALF_Z + 0.86, 0.37, plant);
   const standX = slopeOver('x', -(SILK_HALF_X + 0.86), SILK_HALF_X + 0.86, 2.5);
+  let deepest = 0;
+  let deepestAt = 0;
+  for (let z = -SILK_HALF_Z; z <= SILK_HALF_Z; z += stepMm) {
+    const d = board.heightAt(0.37, z) - silkSag(0.37, z);
+    if (d < deepest) {
+      deepest = d;
+      deepestAt = z;
+    }
+  }
   check(
-    'gentle gradients everywhere a figure can stand (Z)',
-    standZ.slope < 2.5,
-    `steepest ${fmt(standZ.slope)}:1 at z=${fmt(standZ.at)}`,
+    'gentle gradients and no trough anywhere a figure can stand or walk (Z)',
+    standZ.slope < 2.5 && deepest > -0.01,
+    `steepest ${fmt(standZ.slope)}:1 at z=${fmt(standZ.at)}; deepest ${fmt(deepest)} below the silk at z=${fmt(deepestAt)}, channel included`,
   );
   check(
     'gentle gradients everywhere a figure can stand (X)',

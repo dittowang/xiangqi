@@ -622,9 +622,15 @@ export class Director implements CameraDirector {
     // has closed `contactFraction` of the gap by then, so for a long capture the
     // event happens nowhere near the halfway line — and for a 砲, which closes
     // none of it, the exchange is the whole gap and the near end is the gun.
-    // Clamped rather than trusted: a fraction outside [0, 1] would put the near
-    // end off the attack line entirely and take `halfSpan` negative with it.
-    const frac = clamp(contactFraction ?? OTS_CONTACT_FRACTION_FALLBACK, 0, 1);
+    // Clamped rather than trusted: this crosses a subsystem boundary, and a
+    // fraction outside [0, 1] would put the near end off the attack line
+    // entirely and take `halfSpan` negative with it. A non-finite one would take
+    // the whole framing to NaN and strand the camera, which is a bug that costs
+    // an afternoon to trace back to one division; it falls back instead.
+    const frac =
+      typeof contactFraction === 'number' && Number.isFinite(contactFraction)
+        ? clamp(contactFraction, 0, 1)
+        : OTS_CONTACT_FRACTION_FALLBACK;
     const nearEnd = sep * frac;
     const lookAlong = (nearEnd + sep) * 0.5;
     const lookX = ax + ux * lookAlong;

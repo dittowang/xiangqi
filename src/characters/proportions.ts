@@ -11,7 +11,12 @@
  *
  *   1. HEIGHT      — total silhouette height in world units, *including* crest
  *                    and mount and anything the figure carries. Monotone with
- *                    piece value: 0.63 for a conscript, 1.26 for a general.
+ *                    piece value: 0.76 for a conscript, 1.82 for a general.
+ *                    The *ladder* the architecture fixes is measured at the
+ *                    crown — the crest socket on top of the helmet, which is
+ *                    where a figure's own height stops and its plume, standard
+ *                    or parasol starts — and it runs 0.66 (兵) → 1.32 (帥).
+ *                    See THE HEIGHT LADDER below.
  *   2. ASPECT      — the larger horizontal extent ÷ height. Foot units are
  *                    vertical strokes (0.48 .. 0.61), the beast and vehicle
  *                    units horizontal ones (1.12 .. 1.68). `widthClass` is a
@@ -37,10 +42,10 @@
  *
  * Two pairs are close on one axis and must be read on another, which is exactly
  * what having three orthogonal axes is for:
- *   - advisor 0.60 and general 0.61 are the same aspect. They differ by 73% in
+ *   - advisor 0.60 and general 0.61 are the same aspect. They differ by 117% in
  *     height and by a whole width class.
  *   - horse 1.38 and chariot 1.35 are nearly the same aspect *and* nearly the
- *     same height. They differ by 70% in cross-file width (0.50 against 0.86)
+ *     same height. They differ by 102% in cross-file width (0.44 against 0.89)
  *     and by crown, and by mass distribution a bounding box cannot see.
  * `verify.ts` reports the tightest aspect pair so this cannot quietly worsen.
  *
@@ -63,16 +68,52 @@
  * multiple of `proportions.height`, so `scale` and `height` are both uniform
  * multipliers on the finished silhouette and neither can change a unit's
  * *aspect ratio* — that is fixed by the geometry. A chariot with an aspect of
- * 1.35 that must fit 1.36 across is therefore 1.01 tall, and no choice of scale
- * makes it both compact and towering. The height ladder is what is left after
- * the footprint cap, not something chosen freely.
+ * 1.35 whose along-rank reach may not pass 1.0 is therefore about 1.17 tall,
+ * and no choice of scale makes it both compact and towering. The height ladder
+ * is what is left after the footprint cap, not something chosen freely.
  *
- * Second, the cap is applied per axis, because the two axes do different
- * damage. **Cross-file width (X) is held under 1.0 for every unit**: neighbours
- * on a rank are one unit apart in X, so that is the axis that hides pieces.
- * Depth (Z) is allowed out to ~1.36 for the beast and vehicle units, which
- * leans about 0.18 into the rank in front and behind — enough to read as
- * presence, not enough to cover an intersection.
+ * Second, the cap is applied per axis, and on the *reach from the origin*
+ * rather than on the box, because a shape centred off its origin crowds one
+ * side twice as hard as its width implies. `verify.ts` asserts
+ * `reachX < 1.0` and `reachZ < 1.0`: a piece may lean over the line between
+ * two intersections, but it may never reach the next one. Across the files no
+ * unit passes 0.58; along the ranks the beast and vehicle units lean out to
+ * 0.93, which is presence rather than crowding — but it is also the wall the
+ * ladder below runs into.
+ *
+ * THE HEIGHT LADDER, AND WHY IT IS NOT ONE MULTIPLY
+ * -------------------------------------------------
+ * The architecture fixes the ladder at **0.66 (兵) → 1.32 (帥)** world units,
+ * measured at the *crown* — the crest socket on top of the helmet, where the
+ * figure stops and its plume, standard or parasol begins. That is the number a
+ * player reads as piece value, and it is the number the animation layer prices
+ * a move in: a move's duration is linear in figure scale at a fixed cadence,
+ * because gait phase comes from ground covered. One square is 1.85 兵 statures,
+ * so the 兵 needs 6.5 steps to cross it and the scale of the cast *is* the
+ * pacing of the game.
+ *
+ * A rescale pass left the cast at 0.54 → 0.99 on that ladder — about 20% short
+ * — and a 兵 at 2.57 s per square. The scales below put both ends back on
+ * spec (0.660 → 1.320 measured) and the 兵 at 2.11 s.
+ *
+ * It could not be one multiply. A uniform 1.22× takes the elephant's
+ * along-rank reach from 0.85 to 1.04 and it starts covering the next
+ * intersection, so the increase is spent where there is room for it:
+ *
+ *   | family                       | factor | what stops it                  |
+ *   |------------------------------|--------|--------------------------------|
+ *   | foot (兵 卒 仕 士)            | 1.218  | nothing — reach 0.24 at worst  |
+ *   | 帥 將 on his dais            | 1.370  | nothing — reach 0.51 at worst  |
+ *   | 砲 crew + trebuchet          | 1.170  | reachZ 0.90                    |
+ *   | 傌 horse, 俥 chariot          | 1.13 / 1.12 | reachZ 0.87 / 0.92        |
+ *   | 相 elephant                  | 1.100  | reachZ 0.93 — the binding one  |
+ *
+ * So the ladder's two ends are on spec and its middle is 6-10% below where a
+ * proportional restoration would put it. The elephant is what stops it: it is
+ * the deepest silhouette in the cast relative to its own origin, and its reach
+ * is the first thing that would cover a neighbour's intersection. Buying the
+ * rest of the ladder means making the elephant shallower, which is a change to
+ * `units/elephant.ts`, not to this table.
  *
  * SCALE AND HEIGHT ARE STILL NOT THE SAME KNOB
  * --------------------------------------------
@@ -219,7 +260,7 @@ const BASE: Record<UnitKey, BaseSpec> = {
   // a single plume that is the only thing breaking his outline above the helmet.
   soldier: {
     proportions: {
-      scale: 0.316,
+      scale: 0.3850,
       height: 1.75,
       headRatio: 0.155, // 6.5 heads — the stumpy Han-relief proportion
       shoulderWidth: 0.42,
@@ -246,7 +287,7 @@ const BASE: Record<UnitKey, BaseSpec> = {
       // A column: the skirt is barely wider than the shoulders.
       taper: 1.05,
     },
-    designHeight: 0.63,
+    designHeight: 0.76,
     designAspect: 0.48,
     widthClass: 'narrow',
     budget: 9000,
@@ -259,7 +300,7 @@ const BASE: Record<UnitKey, BaseSpec> = {
   // and the soft cap's two hanging tails read even at silhouette size.
   advisor: {
     proportions: {
-      scale: 0.386,
+      scale: 0.4703,
       height: 1.66,
       headRatio: 0.148,
       shoulderWidth: 0.4,
@@ -290,7 +331,7 @@ const BASE: Record<UnitKey, BaseSpec> = {
       // silhouette this piece must never be confused with.
       taper: 0.78,
     },
-    designHeight: 0.69,
+    designHeight: 0.84,
     designAspect: 0.60,
     widthClass: 'narrow',
     budget: 11000,
@@ -304,7 +345,7 @@ const BASE: Record<UnitKey, BaseSpec> = {
   // check pulse under him is never occluded.
   general: {
     proportions: {
-      scale: 0.578,
+      scale: 0.7916,
       height: 1.21,
       headRatio: 0.138, // 7.2 heads — the heroic Dunhuang proportion
       shoulderWidth: 0.315,
@@ -331,7 +372,7 @@ const BASE: Record<UnitKey, BaseSpec> = {
       // A cone. Cloak and robe flare to a wide hem over the command platform.
       taper: 1.9,
     },
-    designHeight: 1.26,
+    designHeight: 1.82,
     designAspect: 0.61,
     widthClass: 'medium',
     budget: 16000,
@@ -345,7 +386,7 @@ const BASE: Record<UnitKey, BaseSpec> = {
   // and hunched, hands on the beam.
   cannon: {
     proportions: {
-      scale: 0.510,
+      scale: 0.5967,
       height: 1.13,
       headRatio: 0.153,
       shoulderWidth: 0.29,
@@ -371,7 +412,7 @@ const BASE: Record<UnitKey, BaseSpec> = {
       cloak: false,
       taper: 1.1,
     },
-    designHeight: 0.81,
+    designHeight: 0.94,
     designAspect: 1.68,
     widthClass: 'wide',
     budget: 24000,
@@ -383,7 +424,7 @@ const BASE: Record<UnitKey, BaseSpec> = {
   // the croup to lengthen it further. Paired horns on the helm.
   horse: {
     proportions: {
-      scale: 0.542,
+      scale: 0.5734,
       height: 0.97,
       headRatio: 0.152,
       shoulderWidth: 0.24,
@@ -410,7 +451,7 @@ const BASE: Record<UnitKey, BaseSpec> = {
       // The barrel and legs are the wide part; the rider narrows it upward.
       taper: 1.35,
     },
-    designHeight: 0.97,
+    designHeight: 1.03,
     designAspect: 1.38,
     widthClass: 'wide',
     budget: 20000,
@@ -423,7 +464,7 @@ const BASE: Record<UnitKey, BaseSpec> = {
   // and the chariot at a glance. Segmented trunk, flat plate ears, tusks.
   elephant: {
     proportions: {
-      scale: 0.551,
+      scale: 0.6061,
       height: 0.735,
       headRatio: 0.157,
       shoulderWidth: 0.185,
@@ -449,7 +490,7 @@ const BASE: Record<UnitKey, BaseSpec> = {
       cloak: false,
       taper: 1.45,
     },
-    designHeight: 1.05,
+    designHeight: 1.22,
     designAspect: 1.12,
     widthClass: 'wide',
     budget: 26000,
@@ -463,7 +504,7 @@ const BASE: Record<UnitKey, BaseSpec> = {
   // it. Driver wears a low crown with a flat fan crest.
   chariot: {
     proportions: {
-      scale: 0.561,
+      scale: 0.6059,
       height: 0.72,
       headRatio: 0.15,
       shoulderWidth: 0.182,
@@ -491,7 +532,7 @@ const BASE: Record<UnitKey, BaseSpec> = {
       // it going cone-shaped like the general.
       taper: 0.95,
     },
-    designHeight: 0.90,
+    designHeight: 1.12,
     designAspect: 1.35,
     widthClass: 'wide',
     budget: 32000,

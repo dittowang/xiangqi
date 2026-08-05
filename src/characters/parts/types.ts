@@ -25,6 +25,40 @@ export type V2 = [number, number];
 export type V3 = [number, number, number];
 
 /**
+ * The one bone that is not in the skeleton's own hierarchy.
+ *
+ * `Part.mountBone = STATIC_BONE` hangs a geometry off the **unit root group**
+ * instead of off a bone, so nothing an animation clip does can reach it. The
+ * factory creates it (at the identity, i.e. exactly where the part was
+ * authored) only for units that ask for it, and it costs no extra draw call:
+ * the geometry still merges into the unit's skinned mesh, it is simply weighted
+ * to a bone that never moves.
+ *
+ * It exists for **furniture the figure stands on rather than wears** — the 帥's
+ * command dais is the whole reason. The dais used to be bound rigidly to the
+ * `root` bone, which is the bone every clip's authored root translation is
+ * written to, so the death collapse's 238 mm drop took the platform down with
+ * the body and the general died standing on a dais that had sunk through the
+ * board. A thing the figure stands on does not move when the figure falls off
+ * it.
+ *
+ * It follows the unit root, so it still travels and turns with the piece; it
+ * just does not listen to the skeleton.
+ */
+export const STATIC_BONE = 'static';
+
+/**
+ * Pin every geometry in a group to `STATIC_BONE`. Convenience for the common
+ * case, where a whole sub-assembly — a platform, a plinth, a mooring — is
+ * furniture rather than anatomy.
+ */
+export function pinStatic(g: PartGroup): PartGroup {
+  for (const p of g.parts) p.mountBone = STATIC_BONE;
+  for (const p of g.instanced) p.mountBone = STATIC_BONE;
+  return g;
+}
+
+/**
  * A slot in the army palette rather than a literal pigment. Nearly every part
  * should use one of these; a literal `PigmentName` is for the handful of things
  * that are the same substance in both armies (bone, flesh, timber, blade iron).
@@ -68,6 +102,9 @@ export interface Part {
    * Parent this geometry to a *mount* bone (`'horse.neck'`, `'chariot.wheelL'`,
    * `'elephant.trunk03'`) as a rigid child rather than skinning it to the
    * humanoid rig. `boneHint` is still required and is used only for grouping.
+   *
+   * `STATIC_BONE` is the special case: it parents the geometry to the unit root
+   * rather than to anything the animator can move.
    */
   mountBone?: string;
   /** Extra humanoid bones allowed to influence this part, beyond the automatic

@@ -192,7 +192,12 @@ const saver = new SaveScheduler();
 /** Hard-edged pigment chips. Budgeted and pooled; never allocates per capture. */
 const pigment = createPigmentField({
   budget: governorSettingsParticleBudget(),
-  ground: rig.heightAt,
+  // surfaceAt, not heightAt. heightAt is what the ANIMATOR plants feet against,
+  // and it now bridges the river channel so a figure crossing does not drop an
+  // eighth of its height mid-stride. Pigment is not walking: a chip drifting
+  // over the channel should settle on the water, not hover at the bridged
+  // height with nothing under it.
+  ground: rig.board.surfaceAt,
 });
 scene.add(pigment.group);
 

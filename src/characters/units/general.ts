@@ -52,7 +52,7 @@ import type { BoneName } from '@core/contracts.ts';
 import { PieceType, Side } from '@core/types.ts';
 import { registerUnit, type UnitBuildContext } from '@characters/factory.ts';
 import type { Rig, RigOptions } from '@characters/rig.ts';
-import type { Part, PartGroup, V2, V3 } from '@characters/parts/types.ts';
+import { pinStatic, type Part, type PartGroup, type V2, type V3 } from '@characters/parts/types.ts';
 
 // ---------------------------------------------------------------------------
 // Local helpers — deliberately duplicated rather than shared. `units/` holds
@@ -110,8 +110,16 @@ function buildGeneral(ctx: UnitBuildContext): PartGroup {
   // from there, so the eye reads a post with a head rather than a man in a
   // cloak. It is now a pedestal — the step under the feet is what carries the
   // read, and a step reads from its *height* above the board, not its width.
+  //
+  // IT IS FURNITURE, NOT ANATOMY, so every piece of it is pinned to
+  // `STATIC_BONE` — the one bone that hangs off the unit root instead of off
+  // the skeleton. Bound to `root` (the obvious choice, and the wrong one) it
+  // followed the bone every clip writes its authored root translation to: the
+  // death collapse drops that bone 238 mm, and the general died on a dais that
+  // had sunk 194 mm through the board with him. A platform a man stands on does
+  // not fall when he does.
   const platformTop = han ? h * 0.27 : h * 0.3;
-  mergeInto(g, han ? hanDais(ctx, h, platformTop) : chuPlinth(ctx, h, platformTop), P);
+  mergeInto(g, pinStatic(han ? hanDais(ctx, h, platformTop) : chuPlinth(ctx, h, platformTop)), P);
 
   // --- 2. the rig, lifted and posed ---------------------------------------
   // Two builds: the first to read the A-pose joint positions, the second with

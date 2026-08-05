@@ -1244,7 +1244,11 @@ export class Board implements BoardScene {
   /**
    * Height of the bare board at a world point: silk, incision-free, plus the
    * timber frame outside the silk and the river's water surface inside the
-   * channel. Marks press against this; feet plant against `heightAt`.
+   * channel. This is the board **as built** — what a mark presses against and
+   * what a dropped thing would come to rest on.
+   *
+   * It is NOT where a foot can be planted. Nothing can stand on a water film,
+   * and `heightAt` is the query that knows it.
    */
   surfaceAt(x: number, z: number): number {
     const ax = Math.abs(x);
@@ -1266,12 +1270,59 @@ export class Board implements BoardScene {
   }
 
   /**
-   * What the animator plants feet against: the board, plus any piece base
-   * standing at this point. A figure stepping onto an occupied square genuinely
-   * steps up 46 mm, and the foot IK sees it.
+   * What the animator plants feet against: the board with the river channel
+   * spanned, plus any piece base standing at this point. A figure stepping onto
+   * an occupied square genuinely steps up 46 mm, and the foot IK sees it.
+   *
+   * **The channel is not a floor.** `surfaceAt` reports the water film inside it
+   * — correctly, that is the top surface there — and handing that to the foot
+   * solver put a TROUGH in the walkable surface: 62 mm below the stone cap and
+   * 0.33 wide. Not a cliff — the descent is the cut wall at 1.9:1, inside the
+   * gradient any check here allows — which is why gradient never caught it. The
+   * trap is the *scale*: 0.33 of trough against a 兵's 0.307 stride is too wide
+   * to step over, and the 0.032 of cut wall leading down into it is far too
+   * narrow to walk down, so one stride spans the entire descent. Every crossing
+   * move landed one foot on the bank and one in the water, `solveHips` split the
+   * difference, and the pelvis dropped 70 mm on a 兵 — 12% of its stature — and
+   * 84 mm on a 俥, against the 21 mm of bob a level walk carries. Every piece
+   * that crosses the river did this, on every crossing, which is most of a game.
+   *
+   * Two ways out, and the one not taken first: make the film standable and let
+   * the figure genuinely wade. It cannot work here. The film is not the bottom
+   * of anything — under it is 120 mm of channel with 66° walls — so a foot
+   * planted on it is not wading, it is standing on the surface of the water, and
+   * the water is a live ripple shader with no contact response to give it. To
+   * wade honestly the foot would have to reach the bed, which is a 134 mm step
+   * down: twice the drop we are trying to remove.
+   *
+   * So the channel is spanned: the banking cap is carried straight across it.
+   * The 馬 and the 俥 genuinely do stride clear of it — 0.943 and 1.967 of stride
+   * against 0.53 of channel — but a 兵's stride is 0.307 and it plants once or
+   * twice inside, so this is not "everything steps over it". It is that a
+   * planting surface has to be CONTINUOUS. A hole in it narrower than the figure
+   * crossing it is not terrain, it is a crouch: the solver has to put a foot
+   * somewhere, and 62 mm down is the one place that is guaranteed to be wrong.
+   * What is left is the 14 mm rise onto the stone and 14 mm down the far side, a
+   * kerb rather than a hole, and a crossing now costs the gait nothing it does
+   * not pay on open board — measured 26 mm of pelvis against a 21 mm control on
+   * a 兵, and 44 against 44 on a 馬.
+   *
+   * The price is paid by the 兵: for the one or two plants it makes over open
+   * water it has up to 62 mm of daylight under the foot — 3.4 device px at the
+   * resting framing. That is the trade, taken deliberately, and it is the better
+   * side of it: a small static gap under a small foot against the whole
+   * silhouette dropping an eighth of its height. The camera never comes close to
+   * a figure standing in the river because no figure ever stands in the river —
+   * there are no intersections in the band, only passage through it.
    */
   heightAt(x: number, z: number): number {
-    const board = this.surfaceAt(x, z);
+    let board = this.surfaceAt(x, z);
+    // Inside the stone banking, the walkable height is the top of the banking.
+    // Guarded by the silk's extent because past it this band is the timber
+    // frame, which stands 72 mm higher than the cap and must keep its own top.
+    if (Math.abs(z) < BANK_CAP_HALF && Math.abs(x) <= SILK_HALF_X) {
+      board = BANK_RISE + silkSag(x, z);
+    }
     const base = this.bases.topAt(x, z);
     return base > board ? base : board;
   }

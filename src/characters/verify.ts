@@ -1281,7 +1281,10 @@ function verifyUnits(): void {
           pad(((u.meta.triangles / spec.budget) * 100).toFixed(0), 6, true) +
           pad(u.skinned.length, 6, true) +
           pad(u.props.length, 6, true) +
-          pad(Object.keys(u.mountBones).length + 20, 7, true) +
+          // The skeleton's own count, not `20 + mountBones`: a unit may carry a
+          // bone that is in the skeleton and deliberately not published to the
+          // animator — the general's static dais anchor is one.
+          pad(u.skeleton.bones.length, 7, true) +
           pad(w.toFixed(2), 7, true) +
           pad(hh.toFixed(2), 7, true) +
           pad(dd.toFixed(2), 7, true) +
