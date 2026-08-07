@@ -123,12 +123,20 @@ is 0.00000000. Wheel travel 4.587023606 world units against wheel arc
 Analytic IK positional error 0.0 over 3,800 targets. Every triangle in the cast
 and the board passes a winding, closure and signed-volume audit.
 
+Review mode was driven in a real browser rather than inspected: the sweep grades
+every ply with a quality, a tone and a full principal variation, the cursor walk
+produces exact and reversible board states, and exit restores the position it
+started from. The whole application occupies **3 DOM nodes** — the move record,
+the evaluation bleed and the captured figures are all painted into the scene, so
+"never a default HTML widget" is a measurement here and not an intention.
+
 **Not there yet.** The gongbi surface treatment is the least finished part of the
 project. N·L is bimodal under the current light rig, so the mid bands of each
 four-band ramp are barely selected and material classes do not yet differentiate
-as they should — lacquer, cloth and timber read too much alike. The HUD, review
-mode and the opening formation march are built as systems but not yet wired into
-the match. No frame has been judged in motion by a critic, and nothing has been
+as they should — lacquer, cloth and timber read too much alike. The backdrop
+reads as flat cut paper, cast shadows dominate the figures and alias badly, and
+only four of the seven unit types are identifiable by silhouette alone. No frame
+has been judged in motion by a critic, and nothing has been
 run on the target hardware: all performance figures here were taken under
 software rasterisation, so the locked-60 claim is an architectural argument —
 draw calls, triangle counts, allocation-free update paths — not a measurement.

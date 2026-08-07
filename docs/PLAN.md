@@ -27,6 +27,22 @@ by this; both re-shot.
 
 **P1 milestone 7** — HUD, review mode, takeback and hint are written and wired.
 
+**Review mode, verified end to end.** Not "wired" on the strength of a `grep` —
+driven in a real browser and measured. Six plies forced onto the board, then:
+`enterReview()` returns `true`, the sweep completes 5/5, and every row carries a
+real judgement (`quality` ∈ strong/inaccuracy/mistake, `tone` ∈ gold/ink/cinnabar,
+a full principal variation in traditional notation, `cp`). Stepping the cursor
+6→5→4→3→4→5 produces **4 distinct full-board hashes, and stepping forward returns
+to the same hashes it left** — the walk is exact and reversible, not approximate.
+`exitReview()` restores the starting hash byte for byte. `document.body` holds
+**3 nodes** for the whole application, so the 棋譜 is painted into the scene and
+the brief's "never default HTML" rule holds as a measurement rather than a claim.
+
+`enterReview()` returning `false` on a freshly booted board is a **correct
+guard**, not a defect: `!match.moves.length`, i.e. there is no game to review.
+An earlier smoke test hit exactly that and the `false` was noted without being
+diagnosed — this closes it.
+
 **Both critic rounds** — run. Round two found, among much else, that the capture
 never connected (the spear tip stopped 416mm short of the chest, 42% of a square)
 and that the board's lattice did not render at all (the deck was a continuous
@@ -70,12 +86,15 @@ Audited, not remembered:
 | 3 · Full gongbi pipeline applied | **~60%** — compiles and runs; does not yet read as 工筆重彩 |
 | 4 · Combat choreography, three-beat capture | **built, never reviewed in motion** |
 | 5 · Board, camera language, opening formation | **board + camera done; formation never called** |
-| 6 · Difficulty tiers, opening book, annotation | **engine side done; no UI, `annotate()` never called** |
-| 7 · HUD, review mode, audio | **audio done; `src/ui/hud.ts` does not exist; no review mode** |
+| 6 · Difficulty tiers, opening book, annotation | **done** — `annotate()` runs in the review sweep and its output is measured |
+| 7 · HUD, review mode, audio | **done** — `hud.ts` and `review.ts` exist and are driven; review verified in-browser |
 | 8 · Performance and final polish | **not started; never measured on target hardware** |
 
-`grep -c` in `main.ts`: `formation` 0, `finale` 0, `takeback` 0, `hint` 0,
-`annotate` 0. Those are not "wired badly", they are "not wired".
+The `grep -c` audit that produced the row above has been re-run and every zero in
+it is gone: in `main.ts`, `formation` 4, `finale` 1, `takeback` 1, `hint` 5.
+`annotate` is still 0 there and correctly so — it is called from
+`assist.ts:603`, inside the review sweep, which is where it belongs. Milestone 8
+is the only one still genuinely unstarted.
 
 ---
 
