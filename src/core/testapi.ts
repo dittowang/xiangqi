@@ -93,7 +93,9 @@ export interface XqTestApi {
    *              face, π/2 at its right side, π at its back — so one number
    *              means the same view of a Han and a Chu figure;
    *   `framing`  'fit' fills the frame with this unit; 'lineup' uses one fixed
-   *              scale for every unit, so seven calls compare in size;
+   *              scale for every unit, so seven calls compare in size; 'face'
+   *              is a head-and-shoulders close-up of the figure that owns the
+   *              rig (the rider, the driver, the lead crewman);
    *   `pitch`    camera elevation, radians (default 0.2).
    */
   showcase(
@@ -104,7 +106,7 @@ export interface XqTestApi {
       turntable?: number;
       yaw?: number;
       pitch?: number;
-      framing?: 'fit' | 'lineup';
+      framing?: 'fit' | 'lineup' | 'face';
     },
   ): Promise<void>;
   /** Restore normal play after `showcase`. */

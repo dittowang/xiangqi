@@ -221,7 +221,7 @@ async function showcaseAt(
   side: Side,
   unit: UnitKey,
   yaw: number,
-  opts: { pitch?: number; framing?: 'fit' | 'lineup' } = {},
+  opts: { pitch?: number; framing?: 'fit' | 'lineup' | 'face' } = {},
 ): Promise<boolean> {
   await d.setHudVisible(false);
   const ok = await d.showcase(side, unit, { yaw, pitch: opts.pitch, framing: opts.framing ?? 'fit' });
@@ -451,6 +451,28 @@ function units(): Shot[] {
       async sample(d, i) {
         const unit = UNIT_KEYS[i]!;
         await showcaseAt(d, side, unit, 0.6, { framing: 'lineup' });
+        return { label: unit.slice(0, 3), caption: unit };
+      },
+      async teardown(d) {
+        await d.exitShowcase();
+      },
+    });
+    // Head and shoulders of the figure that owns each unit's rig, one army per
+    // sheet: the face is the first thing a viewer looks for in a figure, and at
+    // `fit` framing it is a few pixels across, too small to judge.
+    out.push({
+      kind: 'sheet',
+      name: `faces-${slug}`,
+      label: `${hanzi} faces — head and shoulders of every unit`,
+      subtitle: 'portrait close-up, slightly off the face, near eye level',
+      requires: ['showcase'],
+      frames: UNIT_KEYS.length,
+      cols: UNIT_KEYS.length,
+      keepFrames: true,
+      expect: SCENE_POLICY,
+      async sample(d, i) {
+        const unit = UNIT_KEYS[i]!;
+        await showcaseAt(d, side, unit, 0.35, { pitch: 0.1, framing: 'face' });
         return { label: unit.slice(0, 3), caption: unit };
       },
       async teardown(d) {

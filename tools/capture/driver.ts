@@ -551,7 +551,7 @@ export class Driver {
   async showcase(
     side: Side,
     unit: string,
-    opts: { state?: string; turntable?: number; yaw?: number; pitch?: number; framing?: 'fit' | 'lineup' } = {},
+    opts: { state?: string; turntable?: number; yaw?: number; pitch?: number; framing?: 'fit' | 'lineup' | 'face' } = {},
   ): Promise<boolean> {
     if (!this.note('showcase') || !this.can('showcase')) return false;
     await this.page.evaluate((a) => window.__XQ!.showcase(a.side as Side, a.unit, a.opts), {

@@ -756,7 +756,13 @@ const _showCentre = new THREE.Vector3();
  * army. In world terms that is not one number: Han faces −Z and Chu +Z, and a
  * world-space yaw of 0 sits on the +Z side — the back of every Han figure.
  */
-function aimShowcase(root: THREE.Object3D, framing: 'fit' | 'lineup', yawRel: number, pitch?: number): void {
+function aimShowcase(
+  unit: ReturnType<typeof characters.create>,
+  framing: 'fit' | 'lineup' | 'face',
+  yawRel: number,
+  pitch?: number,
+): void {
+  const root = unit.root;
   root.updateMatrixWorld(true);
   // Precise: walks the skinned vertices, so the box is the POSED figure, not
   // the bind-pose geometry box three would otherwise cache.
@@ -775,6 +781,21 @@ function aimShowcase(root: THREE.Object3D, framing: 'fit' | 'lineup', yawRel: nu
 
   let target: [number, number, number];
   let distance: number;
+  if (framing === 'face') {
+    // Head and shoulders of whoever owns the rig. The head bone is the base of
+    // the skull, so the face's centre is about half a head above it; the frame
+    // holds about four head lengths, which is a portrait, not a mugshot.
+    const p = unit.meta.proportions;
+    const headLen = p.height * p.headRatio * p.scale;
+    const head = unit.bones.head;
+    if (head) {
+      head.getWorldPosition(_showCentre);
+      target = [_showCentre.x, _showCentre.y + headLen * 0.55, _showCentre.z];
+      distance = (headLen * 4.2) / 2 / Math.tan(half);
+      rig.director.setPosePartial({ target, distance, pitch: elev, yaw, fov: SHOWCASE_FOV }, true);
+      return;
+    }
+  }
   if (framing === 'lineup') {
     // Feet on one shared line, one shared scale: aim at a FIXED height over the
     // unit's own foot point, never at its bounds.
@@ -1005,7 +1026,7 @@ const api: XqTestApi = {
     await stepOnce(0);
     await stepOnce(1 / 60);
     // Aim AFTER posing: the bounds are measured on the skinned, posed figure.
-    aimShowcase(built.root, opts?.framing ?? 'fit', opts?.yaw ?? SHOWCASE_DEFAULT_YAW, opts?.pitch);
+    aimShowcase(built, opts?.framing ?? 'fit', opts?.yaw ?? SHOWCASE_DEFAULT_YAW, opts?.pitch);
     await stepOnce(0);
   },
   exitShowcase: () => exitShowcase(),
