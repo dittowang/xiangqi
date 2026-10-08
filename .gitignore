@@ -1,4 +1,4 @@
-node_modules/
+node_modules
 dist/
 .vite/
 *.log
@@ -20,3 +20,7 @@ tools/ui/out/
 .tmpm/
 # Agent diagnostic renders — regenerated on demand.
 .diag/
+
+# per-worktree capture builds (scratchpad labcap.sh)
+.lab-dist/
+.lab-preview.log
