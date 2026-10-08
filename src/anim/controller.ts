@@ -116,8 +116,14 @@ type HandSource =
   | { kind: 'haft'; at: number }
   /** Toward a named socket on the mount, blended from the bind hand position. */
   | { kind: 'socket'; socket: AttachName; blend: number }
-  /** Onto a named mount bone — the trebuchet's haul ropes follow the beam. */
-  | { kind: 'mountBone'; bone: string; blend: number; lift: number }
+  /**
+   * The fist's GRIP locked onto a moving socket: the hand moves by exactly what
+   * puts its own `grip` point on the socket. Not `socket` at blend 1 — the arm
+   * chain's end effector is the hand bone, which is the wrist, so aiming the
+   * hand bone at a grip point lands the wrist on the rope and the fist half a
+   * hand past it.
+   */
+  | { kind: 'grip'; socket: AttachName }
   /** Held at its bind position in rig space: a rail, a pommel, a brace. */
   | { kind: 'bind' };
 
@@ -133,10 +139,17 @@ const HAND_PLAN: Record<UnitKey, HandPlan> = {
   advisor: {},
   // The 節 is carried, not fought with; the off hand stays at the belt.
   general: { L: { kind: 'bind' } },
-  // Both hands live on the haul ropes and are dragged when the beam whips.
+  // Crew A's fists stay closed on the ropes (Han) or the windlass bars (Chu)
+  // and are dragged when the beam whips. cannon.ts publishes those grips as
+  // `reinL`/`reinR`, parented to whichever member actually moves.
+  //
+  // This used to aim both hands at the mount bone `treb.weight`. Only the Chu
+  // engine has one — it is the counterweight box — so Chu crew A's hands left
+  // the bars at idle and were dragged half a rig unit forward onto the box,
+  // while on the Han engine the lookup failed and the IK silently did nothing.
   cannon: {
-    L: { kind: 'mountBone', bone: 'treb.weight', blend: 1, lift: 0.06 },
-    R: { kind: 'mountBone', bone: 'treb.weight', blend: 1, lift: 0.06 },
+    L: { kind: 'grip', socket: 'reinL' },
+    R: { kind: 'grip', socket: 'reinR' },
   },
   // Rein hand forward and low, following the horse's head a quarter of the way.
   horse: { L: { kind: 'socket', socket: 'reinL', blend: 0.24 } },
@@ -1541,6 +1554,15 @@ export class Animator implements UnitAnimator {
       if (!src) continue;
       if (!this.handSourcePoint(side, src, _v)) continue;
       solveTwoBone(this.arms[side], this.ikCtx, _v);
+      // A grip lock aims the wrist at where the grip must go, measured with the
+      // hand's PRE-solve orientation, and the solve itself turns the hand. One
+      // more pass from the solved pose closes the residual. `solveTwoBone`
+      // writes quaternions only, so the arm's matrices are refreshed first —
+      // without that the second pass re-reads the old grip and changes nothing.
+      if (src.kind === 'grip') {
+        this.arms[side].a.updateMatrixWorld(true);
+        if (this.handSourcePoint(side, src, _v)) solveTwoBone(this.arms[side], this.ikCtx, _v);
+      }
     }
   }
 
@@ -1564,13 +1586,19 @@ export class Animator implements UnitAnimator {
         out.copy(side === 'L' ? this.bindHandL : this.bindHandR).lerp(_v3, src.blend);
         return true;
       }
-      case 'mountBone': {
-        const bone = this.unit.mountBones[src.bone];
-        if (!bone) return false;
-        rigPosition(this.ikCtx, bone, _v3);
-        _v3.y += src.lift * this.height;
-        _v3.x += (side === 'L' ? -1 : 1) * this.height * 0.055;
-        out.copy(side === 'L' ? this.bindHandL : this.bindHandR).lerp(_v3, src.blend);
+      case 'grip': {
+        const sock = at[src.socket];
+        const grip = side === 'L' ? at.gripL : at.gripR;
+        if (!sock || !grip) return false;
+        // wrist + (socket − grip), all from this frame's pre-IK pose: the hand
+        // translates by exactly the error between where its grip is and where
+        // the rope is. At rest the bind pose already closes the fist on the
+        // rope, so the target is the wrist itself and the solve is a no-op.
+        const hand = side === 'L' ? this.unit.bones.handL : this.unit.bones.handR;
+        rigPosition(this.ikCtx, hand, out);
+        rigPosition(this.ikCtx, sock, _v3);
+        rigPosition(this.ikCtx, grip, _v2);
+        out.add(_v3).sub(_v2);
         return true;
       }
       case 'bind':
