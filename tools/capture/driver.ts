@@ -548,7 +548,11 @@ export class Driver {
   async setQuality(tier: QualityTier | 'auto'): Promise<void> {
     if (this.note('setQuality')) await this.page.evaluate((v) => window.__XQ!.setQuality(v), tier);
   }
-  async showcase(side: Side, unit: string, opts: { state?: string; turntable?: number } = {}): Promise<boolean> {
+  async showcase(
+    side: Side,
+    unit: string,
+    opts: { state?: string; turntable?: number; yaw?: number; pitch?: number; framing?: 'fit' | 'lineup' } = {},
+  ): Promise<boolean> {
     if (!this.note('showcase') || !this.can('showcase')) return false;
     await this.page.evaluate((a) => window.__XQ!.showcase(a.side as Side, a.unit, a.opts), {
       side: side as number,

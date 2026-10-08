@@ -534,7 +534,16 @@ vec3 xqGongbiShade(
   if ( y < floorY ) col *= floorY / max( y, 1e-4 );
 
   col *= uExposure;
+  // Silhouette critic mode is flat black FIGURES on a white GROUND. Every unit
+  // is drawn through the atlas material and nothing else is, so the define is
+  // exactly the figure/ground split. Mixing everything to black made the board
+  // a black slab: an isolated unit vanished into it and the full-board shot
+  // showed only the strip of figures that happened to stand against the sky.
+#ifdef USE_ATLAS_MATERIAL
   return mix( col, vec3( 0.0 ), uSilhouette );
+#else
+  return mix( col, vec3( 1.0 ), uSilhouette );
+#endif
 }
 `;
 

@@ -221,11 +221,12 @@ void main() {
   float dissolve = smoothstep( uOutlineFade.x, uOutlineFade.y, vCamDist );
   stroke = mix( stroke, surface, dissolve * 0.85 );
 
-  // Silhouette critic mode: flat black units, no line work of any kind. The
-  // hull still draws — it just draws the same black as the surface, so the
-  // silhouette measured is the hull's, which is the silhouette a viewer
-  // actually sees.
-  stroke = mix( stroke, vec3( 0.0 ), uSilhouette );
+  // Silhouette critic mode. This is the NON-atlas hull, which only the board
+  // and its furniture use — every figure goes through the atlas hull below —
+  // so it takes the ground's white and vanishes into it. The figures' hull
+  // still draws black, so the silhouette measured is the hull's, which is the
+  // silhouette a viewer actually sees.
+  stroke = mix( stroke, vec3( 1.0 ), uSilhouette );
 
   gl_FragColor = vec4( stroke, 1.0 );
 }

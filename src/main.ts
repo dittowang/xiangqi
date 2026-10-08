@@ -727,6 +727,71 @@ let showcaseUnit: ReturnType<typeof characters.create> | null = null;
 let showcaseCollapse: ReturnType<typeof collapseToAtlas> | null = null;
 let showcaseAnimator: Animator | null = null;
 
+/** The portrait framing's own azimuth, read relative to the unit's facing. */
+const SHOWCASE_DEFAULT_YAW = 0.38;
+const SHOWCASE_FOV = 30;
+const SHOWCASE_PITCH = 0.2;
+/**
+ * The one scale every `framing: 'lineup'` shot shares: the vertical span of the
+ * frame in world units. It has to hold the tallest silhouette in the cast — the
+ * 帥 on his dais with his standard, 1.88 measured — with air above it, and it
+ * must not change between the seven calls of one line-up or size stops being
+ * comparable, which is the whole reason the line-up exists.
+ */
+const LINEUP_SPAN = 2.2;
+const _showBox = new THREE.Box3();
+const _showSize = new THREE.Vector3();
+const _showCentre = new THREE.Vector3();
+
+/**
+ * Point the camera at the showcased figure.
+ *
+ * `showcase()` used to set the `portrait` named pose and stop. That pose looks
+ * at the board's centre — the river — and the figure was moved off the river
+ * onto its own side's second rank, 1.5 squares away, so every isolated capture
+ * since was a frame of empty water with the unit at the edge or out of shot.
+ * The contract always said "centred"; this is what makes it true.
+ *
+ * Yaw is relative to the unit's FACING, so `yaw: 0` is its face for either
+ * army. In world terms that is not one number: Han faces −Z and Chu +Z, and a
+ * world-space yaw of 0 sits on the +Z side — the back of every Han figure.
+ */
+function aimShowcase(root: THREE.Object3D, framing: 'fit' | 'lineup', yawRel: number, pitch?: number): void {
+  root.updateMatrixWorld(true);
+  // Precise: walks the skinned vertices, so the box is the POSED figure, not
+  // the bind-pose geometry box three would otherwise cache.
+  _showBox.setFromObject(root, true);
+  if (_showBox.isEmpty()) return;
+  _showBox.getSize(_showSize);
+  _showBox.getCenter(_showCentre);
+
+  const half = THREE.MathUtils.degToRad(SHOWCASE_FOV) / 2;
+  const aspect = window.innerWidth / Math.max(window.innerHeight, 1);
+  // Camera azimuth that looks the figure in the face: units are authored facing
+  // −Z, the director puts the camera at +(sin yaw, cos yaw), so face-on is the
+  // root's own rotation plus π.
+  const yaw = root.rotation.y + Math.PI + yawRel;
+  const elev = pitch ?? SHOWCASE_PITCH;
+
+  let target: [number, number, number];
+  let distance: number;
+  if (framing === 'lineup') {
+    // Feet on one shared line, one shared scale: aim at a FIXED height over the
+    // unit's own foot point, never at its bounds.
+    target = [root.position.x, root.position.y + LINEUP_SPAN * 0.47, root.position.z];
+    distance = LINEUP_SPAN / 2 / Math.tan(half);
+  } else {
+    // From any azimuth the horizontal extent is at most the footprint diagonal.
+    const across = Math.hypot(_showSize.x, _showSize.z);
+    const need = Math.max(_showSize.y, across / aspect) / 0.84; // 8% margin each side
+    // Back off by half the depth too, so the near side of a long unit is not
+    // inside the frustum's near region of the fit.
+    distance = need / 2 / Math.tan(half) + across * 0.5;
+    target = [_showCentre.x, _showCentre.y, _showCentre.z];
+  }
+  rig.director.setPosePartial({ target, distance, pitch: elev, yaw, fov: SHOWCASE_FOV }, true);
+}
+
 async function exitShowcase(): Promise<void> {
   if (showcaseAnimator) {
     showcaseAnimator.dispose();
@@ -935,11 +1000,13 @@ const api: XqTestApi = {
     showcaseAnimator = createAnimator(built, { ground: rig.heightAt, audio, variant: 0 });
     showcaseAnimator.play((opts?.state ?? 'idle') as AnimState, 0);
 
-    api.setNamedPose('portrait', true);
     // Two steps: the first poses the skeleton, the second lets the pose settle
     // through the IK pass so contact points are resolved before capture.
     await stepOnce(0);
     await stepOnce(1 / 60);
+    // Aim AFTER posing: the bounds are measured on the skinned, posed figure.
+    aimShowcase(built.root, opts?.framing ?? 'fit', opts?.yaw ?? SHOWCASE_DEFAULT_YAW, opts?.pitch);
+    await stepOnce(0);
   },
   exitShowcase: () => exitShowcase(),
   setDebug: (flag: DebugFlag, on: boolean) => pipeline.setDebug(flag, on),

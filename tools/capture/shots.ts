@@ -205,25 +205,47 @@ async function framed(d: Driver, pose: NamedPose): Promise<void> {
 }
 
 /**
- * Showcase one unit at a camera yaw. `showcase()` also accepts a `turntable`
- * angle, but rotating the *camera* is driven entirely by `setPose`, which is
- * live from the very first bootstrap — so the angle sweep works against any
- * build that can put a unit on screen at all.
+ * Showcase one unit. `showcase()` aims the camera itself, from the posed
+ * figure's measured bounds, and reads `yaw` RELATIVE TO THE UNIT'S FACING — so
+ * `front` is the face of a Han figure and of a Chu figure alike.
+ *
+ * It used to call `setNamedPose('portrait')` here and then set a world yaw.
+ * `portrait` looks at the board's centre, which is the river, and the figure
+ * stands on its second rank 1.5 squares away: every isolated shot was a frame
+ * of water with the unit at its edge. And world yaw 0 is the +Z side, which is
+ * the BACK of every Han unit, so the "front" row of the Han sheets was a row of
+ * backs. Both are why nothing here sets a pose after the call any more.
  */
-async function showcaseAt(d: Driver, side: Side, unit: UnitKey, yaw: number): Promise<boolean> {
-  const ok = await d.showcase(side, unit);
-  await d.setNamedPose('portrait', true);
-  await d.setPose({ yaw }, true);
+async function showcaseAt(
+  d: Driver,
+  side: Side,
+  unit: UnitKey,
+  yaw: number,
+  opts: { pitch?: number; framing?: 'fit' | 'lineup' } = {},
+): Promise<boolean> {
   await d.setHudVisible(false);
+  const ok = await d.showcase(side, unit, { yaw, pitch: opts.pitch, framing: opts.framing ?? 'fit' });
   await d.settle(1.5);
   return ok;
 }
 
-const THREE_ANGLES = [
-  { slug: 'front', yaw: 0, label: 'front' },
-  { slug: 'threequarter', yaw: 0.85, label: 'three-quarter' },
-  { slug: 'profile', yaw: Math.PI / 2, label: 'profile' },
+/**
+ * The angles a figure is judged from. `above-back` is not a nicety: the resting
+ * play camera sits 50° up behind the player's own army, so it is the view of
+ * his own sixteen pieces he has for the whole game — and `above-front` is his
+ * view of the enemy's.
+ */
+const UNIT_ANGLES = [
+  { slug: 'front', yaw: 0, pitch: 0.2, label: 'front' },
+  { slug: 'threequarter', yaw: 0.7, pitch: 0.2, label: 'three-quarter' },
+  { slug: 'profile', yaw: Math.PI / 2, pitch: 0.12, label: 'profile' },
+  { slug: 'back', yaw: Math.PI, pitch: 0.2, label: 'back' },
+  { slug: 'above-back', yaw: Math.PI - 0.3, pitch: 0.87, label: 'from above and behind — the player’s view of his own army' },
+  { slug: 'above-front', yaw: 0.3, pitch: 0.87, label: 'from above and in front — the player’s view of the enemy' },
 ];
+
+/** Line-up cells: one fixed scale, so the widest unit sets the cell. */
+const LINEUP_CLIP = { x: 280, y: 20, width: 720, height: 760 };
 
 // ---------------------------------------------------------------------------
 // Suites
@@ -364,13 +386,14 @@ function silhouettes(): Shot[] {
         expect: SILHOUETTE_POLICY,
         async setup(d) {
           await d.setSilhouette(true);
-          await showcaseAt(d, side, unit, 0.85);
+          await showcaseAt(d, side, unit, 0.7, { pitch: 0.12 });
         },
       });
     }
   }
 
-  // The line-up sheets: seven unit types side by side, one army per sheet.
+  // The line-up sheets: seven unit types side by side, one army per sheet, at
+  // ONE shared scale and on one shared ground line, so size is comparable too.
   // This is the single image the readability critic is handed.
   for (const { side, slug, hanzi } of SIDES) {
     out.push({
@@ -381,16 +404,16 @@ function silhouettes(): Shot[] {
       requires: ['setSilhouette', 'showcase'],
       frames: UNIT_KEYS.length,
       cols: UNIT_KEYS.length,
-      // A tall centred column per unit, so the sheet reads as a parade rather
-      // than seven letterboxes with a figure lost in the middle of each.
-      cellClip: { x: 460, y: 60, width: 360, height: 700 },
+      // One column per unit, wide enough for the trebuchet's diagonal at this
+      // scale, so the sheet reads as a parade rather than seven letterboxes.
+      cellClip: LINEUP_CLIP,
       expect: SILHOUETTE_POLICY,
       async setup(d) {
         await d.setSilhouette(true);
       },
       async sample(d, i) {
         const unit = UNIT_KEYS[i]!;
-        await showcaseAt(d, side, unit, 0.85);
+        await showcaseAt(d, side, unit, 0.6, { pitch: 0.12, framing: 'lineup' });
         return { label: unit.slice(0, 3), caption: unit };
       },
       async teardown(d) {
@@ -402,28 +425,63 @@ function silhouettes(): Shot[] {
   return out;
 }
 
-/** Character review: each of the fourteen (side, type) pairs, lit, from three angles. */
+/**
+ * Character review: each of the fourteen (side, type) pairs, lit.
+ *
+ * `<side>-<unit>-angles` is the sheet a character critic is handed: the same
+ * figure from the six angles in `UNIT_ANGLES`, each framed to fill its cell, and
+ * the frames are kept as individual stills as well. `lineup-lit-<side>` is the
+ * army's seven units lit, at one shared scale. The turntables are the expensive
+ * extra — eight frames a unit — and are only worth running with `--only`.
+ */
 function units(): Shot[] {
   const out: Shot[] = [];
   for (const { side, slug, hanzi } of SIDES) {
+    out.push({
+      kind: 'sheet',
+      name: `lineup-lit-${slug}`,
+      label: `${hanzi} army line-up — all seven unit types, lit`,
+      subtitle: 'one camera, one scale, one ground line: the cast as a cast',
+      requires: ['showcase'],
+      frames: UNIT_KEYS.length,
+      cols: UNIT_KEYS.length,
+      cellClip: LINEUP_CLIP,
+      keepFrames: true,
+      expect: SCENE_POLICY,
+      async sample(d, i) {
+        const unit = UNIT_KEYS[i]!;
+        await showcaseAt(d, side, unit, 0.6, { framing: 'lineup' });
+        return { label: unit.slice(0, 3), caption: unit };
+      },
+      async teardown(d) {
+        await d.exitShowcase();
+      },
+    });
     for (const unit of UNIT_KEYS) {
-      for (const angle of THREE_ANGLES) {
-        out.push({
-          kind: 'still',
-          name: `${slug}-${unit}-${angle.slug}`,
-          label: `${hanzi} ${unit} — ${angle.label}`,
-          requires: ['showcase'],
-          expect: SCENE_POLICY,
-          async setup(d) {
-            await showcaseAt(d, side, unit, angle.yaw);
-          },
-        });
-      }
+      out.push({
+        kind: 'sheet',
+        name: `${slug}-${unit}-angles`,
+        label: `${hanzi} ${unit} — six angles`,
+        subtitle: UNIT_ANGLES.map((a) => a.slug).join(' · '),
+        requires: ['showcase'],
+        frames: UNIT_ANGLES.length,
+        cols: 3,
+        keepFrames: true,
+        expect: SCENE_POLICY,
+        async sample(d, i) {
+          const angle = UNIT_ANGLES[i]!;
+          await showcaseAt(d, side, unit, angle.yaw, { pitch: angle.pitch });
+          return { label: angle.slug, caption: angle.label };
+        },
+        async teardown(d) {
+          await d.exitShowcase();
+        },
+      });
       out.push({
         kind: 'sheet',
         name: `${slug}-${unit}-turntable`,
         label: `${hanzi} ${unit} — turntable`,
-        subtitle: 'eight camera azimuths, 45° apart, portrait framing',
+        subtitle: 'eight azimuths, 45° apart, relative to the unit’s facing',
         requires: ['showcase'],
         frames: 8,
         cols: 4,

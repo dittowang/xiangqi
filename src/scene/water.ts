@@ -245,8 +245,10 @@ void main() {
   // ---- mood grade --------------------------------------------------------
   col = mix(col, uGradeTint, uGradeAmount);
 
-  // Silhouette pass: flat black, no line work, no bands.
-  col = mix(col, vec3(0.0), uSilhouette);
+  // Silhouette pass: the river is ground, not figure, so it goes to the white
+  // the units are read against — black water put a bar straight through every
+  // full-board silhouette.
+  col = mix(col, vec3(1.0), uSilhouette);
 
   gl_FragColor = vec4(col, 1.0);
 

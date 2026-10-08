@@ -85,8 +85,28 @@ export interface XqTestApi {
   setHudVisible(on: boolean): void;
   /** Force a quality tier, defeating the adaptive governor. */
   setQuality(tier: QualityTier | 'auto'): void;
-  /** Isolate one unit on an empty board, centred, for character review. */
-  showcase(side: Side, unit: string, opts?: { state?: string; turntable?: number }): Promise<void>;
+  /**
+   * Isolate one unit on an empty board, centred, for character review. The
+   * camera is aimed by the call itself, from the posed figure's measured bounds:
+   *
+   *   `yaw`      camera azimuth RELATIVE TO THE UNIT'S FACING — 0 looks it in the
+   *              face, π/2 at its right side, π at its back — so one number
+   *              means the same view of a Han and a Chu figure;
+   *   `framing`  'fit' fills the frame with this unit; 'lineup' uses one fixed
+   *              scale for every unit, so seven calls compare in size;
+   *   `pitch`    camera elevation, radians (default 0.2).
+   */
+  showcase(
+    side: Side,
+    unit: string,
+    opts?: {
+      state?: string;
+      turntable?: number;
+      yaw?: number;
+      pitch?: number;
+      framing?: 'fit' | 'lineup';
+    },
+  ): Promise<void>;
   /** Restore normal play after `showcase`. */
   exitShowcase(): Promise<void>;
   /** Debug overlays: wireframe, normals, bone axes, IK targets, ramp bands. */
